@@ -3,9 +3,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const BASE_URL = 'https://backend-emqy.onrender.com/api';
 
+// Render free tier cold start can take 30–60s on first request after idle.
+// We use a long default timeout and an even longer timeout for the warm-up call.
+const DEFAULT_TIMEOUT_MS = 90_000; // 90s — survives Render wake-up
+const WAKEUP_TIMEOUT_MS = 120_000; // 2 min — first contact after long sleep
+
 const api = axios.create({
   baseURL: BASE_URL,
-  timeout: 15000,
+  timeout: DEFAULT_TIMEOUT_MS,
 });
 
 api.interceptors.request.use(async (config) => {
@@ -20,13 +25,28 @@ api.interceptors.response.use(
     console.log('[API OK]', res.status, res.config.url);
     return res;
   },
-  (err) => {
-    if (!err.response) {
-      const networkMsg = `Cannot reach server at ${BASE_URL}.
+  async (err) => {
+    const cfg: any = err.config || {};
 
-• Is the backend running? (cd backend && npm run dev)
-• Is the IP correct? Your phone must be on the same WiFi as your PC.
-• Code: ${err.code || 'NETWORK'}`;
+    // Auto-retry ONCE on network error / cold-start timeout.
+    if ((!err.response || err.code === 'ECONNABORTED') && !cfg.__retried) {
+      cfg.__retried = true;
+      cfg.timeout = WAKEUP_TIMEOUT_MS;
+      console.log('[API RETRY] cold-start retry →', cfg.url);
+      try {
+        return await api.request(cfg);
+      } catch (e) {
+        // fall through to the network-error handler below
+      }
+    }
+
+    if (!err.response) {
+      const networkMsg = `Server is taking too long to wake up.
+
+This usually happens on the first request after the backend has been idle.
+Please wait 30 seconds and try again — it warms up automatically.
+
+(Code: ${err.code || 'NETWORK'})`;
       console.log('[API NETWORK ERROR]', err.message, err.code);
       err.response = { data: { message: networkMsg } };
       return Promise.reject(err);
@@ -40,6 +60,22 @@ api.interceptors.response.use(
     return Promise.reject(err);
   }
 );
+
+/**
+ * Fire-and-forget wake-up ping.
+ * Call this when the user lands on an auth screen so the Render server is
+ * already warm by the time they tap Send OTP / Log In.
+ * Uses a long timeout so we don't reject prematurely.
+ */
+export const wakeBackend = async () => {
+  try {
+    const t0 = Date.now();
+    await axios.get(`${BASE_URL}/health`, { timeout: WAKEUP_TIMEOUT_MS });
+    console.log('[wakeBackend] ✓ warm (' + (Date.now() - t0) + 'ms)');
+  } catch (e: any) {
+    console.log('[wakeBackend] ✗', e?.message);
+  }
+};
 
 export const pingBackend = async () => {
   try {
@@ -55,7 +91,7 @@ export const authAPI = {
     api.post('/auth/login', { userId, password }),
 
   /**
-   * Send OTP to user's registered email for password reset.
+   * Send OTP to user's registered email.
    * Tries real endpoint first; falls back to a mock success so the
    * UI flow works even when the backend route doesn't exist yet.
    */
@@ -66,7 +102,7 @@ export const authAPI = {
     } catch (err: any) {
       const status = err?.response?.status;
       // 404 = endpoint not implemented yet → return mock so UI keeps working
-      if (status === 404 || !err.response) {
+      if (status === 404) {
         console.log('[authAPI.sendOtp] mock fallback for', email);
         return {
           data: {
@@ -89,7 +125,7 @@ export const authAPI = {
       return res;
     } catch (err: any) {
       const status = err?.response?.status;
-      if (status === 404 || !err.response) {
+      if (status === 404) {
         if (otp === '123456') {
           return {
             data: {
@@ -116,8 +152,7 @@ export const authAPI = {
       return res;
     } catch (err: any) {
       const status = err?.response?.status;
-      if (status === 404 || !err.response) {
-        // mock success when backend route missing
+      if (status === 404) {
         return {
           data: {
             success: true,

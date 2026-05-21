@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { authAPI } from '../../services/api';
+import { authAPI, wakeBackend } from '../../services/api';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -77,6 +77,11 @@ function GridBackground() {
 export default function EmailVerifyScreen() {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Wake Render backend so first Send-OTP doesn't hit a cold start.
+  useEffect(() => {
+    wakeBackend();
+  }, []);
 
   const validateEmail = (e: string) =>
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
