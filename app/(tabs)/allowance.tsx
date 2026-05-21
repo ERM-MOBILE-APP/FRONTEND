@@ -1,288 +1,854 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity,
-  StyleSheet, ScrollView, Alert, ActivityIndicator,
-  Platform,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  TextInput,
+  Modal,
+  Pressable,
+  Alert,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Calendar } from 'react-native-calendars';
 import { allowanceAPI } from '../../services/api';
-import { Colors } from '../../constants/Colors';
 
-const TRANSPORT_OPTIONS = ['Car', 'Bus', 'Train', 'Bike', 'Auto'];
+type AllowanceType = 'travel' | 'petrol';
+type AllowanceStatus = 'pending' | 'approved' | 'rejected';
+
+type AllowanceItem = {
+  _id: string;
+  type: AllowanceType;
+  purpose: string;
+  fromLocation: string;
+  toLocation: string;
+  date: string;
+  distance?: number;
+  amount: number;
+  notes?: string;
+  status: AllowanceStatus;
+  hrComment?: string;
+};
+
+type Summary = {
+  approved: number;
+  rejected: number;
+  pending: number;
+  totalDistance: number;
+};
+
+const MONTHS_SHORT = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+const MONTHS_LONG = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
 
 export default function AllowanceScreen() {
-  const [type, setType] = useState<'travel' | 'petrol'>('travel');
-  const [purpose, setPurpose] = useState<'Client Meeting' | 'Sales Visit'>('Client Meeting');
-  const [fromLocation, setFromLocation] = useState('San Francisco HQ');
-  const [toLocation, setToLocation] = useState('');
-  const [date, setDate] = useState('Nov 24, 2024');
-  const [transport, setTransport] = useState('Car');
-  const [showTransportMenu, setShowTransportMenu] = useState(false);
-  const [amount, setAmount] = useState('310.00');
+  const [type, setType] = useState<AllowanceType>('travel');
+  const [fromLoc, setFromLoc] = useState('');
+  const [toLoc, setToLoc] = useState('');
+  const [date, setDate] = useState('');
+  const [distance, setDistance] = useState('');
+  const [amount, setAmount] = useState('');
   const [notes, setNotes] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [showDate, setShowDate] = useState(false);
 
-  const handleSubmit = async () => {
-    if (!fromLocation || !toLocation || !amount || !date) {
-      Alert.alert('Error', 'Please fill all required fields');
+  // History
+  const now = new Date();
+  const [histMonth, setHistMonth] = useState(now.getMonth() + 1);
+  const [histYear, setHistYear] = useState(now.getFullYear());
+  const [showHistMonth, setShowHistMonth] = useState(false);
+  const [showHistYear, setShowHistYear] = useState(false);
+  const [history, setHistory] = useState<AllowanceItem[]>([]);
+  const [summary, setSummary] = useState<Summary>({
+    approved: 0, rejected: 0, pending: 0, totalDistance: 0,
+  });
+
+  const loadAll = useCallback(async () => {
+    try {
+      const [hRes, sRes] = await Promise.all([
+        allowanceAPI.getMyAllowances({ month: histMonth, year: histYear, type }),
+        allowanceAPI.getSummary({ month: histMonth, year: histYear, type }),
+      ]);
+      setHistory(Array.isArray(hRes.data) ? hRes.data : []);
+      setSummary({
+        approved: sRes.data?.approved || 0,
+        rejected: sRes.data?.rejected || 0,
+        pending: sRes.data?.pending || 0,
+        totalDistance: sRes.data?.totalDistance || 0,
+      });
+    } catch {
+      setHistory([]);
+      setSummary({ approved: 0, rejected: 0, pending: 0, totalDistance: 0 });
+    }
+  }, [histMonth, histYear, type]);
+
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
+
+  const submit = async () => {
+    if (!fromLoc.trim() || !toLoc.trim() || !date || !amount) {
+      Alert.alert('Required', 'Please fill From, To, Date and Amount.');
       return;
     }
+    const amt = parseFloat(amount);
+    if (isNaN(amt) || amt <= 0) {
+      Alert.alert('Invalid', 'Please enter a valid amount.');
+      return;
+    }
+    const dist = parseFloat(distance);
+    if (type === 'petrol' && (isNaN(dist) || dist <= 0)) {
+      Alert.alert('Invalid', 'Please enter the distance in km.');
+      return;
+    }
+    setSubmitting(true);
     try {
-      setLoading(true);
       await allowanceAPI.submit({
         type,
-        purpose,
-        fromLocation,
-        toLocation,
+        fromLocation: fromLoc.trim(),
+        toLocation: toLoc.trim(),
         date,
-        transport,
-        amount: parseFloat(amount),
-        notes,
+        amount: amt,
+        distance: isNaN(dist) ? 0 : dist,
+        notes: notes.trim(),
+        purpose: type === 'petrol' ? 'Daily Commute' : 'Official Meeting',
+        transport: type === 'petrol' ? 'Bike' : 'Car',
       });
-      Alert.alert('✅ Success', 'Allowance submitted successfully!');
-      // Reset form
-      setFromLocation('');
-      setToLocation('');
+      Alert.alert('Submitted', 'Your allowance request has been submitted.');
+      setFromLoc('');
+      setToLoc('');
       setDate('');
+      setDistance('');
       setAmount('');
       setNotes('');
-      setTransport('Car');
+      loadAll();
     } catch (err: any) {
-      Alert.alert('Error', err.response?.data?.message || 'Submission failed');
+      Alert.alert(
+        'Error',
+        err?.response?.data?.message || 'Could not submit allowance'
+      );
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
+  const formatDate = (iso: string) => {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso + 'T00:00:00');
+      return `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+    } catch {
+      return iso;
+    }
+  };
+
+  const formatFullDate = (iso: string) => {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso + 'T00:00:00');
+      const wk = d.toLocaleString('default', { weekday: 'short' });
+      return `${wk} ${MONTHS_SHORT[d.getMonth()]} ${d.getDate()} ${d.getFullYear()}`;
+    } catch {
+      return iso;
+    }
+  };
+
+  const rupee = (n: number) => '₹' + (n || 0).toLocaleString('en-IN');
+  const years = Array.from({ length: 6 }, (_, i) => now.getFullYear() - 2 + i);
+
+  const isPetrol = type === 'petrol';
+
   return (
-    <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Allowance</Text>
-      </View>
-
-      <ScrollView showsVerticalScrollIndicator={false} style={styles.scroll}>
-
-        {/* Allowance Type */}
-        <Text style={styles.sectionLabel}>SELECT ALLOWANCE TYPE</Text>
+    <SafeAreaView edges={['top']} style={styles.safe}>
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: 120 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* TYPE SELECTOR */}
+        <Text style={styles.sectionLabel}>Select Allowance Type</Text>
         <View style={styles.typeRow}>
-          <TouchableOpacity
-            style={[styles.typeCard, type === 'travel' && styles.typeCardActive]}
+          <TypeCard
+            active={!isPetrol}
             onPress={() => setType('travel')}
+            icon={
+              <MaterialCommunityIcons
+                name="car"
+                size={22}
+                color={!isPetrol ? '#FFFFFF' : '#777'}
+              />
+            }
+            title="Travel"
+            subtitle="Official Meetings"
+          />
+          <TypeCard
+            active={isPetrol}
+            onPress={() => setType('petrol')}
+            icon={
+              <MaterialCommunityIcons
+                name="gas-station"
+                size={22}
+                color={isPetrol ? '#FFFFFF' : '#777'}
+              />
+            }
+            title="Petrol"
+            subtitle="Daily Commute"
+          />
+        </View>
+
+        {/* FORM */}
+        <View style={styles.form}>
+          <Text style={styles.label}>From</Text>
+          <View style={styles.input}>
+            <Ionicons name="locate-outline" size={18} color="#888" style={{ marginRight: 8 }} />
+            <TextInput
+              value={fromLoc}
+              onChangeText={setFromLoc}
+              placeholder={isPetrol ? 'Home' : 'San Francisco HQ'}
+              placeholderTextColor="#9A9A9A"
+              style={styles.textInput}
+            />
+          </View>
+
+          <Text style={styles.label}>To</Text>
+          <View style={styles.input}>
+            <Ionicons name="location-outline" size={18} color="#888" style={{ marginRight: 8 }} />
+            <TextInput
+              value={toLoc}
+              onChangeText={setToLoc}
+              placeholder={isPetrol ? 'Office' : 'Enter Destination'}
+              placeholderTextColor="#9A9A9A"
+              style={styles.textInput}
+            />
+          </View>
+
+          <Text style={styles.label}>Date</Text>
+          <TouchableOpacity
+            style={styles.input}
+            onPress={() => setShowDate(true)}
+            activeOpacity={0.7}
           >
-            <Ionicons name="airplane-outline" size={28} color={type === 'travel' ? '#fff' : Colors.primary} />
-            <Text style={[styles.typeCardTitle, type === 'travel' && { color: '#fff' }]}>Travel</Text>
-            <Text style={[styles.typeCardSub, type === 'travel' && { color: '#c8e6c9' }]}>Client Meetings</Text>
+            <Ionicons name="calendar-outline" size={18} color="#888" style={{ marginRight: 8 }} />
+            <Text style={[styles.textInput, !date && { color: '#9A9A9A' }]}>
+              {date ? formatDate(date) : 'Pick a date'}
+            </Text>
           </TouchableOpacity>
+
+          {isPetrol && (
+            <>
+              <Text style={styles.label}>Distance (km)</Text>
+              <View style={styles.input}>
+                <MaterialCommunityIcons
+                  name="map-marker-distance"
+                  size={18}
+                  color="#888"
+                  style={{ marginRight: 8 }}
+                />
+                <TextInput
+                  value={distance}
+                  onChangeText={setDistance}
+                  placeholder="Enter Distance"
+                  placeholderTextColor="#9A9A9A"
+                  keyboardType="numeric"
+                  style={styles.textInput}
+                />
+              </View>
+            </>
+          )}
+
+          <Text style={styles.label}>Amount</Text>
+          <View style={styles.input}>
+            <Text style={{ color: '#888', marginRight: 6, fontWeight: '700' }}>₹</Text>
+            <TextInput
+              value={amount}
+              onChangeText={setAmount}
+              placeholder="Enter Amount"
+              placeholderTextColor="#9A9A9A"
+              keyboardType="numeric"
+              style={styles.textInput}
+            />
+          </View>
+
+          <Text style={styles.label}>Notes</Text>
+          <TextInput
+            value={notes}
+            onChangeText={setNotes}
+            placeholder={
+              isPetrol
+                ? 'Add details about the commute...'
+                : 'Add details about the client visit...'
+            }
+            placeholderTextColor="#9A9A9A"
+            multiline
+            style={styles.textArea}
+          />
 
           <TouchableOpacity
-            style={[styles.typeCard, type === 'petrol' && styles.typeCardActive]}
-            onPress={() => setType('petrol')}
+            style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
+            onPress={submit}
+            disabled={submitting}
+            activeOpacity={0.85}
           >
-            <Ionicons name="fuel" size={28} color={type === 'petrol' ? '#fff' : Colors.primary} />
-            <Text style={[styles.typeCardTitle, type === 'petrol' && { color: '#fff' }]}>Petrol</Text>
-            <Text style={[styles.typeCardSub, type === 'petrol' && { color: '#c8e6c9' }]}>Daily Commute</Text>
+            <Text style={styles.submitBtnText}>
+              {submitting ? 'Submitting...' : 'Submit'}
+            </Text>
           </TouchableOpacity>
         </View>
 
-        {/* Travel Purpose */}
-        <Text style={styles.sectionLabel}>TRAVEL PURPOSE</Text>
-        <View style={styles.purposeRow}>
-          {['Client Meeting', 'Sales Visit'].map(p => (
-            <TouchableOpacity
-              key={p}
-              style={[styles.purposeBtn, purpose === p && styles.purposeBtnActive]}
-              onPress={() => setPurpose(p as any)}
-            >
-              <Text style={[styles.purposeText, purpose === p && styles.purposeTextActive]}>{p}</Text>
+        {/* MONTH PICKER */}
+        <View style={styles.monthRow}>
+          <Text style={styles.monthLabel}>This Month</Text>
+          <View style={{ flexDirection: 'row' }}>
+            <TouchableOpacity style={styles.picker} onPress={() => setShowHistMonth(true)}>
+              <Text style={styles.pickerText}>{MONTHS_SHORT[histMonth - 1]}</Text>
+              <Ionicons name="chevron-down" size={14} color="#333" />
             </TouchableOpacity>
-          ))}
+            <TouchableOpacity style={styles.picker} onPress={() => setShowHistYear(true)}>
+              <Text style={styles.pickerText}>{histYear}</Text>
+              <Ionicons name="chevron-down" size={14} color="#333" />
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* From Location */}
-        <Text style={styles.fieldLabel}>FROM LOCATION</Text>
-        <View style={styles.inputRow}>
-          <Ionicons name="location-outline" size={18} color={Colors.gray} style={styles.inputIcon} />
-          <TextInput
-            style={styles.inputFlex}
-            placeholder="Enter starting location"
-            placeholderTextColor={Colors.gray}
-            value={fromLocation}
-            onChangeText={setFromLocation}
-          />
-        </View>
-
-        {/* To Location */}
-        <Text style={styles.fieldLabel}>TO LOCATION</Text>
-        <View style={styles.inputRow}>
-          <Ionicons name="location-outline" size={18} color={Colors.primary} style={styles.inputIcon} />
-          <TextInput
-            style={styles.inputFlex}
-            placeholder="Enter Destination"
-            placeholderTextColor={Colors.gray}
-            value={toLocation}
-            onChangeText={setToLocation}
-          />
-        </View>
-
-        {/* Date and Transport */}
-        <View style={styles.twoCol}>
-          <View style={styles.halfCol}>
-            <Text style={styles.fieldLabel}>DATE</Text>
-            <View style={styles.inputRow}>
-              <Ionicons name="calendar-outline" size={16} color={Colors.gray} style={styles.inputIcon} />
-              <TextInput
-                style={styles.inputFlex}
-                placeholder="DD/MM/YYYY"
-                placeholderTextColor={Colors.gray}
-                value={date}
-                onChangeText={setDate}
+        {/* SUMMARY CARDS */}
+        {isPetrol ? (
+          <View style={styles.summaryGrid}>
+            <View style={styles.summaryGridRow}>
+              <BigCard
+                color="#2196F3"
+                label="TRAVEL DISTANCE"
+                value={`${summary.totalDistance} km`}
+              />
+              <BigCard
+                color="#4CAF50"
+                label="APPROVED AMOUNT"
+                value={rupee(summary.approved)}
+              />
+            </View>
+            <View style={styles.summaryGridRow}>
+              <BigCard
+                color="#FFA726"
+                label="PENDING AMOUNT"
+                value={rupee(summary.pending)}
+              />
+              <BigCard
+                color="#F44336"
+                label="REJECTED AMOUNT"
+                value={rupee(summary.rejected)}
               />
             </View>
           </View>
-
-          <View style={styles.halfCol}>
-            <Text style={styles.fieldLabel}>TRANSPORT</Text>
-            <TouchableOpacity
-              style={styles.inputRow}
-              onPress={() => setShowTransportMenu(!showTransportMenu)}
-            >
-              <Ionicons name="car-outline" size={16} color={Colors.gray} style={styles.inputIcon} />
-              <Text style={[styles.inputFlex, { color: Colors.text, paddingVertical: 12 }]}>{transport}</Text>
-              <Ionicons name="chevron-down-outline" size={16} color={Colors.gray} />
-            </TouchableOpacity>
-            {showTransportMenu && (
-              <View style={styles.dropdown}>
-                {TRANSPORT_OPTIONS.map(t => (
-                  <TouchableOpacity
-                    key={t}
-                    style={styles.dropdownItem}
-                    onPress={() => { setTransport(t); setShowTransportMenu(false); }}
-                  >
-                    <Text style={styles.dropdownText}>{t}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
+        ) : (
+          <View style={styles.summaryRow}>
+            <SummaryCard color="#4CAF50" label="APPROVED" amount={summary.approved} />
+            <SummaryCard color="#F44336" label="REJECTED" amount={summary.rejected} />
+            <SummaryCard color="#FFA726" label="PENDING" amount={summary.pending} />
           </View>
-        </View>
+        )}
 
-        {/* Amount */}
-        <Text style={styles.fieldLabel}>AMOUNT</Text>
-        <View style={styles.inputRow}>
-          <Text style={[styles.inputIcon, { color: Colors.gray, fontSize: 14 }]}>$</Text>
-          <TextInput
-            style={styles.inputFlex}
-            placeholder="0.00"
-            placeholderTextColor={Colors.gray}
-            value={amount}
-            onChangeText={setAmount}
-            keyboardType="numeric"
-          />
-        </View>
+        {/* HISTORY */}
+        <Text style={styles.historyHeading}>History</Text>
 
-        {/* Upload Receipt */}
-        <TouchableOpacity style={styles.uploadBox}>
-          <Ionicons name="camera-outline" size={28} color={Colors.gray} />
-          <Text style={styles.uploadText}>Upload Receipt</Text>
-          <Text style={styles.uploadSub}>PNG, JPG or PDF up to 10MB</Text>
-        </TouchableOpacity>
-
-        {/* Notes */}
-        <Text style={styles.fieldLabel}>NOTES</Text>
-        <TextInput
-          style={styles.notesInput}
-          placeholder="Add details about the client visit..."
-          placeholderTextColor={Colors.gray}
-          value={notes}
-          onChangeText={setNotes}
-          multiline
-          numberOfLines={3}
-        />
-
-        {/* Submit */}
-        <TouchableOpacity style={styles.submitBtn} onPress={handleSubmit} disabled={loading}>
-          {loading
-            ? <ActivityIndicator color="#fff" />
-            : <Text style={styles.submitText}>Submit</Text>
-          }
-        </TouchableOpacity>
-
-        <View style={{ height: 30 }} />
+        {history.length === 0 ? (
+          <View style={styles.emptyBox}>
+            <Text style={styles.emptyText}>
+              No {isPetrol ? 'petrol' : 'travel'} records this month.
+            </Text>
+          </View>
+        ) : isPetrol ? (
+          history.map((a) => (
+            <View key={a._id} style={styles.histCard}>
+              <Text style={styles.histDate}>{formatFullDate(a.date)}</Text>
+              <View style={styles.histDivider} />
+              <View style={styles.histPetrolRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.histColHead}>Distance</Text>
+                  <Text style={styles.histColVal}>{(a.distance || 0)} Km</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.histColHead}>Amount</Text>
+                  <Text style={styles.histColVal}>{rupee(a.amount)}</Text>
+                </View>
+                <StatusBadge status={a.status} />
+              </View>
+            </View>
+          ))
+        ) : (
+          history.map((a) => (
+            <View key={a._id} style={styles.histCard}>
+              <View style={styles.histTopRow}>
+                <Text style={styles.histDate}>{formatFullDate(a.date)}</Text>
+                <StatusBadge status={a.status} />
+              </View>
+              <View style={styles.histDivider} />
+              <View style={styles.histInfoRow}>
+                <View style={styles.histCol}>
+                  <Text style={styles.histColHead}>From</Text>
+                  <Text style={styles.histColVal}>{a.fromLocation}</Text>
+                </View>
+                <View style={styles.histCol}>
+                  <Text style={styles.histColHead}>To</Text>
+                  <Text style={styles.histColVal}>{a.toLocation}</Text>
+                </View>
+                <View style={[styles.histCol, { alignItems: 'flex-end' }]}>
+                  <Text style={styles.histColHead}>Amount</Text>
+                  <Text style={styles.histColVal}>{rupee(a.amount)}</Text>
+                </View>
+              </View>
+              {a.notes ? (
+                <View style={styles.notesBar}>
+                  <Text style={styles.notesText}>
+                    <Text style={{ fontWeight: '700' }}>Notes: </Text>
+                    {a.notes}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ))
+        )}
       </ScrollView>
+
+      {/* MODALS */}
+      <Modal visible={showDate} transparent animationType="slide">
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowDate(false)}>
+          <Pressable style={styles.modalSheet} onPress={() => {}}>
+            <Text style={styles.modalTitle}>Select Date</Text>
+            <Calendar
+              onDayPress={(day: { dateString: string }) => {
+                setDate(day.dateString);
+                setShowDate(false);
+              }}
+              markedDates={
+                date ? { [date]: { selected: true, selectedColor: '#4CAF50' } } : {}
+              }
+              theme={{
+                todayTextColor: '#2E7D32',
+                arrowColor: '#2E7D32',
+                selectedDayBackgroundColor: '#4CAF50',
+              }}
+            />
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={showHistMonth} transparent animationType="fade">
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowHistMonth(false)}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>Select Month</Text>
+            <ScrollView>
+              {MONTHS_LONG.map((m, i) => (
+                <TouchableOpacity
+                  key={m}
+                  style={styles.modalRow}
+                  onPress={() => {
+                    setHistMonth(i + 1);
+                    setShowHistMonth(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.modalRowText,
+                      i === histMonth - 1 && { color: '#2E7D32', fontWeight: '700' },
+                    ]}
+                  >
+                    {m}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={showHistYear} transparent animationType="fade">
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowHistYear(false)}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>Select Year</Text>
+            {years.map((y) => (
+              <TouchableOpacity
+                key={y}
+                style={styles.modalRow}
+                onPress={() => {
+                  setHistYear(y);
+                  setShowHistYear(false);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.modalRowText,
+                    y === histYear && { color: '#2E7D32', fontWeight: '700' },
+                  ]}
+                >
+                  {y}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
+    </SafeAreaView>
+  );
+}
+
+/* ============ helpers ============ */
+function TypeCard({
+  active,
+  onPress,
+  icon,
+  title,
+  subtitle,
+}: {
+  active: boolean;
+  onPress: () => void;
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <TouchableOpacity
+      style={[styles.typeCard, active ? styles.typeCardActive : styles.typeCardInactive]}
+      onPress={onPress}
+      activeOpacity={0.85}
+    >
+      <View
+        style={[
+          styles.typeIconWrap,
+          { backgroundColor: active ? 'rgba(255,255,255,0.18)' : '#EFEFEF' },
+        ]}
+      >
+        {icon}
+      </View>
+      <Text style={[styles.typeTitle, { color: active ? '#FFFFFF' : '#1A1A1A' }]}>
+        {title}
+      </Text>
+      <Text
+        style={[styles.typeSubtitle, { color: active ? 'rgba(255,255,255,0.85)' : '#888' }]}
+      >
+        {subtitle}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+function StatusBadge({ status }: { status: AllowanceStatus }) {
+  const map: Record<AllowanceStatus, { bg: string; text: string }> = {
+    approved: { bg: '#4CAF50', text: 'Approved' },
+    pending: { bg: '#FFA726', text: 'Pending' },
+    rejected: { bg: '#F44336', text: 'Rejected' },
+  };
+  const conf = map[status] || map.pending;
+  return (
+    <View style={[styles.badge, { backgroundColor: conf.bg }]}>
+      <Text style={styles.badgeText}>{conf.text}</Text>
     </View>
   );
 }
 
+function SummaryCard({
+  color,
+  label,
+  amount,
+}: {
+  color: string;
+  label: string;
+  amount: number;
+}) {
+  return (
+    <View style={[styles.sumCard, { backgroundColor: color }]}>
+      <Text style={styles.sumCardLabel}>{label}</Text>
+      <Text style={styles.sumCardLabel}>AMOUNT</Text>
+      <Text style={styles.sumCardValue}>₹{(amount || 0).toLocaleString('en-IN')}</Text>
+    </View>
+  );
+}
+
+function BigCard({
+  color,
+  label,
+  value,
+}: {
+  color: string;
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={[styles.bigCard, { backgroundColor: color }]}>
+      <Text style={styles.bigCardLabel}>{label}</Text>
+      <Text style={styles.bigCardValue}>{value}</Text>
+    </View>
+  );
+}
+
+/* ============ styles ============ */
+const GREEN = '#4CAF50';
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  header: {
-    backgroundColor: Colors.primary,
-    paddingTop: 56, paddingBottom: 16,
-    paddingHorizontal: 20,
-  },
-  headerTitle: { color: '#fff', fontSize: 20, fontWeight: '700' },
-  scroll: { flex: 1, padding: 16 },
+  safe: { flex: 1, backgroundColor: '#FFFFFF' },
+
   sectionLabel: {
-    fontSize: 11, fontWeight: '700', color: Colors.gray,
-    letterSpacing: 1, marginTop: 16, marginBottom: 10,
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1A1A1A',
+    marginHorizontal: 16,
+    marginTop: 14,
+    marginBottom: 10,
   },
-  typeRow: { flexDirection: 'row', gap: 12, marginBottom: 8 },
+
+  typeRow: { flexDirection: 'row', paddingHorizontal: 16, marginBottom: 6 },
   typeCard: {
-    flex: 1, borderRadius: 12, padding: 16,
-    alignItems: 'center', backgroundColor: '#fff',
-    borderWidth: 2, borderColor: '#E0E0E0',
-    elevation: 2,
+    flex: 1,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 4,
   },
-  typeCardActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  typeCardTitle: { fontWeight: '700', fontSize: 15, marginTop: 6, color: Colors.text },
-  typeCardSub: { fontSize: 11, color: Colors.gray, marginTop: 2 },
-  purposeRow: { flexDirection: 'row', gap: 10, marginBottom: 8 },
-  purposeBtn: {
-    paddingHorizontal: 16, paddingVertical: 8,
-    borderRadius: 20, backgroundColor: '#E8F5E9',
-  },
-  purposeBtnActive: { backgroundColor: Colors.primary },
-  purposeText: { color: Colors.primary, fontWeight: '600', fontSize: 13 },
-  purposeTextActive: { color: '#fff' },
-  fieldLabel: {
-    fontSize: 10, fontWeight: '700', color: Colors.gray,
-    letterSpacing: 1, marginTop: 14, marginBottom: 6,
-  },
-  inputRow: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#fff', borderRadius: 8,
-    borderWidth: 1, borderColor: '#E0E0E0',
-    paddingHorizontal: 12,
-  },
-  inputIcon: { marginRight: 8 },
-  inputFlex: { flex: 1, fontSize: 14, color: Colors.text, paddingVertical: 12 },
-  twoCol: { flexDirection: 'row', gap: 12 },
-  halfCol: { flex: 1 },
-  dropdown: {
-    backgroundColor: '#fff', borderRadius: 8,
-    borderWidth: 1, borderColor: '#E0E0E0',
-    marginTop: 4, elevation: 4, zIndex: 999,
-  },
-  dropdownItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  dropdownText: { fontSize: 14, color: Colors.text },
-  uploadBox: {
-    borderWidth: 1.5, borderColor: '#E0E0E0', borderStyle: 'dashed',
-    borderRadius: 8, padding: 24, alignItems: 'center',
-    backgroundColor: '#FAFAFA', marginTop: 14,
-  },
-  uploadText: { color: Colors.text, fontWeight: '600', marginTop: 8 },
-  uploadSub: { color: Colors.gray, fontSize: 11, marginTop: 4 },
-  notesInput: {
-    backgroundColor: '#fff', borderRadius: 8,
-    borderWidth: 1, borderColor: '#E0E0E0',
-    padding: 12, fontSize: 14, color: Colors.text,
-    height: 90, textAlignVertical: 'top',
-  },
-  submitBtn: {
-    backgroundColor: Colors.primary, borderRadius: 10,
-    padding: 16, alignItems: 'center', marginTop: 20,
+  typeCardActive: {
+    backgroundColor: GREEN,
+    shadowColor: GREEN,
+    shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 8,
     elevation: 4,
   },
-  submitText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  typeCardInactive: {
+    backgroundColor: '#F4F4F4',
+    borderWidth: 1,
+    borderColor: '#EAEAEA',
+  },
+  typeIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  typeTitle: { fontSize: 14, fontWeight: '700' },
+  typeSubtitle: { fontSize: 11, marginTop: 2 },
+
+  form: { paddingHorizontal: 16, paddingTop: 14 },
+  label: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1A1A1A',
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  input: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 22,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: '#FFFFFF',
+    marginBottom: 14,
+  },
+  textInput: { flex: 1, fontSize: 14, color: '#1A1A1A', padding: 0 },
+  textArea: {
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 14,
+    padding: 14,
+    minHeight: 80,
+    textAlignVertical: 'top',
+    color: '#1A1A1A',
+    fontSize: 14,
+    marginBottom: 16,
+  },
+
+  submitBtn: {
+    backgroundColor: GREEN,
+    borderRadius: 26,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 4,
+    marginHorizontal: 30,
+    shadowColor: GREEN,
+    shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  submitBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+
+  /* MONTH PICKER ROW */
+  monthRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    marginTop: 22,
+    marginBottom: 12,
+  },
+  monthLabel: { fontSize: 13, color: '#1A1A1A', fontWeight: '700' },
+  picker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginLeft: 8,
+  },
+  pickerText: { fontSize: 12, color: '#333', marginRight: 4, fontWeight: '600' },
+
+  /* SUMMARY (travel — 3 cards) */
+  summaryRow: { flexDirection: 'row', paddingHorizontal: 12, marginBottom: 14 },
+  sumCard: {
+    flex: 1,
+    marginHorizontal: 4,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  sumCardLabel: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+  },
+  sumCardValue: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 6,
+  },
+
+  /* SUMMARY (petrol — 4 cards 2x2) */
+  summaryGrid: {
+    paddingHorizontal: 12,
+    marginBottom: 14,
+  },
+  summaryGridRow: {
+    flexDirection: 'row',
+    marginBottom: 8,
+  },
+  bigCard: {
+    flex: 1,
+    marginHorizontal: 4,
+    borderRadius: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  bigCardLabel: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textAlign: 'center',
+  },
+  bigCardValue: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '800',
+    marginTop: 10,
+  },
+
+  /* HISTORY */
+  historyHeading: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111',
+    marginTop: 10,
+    marginBottom: 10,
+    marginHorizontal: 16,
+  },
+  histCard: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
+    borderRadius: 14,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    padding: 14,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  histTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  histDate: { fontSize: 14, fontWeight: '700', color: '#1A1A1A' },
+  badge: {
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderRadius: 14,
+  },
+  badgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+  histDivider: { height: 1, backgroundColor: '#F0F0F0', marginVertical: 12 },
+  histInfoRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  histCol: { flex: 1 },
+  histColHead: { fontSize: 12, color: '#2E7D32', fontWeight: '700' },
+  histColVal: { fontSize: 13, color: '#1A1A1A', marginTop: 4 },
+  histPetrolRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+
+  notesBar: {
+    marginTop: 10,
+    backgroundColor: '#F4F4F4',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  notesText: { fontSize: 12, color: '#666' },
+
+  emptyBox: {
+    marginHorizontal: 16,
+    padding: 20,
+    backgroundColor: '#F5F7F6',
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  emptyText: { color: '#777', fontSize: 13 },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 20,
+    maxHeight: '75%',
+  },
+  modalTitle: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 8 },
+  modalRow: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  modalRowText: { fontSize: 14, color: '#222' },
 });

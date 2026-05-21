@@ -14,14 +14,13 @@ import {
   StatusBar,
   Dimensions,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { authAPI } from '../../services/api';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
-// ---------- Grid Background (matches Figma green grid) ----------
+// ---------- Grid Background (shared visual with login) ----------
 const GRID_SIZE = 28;
 function GridBackground() {
   const cols = Math.ceil(SCREEN_W / GRID_SIZE) + 1;
@@ -47,8 +46,6 @@ function GridBackground() {
       )),
     [rows]
   );
-
-  // tiny dots at intersections, like Figma
   const dots = useMemo(() => {
     const out: React.ReactNode[] = [];
     for (let r = 0; r < rows; r += 2) {
@@ -76,20 +73,17 @@ function GridBackground() {
   );
 }
 
-// ---------- Login Screen ----------
-export default function LoginScreen() {
+// ---------- Email Verify Screen ----------
+export default function EmailVerifyScreen() {
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [remember, setRemember] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const validateEmail = (e: string) =>
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
 
-  const handleLogin = async () => {
-    if (!email.trim() || !password) {
-      Alert.alert('Missing fields', 'Please enter your email and password.');
+  const handleSendOtp = async () => {
+    if (!email.trim()) {
+      Alert.alert('Missing email', 'Please enter your registered email.');
       return;
     }
     if (!validateEmail(email)) {
@@ -99,19 +93,18 @@ export default function LoginScreen() {
 
     try {
       setLoading(true);
-      const res = await authAPI.login(email.trim(), password);
-      await AsyncStorage.setItem('token', res.data.token);
-      await AsyncStorage.setItem('user', JSON.stringify(res.data.user));
-      if (remember) {
-        await AsyncStorage.setItem('rememberedEmail', email.trim());
-      } else {
-        await AsyncStorage.removeItem('rememberedEmail');
-      }
-      router.replace('/(tabs)/');
+      const res = await authAPI.sendOtp(email.trim());
+      Alert.alert(
+        'OTP Sent',
+        res?.data?.message ||
+          `An OTP has been sent to ${email.trim()}. Please check your inbox.`,
+        [{ text: 'OK', onPress: () => router.back() }]
+      );
     } catch (err: any) {
       Alert.alert(
-        'Login Failed',
-        err?.response?.data?.message || 'Invalid credentials'
+        'Could not send OTP',
+        err?.response?.data?.message ||
+          'Something went wrong. Please try again.'
       );
     } finally {
       setLoading(false);
@@ -145,14 +138,29 @@ export default function LoginScreen() {
             />
           </View>
 
-          {/* Title */}
-          <Text style={styles.title}>Sign in to{'\n'}your Account</Text>
-          <Text style={styles.subtitle}>
-            Enter your email and password to log in
-          </Text>
-
           {/* Card */}
           <View style={styles.card}>
+            {/* Header row: back arrow + title */}
+            <View style={styles.headerRow}>
+              <TouchableOpacity
+                style={styles.backBtn}
+                onPress={() => router.back()}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="chevron-back" size={22} color="#222" />
+              </TouchableOpacity>
+              <Text style={styles.cardTitle}>Change your Password</Text>
+              <View style={styles.backBtn} />
+            </View>
+
+            <Text style={styles.cardSubtitle}>
+              We'll send an OTP to your work email
+            </Text>
+
+            {/* Email label */}
+            <Text style={styles.label}>Your Registered Email</Text>
+
             {/* Email input */}
             <View style={styles.inputWrap}>
               <TextInput
@@ -167,70 +175,26 @@ export default function LoginScreen() {
               />
             </View>
 
-            {/* Password input */}
-            <View style={styles.inputWrap}>
-              <TextInput
-                style={[styles.input, { paddingRight: 44 }]}
-                placeholder="Enter Password"
-                placeholderTextColor="#B7B7B7"
-                secureTextEntry={!showPassword}
-                value={password}
-                onChangeText={setPassword}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TouchableOpacity
-                onPress={() => setShowPassword(!showPassword)}
-                style={styles.eyeBtn}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Ionicons
-                  name={showPassword ? 'eye-outline' : 'eye-off-outline'}
-                  size={18}
-                  color="#9A9A9A"
-                />
-              </TouchableOpacity>
+            {/* Info Box */}
+            <View style={styles.infoBox}>
+              <View style={styles.infoBoxAccent} />
+              <Text style={styles.infoText}>
+                An OTP will be sent to this email to verify your identity
+                before setting a new password.
+              </Text>
             </View>
 
-            {/* Remember + Forgot */}
-            <View style={styles.rowBetween}>
-              <TouchableOpacity
-                style={styles.rememberRow}
-                onPress={() => setRemember(!remember)}
-                activeOpacity={0.7}
-              >
-                <View
-                  style={[
-                    styles.checkbox,
-                    remember && styles.checkboxChecked,
-                  ]}
-                >
-                  {remember && (
-                    <Ionicons name="checkmark" size={11} color="#fff" />
-                  )}
-                </View>
-                <Text style={styles.rememberText}>Remember me</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => router.push('/(auth)/email-verify')}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.forgotText}>Forgot password?</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Log In Button */}
+            {/* Send OTP Button */}
             <TouchableOpacity
-              style={[styles.loginBtn, loading && { opacity: 0.85 }]}
-              onPress={handleLogin}
+              style={[styles.sendBtn, loading && { opacity: 0.85 }]}
+              onPress={handleSendOtp}
               disabled={loading}
               activeOpacity={0.9}
             >
               {loading ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.loginText}>Log In</Text>
+                <Text style={styles.sendText}>Send OTP</Text>
               )}
             </TouchableOpacity>
           </View>
@@ -240,17 +204,16 @@ export default function LoginScreen() {
   );
 }
 
-// ---------- Theme ----------
-const GREEN_BG = '#2E8C2C';        // base green from Figma
-const GREEN_BG_DARK = '#1F6A1E';   // darker tone for gradient/edge feel
-const GREEN_PRIMARY = '#3FAE3B';   // button + accents
+// ---------- Theme (must match login screen) ----------
+const GREEN_BG = '#2E8C2C';
+const GREEN_BG_DARK = '#1F6A1E';
+const GREEN_PRIMARY = '#3FAE3B';
 const GRID_LINE = 'rgba(255,255,255,0.06)';
 const GRID_DOT = 'rgba(255,255,255,0.18)';
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: GREEN_BG },
 
-  // grid pattern
   gridVLine: {
     position: 'absolute',
     top: 0,
@@ -276,47 +239,61 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 80,
+    paddingTop: 90,
     paddingBottom: 40,
   },
 
-  logoWrap: {
-    alignItems: 'center',
-    marginBottom: 28,
-  },
+  logoWrap: { alignItems: 'center', marginBottom: 40 },
   logo: {
     // matches logo.png native ratio 145:40 (~3.6:1)
-    width: 200,
-    height: 56,
-  },
-
-  title: {
-    color: '#FFFFFF',
-    fontSize: 28,
-    fontWeight: '800',
-    textAlign: 'center',
-    lineHeight: 36,
-    letterSpacing: 0.2,
-  },
-  subtitle: {
-    color: 'rgba(255,255,255,0.92)',
-    fontSize: 12.5,
-    marginTop: 10,
-    marginBottom: 28,
-    textAlign: 'center',
+    width: 190,
+    height: 52,
   },
 
   card: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     paddingHorizontal: 20,
-    paddingTop: 22,
+    paddingTop: 18,
     paddingBottom: 22,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.18,
     shadowRadius: 18,
     elevation: 12,
+  },
+
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  backBtn: {
+    width: 28,
+    height: 28,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  cardTitle: {
+    flex: 1,
+    textAlign: 'center',
+    color: '#1A1A1A',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  cardSubtitle: {
+    textAlign: 'center',
+    color: '#7E7E7E',
+    fontSize: 12,
+    marginBottom: 22,
+  },
+
+  label: {
+    color: '#3A3A3A',
+    fontSize: 12.5,
+    fontWeight: '600',
+    marginBottom: 8,
   },
 
   inputWrap: {
@@ -333,46 +310,35 @@ const styles = StyleSheet.create({
     fontSize: 13.5,
     color: '#111',
   },
-  eyeBtn: {
+
+  infoBox: {
+    flexDirection: 'row',
+    backgroundColor: '#F4FBF3',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 22,
+    overflow: 'hidden',
+  },
+  infoBoxAccent: {
     position: 'absolute',
-    right: 8,
+    left: 0,
     top: 0,
     bottom: 0,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  rowBetween: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 4,
-    marginBottom: 22,
-  },
-  rememberRow: { flexDirection: 'row', alignItems: 'center' },
-  checkbox: {
-    width: 16,
-    height: 16,
-    borderWidth: 1.4,
-    borderColor: '#C9C9C9',
-    borderRadius: 3,
-    marginRight: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkboxChecked: {
+    width: 3,
     backgroundColor: GREEN_PRIMARY,
-    borderColor: GREEN_PRIMARY,
+    borderTopLeftRadius: 8,
+    borderBottomLeftRadius: 8,
   },
-  rememberText: { color: '#7E7E7E', fontSize: 12.5 },
-  forgotText: {
-    color: GREEN_PRIMARY,
-    fontSize: 12.5,
-    fontWeight: '600',
+  infoText: {
+    color: '#4A4A4A',
+    fontSize: 11.5,
+    lineHeight: 16,
+    flex: 1,
+    marginLeft: 6,
   },
 
-  loginBtn: {
+  sendBtn: {
     backgroundColor: GREEN_PRIMARY,
     borderRadius: 999,
     paddingVertical: 15,
@@ -384,7 +350,7 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 5,
   },
-  loginText: {
+  sendText: {
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '700',

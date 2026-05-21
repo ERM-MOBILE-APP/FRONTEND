@@ -1,266 +1,379 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity,
-  StyleSheet, ScrollView, Alert, ActivityIndicator, Modal,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  Image,
+  Alert,
+  Modal,
+  Pressable,
+  TextInput,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons, Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { profileAPI } from '../../services/api';
-import { Colors } from '../../constants/Colors';
+
+type UserProfile = {
+  _id?: string;
+  userId?: string;
+  name?: string;
+  designation?: string;
+  email?: string;
+  phone?: string;
+  dob?: string;
+  gender?: string;
+  bloodGroup?: string;
+  photoUrl?: string;
+  address?: string;
+};
 
 export default function ProfileScreen() {
-  const [profile, setProfile] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [editMode, setEditMode] = useState(false);
+  const [user, setUser] = useState<UserProfile>({});
+  const [editing, setEditing] = useState<keyof UserProfile | null>(null);
+  const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
-  const [editData, setEditData] = useState<any>({});
 
-  useEffect(() => { loadProfile(); }, []);
-
-  const loadProfile = async () => {
+  const loadProfile = useCallback(async () => {
+    // Try local first for fast paint
     try {
-      setLoading(true);
+      const cached = await AsyncStorage.getItem('user');
+      if (cached) setUser(JSON.parse(cached));
+    } catch {}
+
+    try {
       const res = await profileAPI.getProfile();
-      setProfile(res.data);
-      setEditData({
-        name: res.data.name,
-        email: res.data.email,
-        phone: res.data.phone,
-        dob: res.data.dob,
-        gender: res.data.gender,
-        designation: res.data.designation,
-      });
-    } catch (err) {
-      Alert.alert('Error', 'Failed to load profile');
-    } finally {
-      setLoading(false);
+      const data = res?.data || {};
+      setUser(data);
+      AsyncStorage.setItem('user', JSON.stringify(data)).catch(() => {});
+    } catch {
+      // ignore — show cached/seeded data
     }
+  }, []);
+
+  useEffect(() => {
+    loadProfile();
+  }, [loadProfile]);
+
+  const handleLogout = async () => {
+    Alert.alert('Log out', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log out',
+        style: 'destructive',
+        onPress: async () => {
+          await AsyncStorage.multiRemove(['token', 'user']);
+          router.replace('/(auth)/login' as any);
+        },
+      },
+    ]);
   };
 
-  const handleSave = async () => {
+  const openEdit = (field: keyof UserProfile) => {
+    setEditing(field);
+    setEditValue(String(user[field] || ''));
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    setSaving(true);
     try {
-      setSaving(true);
-      const res = await profileAPI.updateProfile(editData);
-      setProfile({ ...profile, ...res.data.user });
-      setEditMode(false);
-      Alert.alert('✅ Success', 'Profile updated!');
-    } catch {
-      Alert.alert('Error', 'Failed to update profile');
+      const payload: any = { [editing]: editValue.trim() };
+      const res = await profileAPI.updateProfile(payload);
+      if (res?.data?.user) {
+        setUser(res.data.user);
+        AsyncStorage.setItem('user', JSON.stringify(res.data.user)).catch(() => {});
+      } else {
+        setUser((u) => ({ ...u, [editing]: editValue.trim() }));
+      }
+      setEditing(null);
+    } catch (err: any) {
+      Alert.alert(
+        'Error',
+        err?.response?.data?.message || 'Could not update'
+      );
     } finally {
       setSaving(false);
     }
   };
 
-  const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout', style: 'destructive', onPress: async () => {
-          await AsyncStorage.clear();
-          router.replace('/(auth)/login');
-        }
-      }
-    ]);
-  };
-
-  const getInitials = (name: string) =>
-    name?.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2) || 'U';
-
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={Colors.primary} />
-        <Text style={styles.loadingText}>Loading profile...</Text>
-      </View>
-    );
-  }
+  const initial = (user.name && user.name[0]) || 'V';
 
   return (
-    <View style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false}>
+    <SafeAreaView edges={['top']} style={styles.safe}>
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: 100 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* GREEN HEADER */}
+        <View style={styles.greenHeader} />
 
-        {/* Header */}
-        <View style={styles.headerCard}>
-          <View style={styles.avatarRow}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{getInitials(profile?.name)}</Text>
-            </View>
-            <View style={styles.headerInfo}>
-              <Text style={styles.userName}>{profile?.name}</Text>
-              <Text style={styles.userId}>Employee ID: #{profile?.userId}</Text>
-              <View style={styles.statusBadge}>
-                <View style={styles.statusDot} />
-                <Text style={styles.statusText}>{profile?.status} • {profile?.workType}</Text>
-              </View>
-            </View>
-            <TouchableOpacity onPress={() => setEditMode(true)} style={styles.editIconBtn}>
-              <Ionicons name="pencil-outline" size={18} color="#fff" />
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.designation}>{profile?.designation}</Text>
-        </View>
-
-        {/* Balance Cards */}
-        <View style={styles.balanceRow}>
-          <View style={[styles.balanceCard, { backgroundColor: '#1a237e' }]}>
-            <View style={styles.balanceCircle}>
-              <Text style={styles.balanceNum}>{profile?.leaveBalance ?? 0}</Text>
-            </View>
-            <Text style={styles.balanceLabel}>Leave Balance</Text>
-          </View>
-          <View style={[styles.balanceCard, { backgroundColor: '#6a1b9a' }]}>
-            <View style={[styles.balanceCircle, { borderColor: '#ce93d8' }]}>
-              <Text style={styles.balanceNum}>{profile?.permissionBalance ?? 0}</Text>
-            </View>
-            <Text style={styles.balanceLabel}>Permission Balance</Text>
+        {/* AVATAR */}
+        <View style={styles.avatarWrap}>
+          <View style={styles.avatar}>
+            {user.photoUrl ? (
+              <Image source={{ uri: user.photoUrl }} style={styles.avatarImg} />
+            ) : (
+              <Text style={styles.avatarInitial}>{initial}</Text>
+            )}
           </View>
         </View>
 
-        {/* Personal Info */}
-        <View style={styles.infoCard}>
-          <View style={styles.infoHeader}>
-            <Ionicons name="person-outline" size={18} color={Colors.primary} />
-            <Text style={styles.infoTitle}>Personal Info</Text>
-          </View>
-          <View style={styles.infoGrid}>
-            {[
-              { label: 'Full Name', value: profile?.name },
-              { label: 'DOB', value: profile?.dob },
-              { label: 'Email Address', value: profile?.email },
-              { label: 'Gender', value: profile?.gender },
-              { label: 'Phone', value: profile?.phone },
-              { label: 'Designation', value: profile?.designation },
-            ].map((item, i) => (
-              <View key={i} style={styles.infoItem}>
-                <Text style={styles.infoLabel}>{item.label}</Text>
-                <Text style={styles.infoValue}>{item.value || '—'}</Text>
-              </View>
-            ))}
-          </View>
+        {/* NAME + DESIGNATION */}
+        <Text style={styles.name}>{user.name || 'Vijay'}</Text>
+        <Text style={styles.designation}>
+          {(user.designation || 'UI UX Designer').toUpperCase()}
+        </Text>
+
+        {/* INFO CARDS */}
+        <View style={styles.infoList}>
+          <InfoRow
+            label="Employee ID"
+            value={user.userId || 'TES005'}
+            editable={false}
+          />
+          <InfoRow
+            label="Mobile No"
+            value={user.phone || '+91 9988776655'}
+            onPress={() => openEdit('phone')}
+          />
+          <InfoRow
+            label="Email ID"
+            value={user.email || 'Bhvhjh@Gmail.Com'}
+            onPress={() => openEdit('email')}
+          />
+          <InfoRow
+            label="DOB"
+            value={user.dob || '20-09-2005'}
+            onPress={() => openEdit('dob')}
+          />
+          <InfoRow
+            label="Blood Group"
+            value={user.bloodGroup || 'A+'}
+            onPress={() => openEdit('bloodGroup')}
+          />
         </View>
 
-        {/* Logout Button */}
-        <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-          <Ionicons name="log-out-outline" size={20} color="#F44336" />
-          <Text style={styles.logoutText}>Logout</Text>
+        {/* LOG OUT */}
+        <TouchableOpacity
+          style={styles.logoutRow}
+          onPress={handleLogout}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.logoutText}>Log out</Text>
+          <Feather name="log-out" size={16} color="#F44336" style={{ marginLeft: 4 }} />
         </TouchableOpacity>
-
-        <View style={{ height: 30 }} />
       </ScrollView>
 
-      {/* Edit Modal */}
-      <Modal visible={editMode} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Edit Profile</Text>
-              <TouchableOpacity onPress={() => setEditMode(false)}>
-                <Ionicons name="close-outline" size={26} color={Colors.text} />
+      {/* EDIT MODAL */}
+      <Modal visible={!!editing} transparent animationType="slide">
+        <Pressable style={styles.modalBackdrop} onPress={() => setEditing(null)}>
+          <Pressable style={styles.modalSheet} onPress={() => {}}>
+            <Text style={styles.modalTitle}>
+              Edit {editing ? prettyLabel(editing) : ''}
+            </Text>
+            <TextInput
+              value={editValue}
+              onChangeText={setEditValue}
+              autoFocus
+              placeholder={`Enter ${editing ? prettyLabel(editing) : ''}`}
+              placeholderTextColor="#aaa"
+              style={styles.editInput}
+            />
+            <View style={{ flexDirection: 'row', marginTop: 12 }}>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.cancelBtn]}
+                onPress={() => setEditing(null)}
+              >
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.saveBtn, saving && { opacity: 0.6 }]}
+                onPress={saveEdit}
+                disabled={saving}
+              >
+                <Text style={styles.saveBtnText}>
+                  {saving ? 'Saving...' : 'Save'}
+                </Text>
               </TouchableOpacity>
             </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {[
-                { label: 'Full Name', key: 'name' },
-                { label: 'Designation', key: 'designation' },
-                { label: 'Email Address', key: 'email' },
-                { label: 'Phone', key: 'phone' },
-                { label: 'Date of Birth', key: 'dob' },
-                { label: 'Gender', key: 'gender' },
-              ].map(field => (
-                <View key={field.key} style={styles.modalField}>
-                  <Text style={styles.modalLabel}>{field.label}</Text>
-                  <TextInput
-                    style={styles.modalInput}
-                    value={editData[field.key]}
-                    onChangeText={val => setEditData({ ...editData, [field.key]: val })}
-                    placeholder={`Enter ${field.label}`}
-                    placeholderTextColor={Colors.gray}
-                  />
-                </View>
-              ))}
-              <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={saving}>
-                {saving
-                  ? <ActivityIndicator color="#fff" />
-                  : <Text style={styles.saveText}>Save Changes</Text>}
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
+          </Pressable>
+        </Pressable>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 
+function prettyLabel(key: string) {
+  const map: Record<string, string> = {
+    phone: 'Mobile No',
+    email: 'Email ID',
+    dob: 'DOB',
+    bloodGroup: 'Blood Group',
+    name: 'Name',
+    designation: 'Designation',
+    address: 'Address',
+  };
+  return map[key] || key;
+}
+
+function InfoRow({
+  label,
+  value,
+  onPress,
+  editable = true,
+}: {
+  label: string;
+  value: string;
+  onPress?: () => void;
+  editable?: boolean;
+}) {
+  const content = (
+    <View style={styles.infoCard}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
+  );
+  if (!editable || !onPress) return content;
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.85}>
+      {content}
+    </TouchableOpacity>
+  );
+}
+
+const GREEN = '#4CAF50';
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  loadingText: { marginTop: 12, color: Colors.gray },
-  headerCard: { backgroundColor: Colors.primaryDark, padding: 20, paddingTop: 56 },
-  avatarRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  safe: { flex: 1, backgroundColor: '#FFFFFF' },
+
+  greenHeader: {
+    backgroundColor: GREEN,
+    height: 140,
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 18,
+  },
+
+  avatarWrap: {
+    alignItems: 'center',
+    marginTop: -65,
+  },
   avatar: {
-    width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff',
-    justifyContent: 'center', alignItems: 'center', marginRight: 14,
+    width: 130,
+    height: 130,
+    borderRadius: 65,
+    backgroundColor: '#E8F5E9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 4,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 10,
+    elevation: 6,
+    overflow: 'hidden',
   },
-  avatarText: { fontSize: 20, fontWeight: '800', color: Colors.primaryDark },
-  headerInfo: { flex: 1 },
-  userName: { color: '#fff', fontSize: 18, fontWeight: '700' },
-  userId: { color: '#c8e6c9', fontSize: 12, marginTop: 2 },
-  statusBadge: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primary,
-    borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3,
-    alignSelf: 'flex-start', marginTop: 6,
+  avatarImg: { width: '100%', height: '100%' },
+  avatarInitial: {
+    fontSize: 50,
+    color: '#2E7D32',
+    fontWeight: '800',
   },
-  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#69f0ae', marginRight: 4 },
-  statusText: { color: '#fff', fontSize: 10, fontWeight: '600' },
-  editIconBtn: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center',
+
+  name: {
+    textAlign: 'center',
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#1A1A1A',
+    marginTop: 12,
   },
-  designation: { color: '#fff', fontSize: 16, fontWeight: '600', marginTop: 4 },
-  balanceRow: { flexDirection: 'row', gap: 12, padding: 16 },
-  balanceCard: { flex: 1, borderRadius: 14, padding: 20, alignItems: 'center', elevation: 4 },
-  balanceCircle: {
-    width: 56, height: 56, borderRadius: 28, borderWidth: 3,
-    borderColor: '#7986cb', justifyContent: 'center', alignItems: 'center', marginBottom: 10,
+  designation: {
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#2E7D32',
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginTop: 4,
+    marginBottom: 18,
   },
-  balanceNum: { color: '#fff', fontSize: 20, fontWeight: '800' },
-  balanceLabel: { color: '#fff', fontSize: 13, fontWeight: '600', textAlign: 'center' },
+
+  infoList: {
+    paddingHorizontal: 16,
+  },
   infoCard: {
-    backgroundColor: '#fff', marginHorizontal: 16,
-    borderRadius: 14, padding: 16, elevation: 2,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 30,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 6,
+    elevation: 2,
   },
-  infoHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  infoTitle: { fontSize: 15, fontWeight: '700', color: Colors.text, marginLeft: 8 },
-  infoGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  infoItem: { width: '50%', marginBottom: 16, paddingRight: 8 },
-  infoLabel: { fontSize: 11, color: Colors.gray, marginBottom: 4 },
-  infoValue: { fontSize: 13, fontWeight: '600', color: Colors.text },
-  logoutBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    margin: 16, padding: 14, backgroundColor: '#fff',
-    borderRadius: 12, borderWidth: 1, borderColor: '#FFCDD2', gap: 8, elevation: 1,
+  infoLabel: { fontSize: 12, color: '#777', fontWeight: '500' },
+  infoValue: { fontSize: 14, color: '#1A1A1A', fontWeight: '700' },
+
+  logoutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 22,
+    marginTop: 8,
   },
-  logoutText: { color: '#F44336', fontWeight: '700', fontSize: 15 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalCard: {
-    backgroundColor: '#fff', borderTopLeftRadius: 24,
-    borderTopRightRadius: 24, padding: 24, maxHeight: '85%',
+  logoutText: {
+    color: '#F44336',
+    fontSize: 14,
+    fontWeight: '700',
   },
-  modalHeader: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', marginBottom: 20,
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
   },
-  modalTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
-  modalField: { marginBottom: 14 },
-  modalLabel: { fontSize: 12, color: Colors.gray, marginBottom: 6, fontWeight: '600' },
-  modalInput: {
-    borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8,
-    padding: 12, fontSize: 14, color: Colors.text,
+  modalSheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 20,
+    maxHeight: '60%',
   },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111',
+    marginBottom: 12,
+  },
+  editInput: {
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: '#1A1A1A',
+  },
+  modalBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 22,
+    alignItems: 'center',
+    marginHorizontal: 4,
+  },
+  cancelBtn: {
+    backgroundColor: '#F0F0F0',
+  },
+  cancelBtnText: { color: '#1A1A1A', fontWeight: '700', fontSize: 13 },
   saveBtn: {
-    backgroundColor: Colors.primary, borderRadius: 10,
-    padding: 16, alignItems: 'center', marginTop: 8, marginBottom: 20,
+    backgroundColor: GREEN,
   },
-  saveText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  saveBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
 });

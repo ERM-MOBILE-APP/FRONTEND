@@ -33,11 +33,20 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="attendance"
+        options={{
+          title: 'Attendance',
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="person-outline" size={22} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="leave"
         options={{
           title: 'Leave',
           tabBarIcon: ({ color }) => (
-            <Ionicons name="add-circle-outline" size={26} color={color} />
+            <Ionicons name="add-circle-outline" size={28} color={color} />
           ),
         }}
       />
@@ -51,21 +60,19 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="payslip"
-        options={{
-          title: 'Pay Slip',
-          tabBarIcon: ({ color }) => (
-            <Ionicons name="receipt-outline" size={22} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="profile"
         options={{
           title: 'Profile',
           tabBarIcon: ({ color }) => (
             <Ionicons name="person-circle-outline" size={24} color={color} />
           ),
+        }}
+      />
+      <Tabs.Screen
+        name="payslip"
+        options={{
+          href: null,
+          title: 'Pay Slip',
         }}
       />
     </Tabs>

@@ -1,0 +1,267 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
+import { notificationAPI } from '../services/api';
+
+type NotificationItem = {
+  _id: string;
+  title: string;
+  body: string;
+  type: string;
+  isRead: boolean;
+  link?: string;
+  createdAt: string;
+};
+
+const TYPE_EDGE: Record<string, string> = {
+  leave: '#4CAF50',
+  attendance: '#1565C0',
+  allowance: '#FFA726',
+  payslip: '#6A1B9A',
+  announcement: '#2E7D32',
+  general: '#9E9E9E',
+};
+
+const FALLBACK: NotificationItem[] = Array.from({ length: 5 }).map((_, i) => ({
+  _id: `f${i}`,
+  title: 'Leave Approved',
+  body: 'Your annual leave request for Oct 12-15 has been approved by the manager.',
+  type: 'leave',
+  isRead: false,
+  createdAt: new Date(Date.now() - (i + 1) * 2 * 3600 * 1000).toISOString(),
+}));
+
+export default function NotificationsScreen() {
+  const [items, setItems] = useState<NotificationItem[]>(FALLBACK);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await notificationAPI.list({ limit: 50 });
+      const list = res?.data?.items;
+      if (Array.isArray(list) && list.length > 0) setItems(list);
+    } catch {
+      // keep fallback
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
+
+  const markAllRead = async () => {
+    try {
+      await notificationAPI.markAllRead();
+      setItems((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    } catch {}
+  };
+
+  const openNotification = async (n: NotificationItem) => {
+    if (!n.isRead && !n._id.startsWith('f')) {
+      try {
+        await notificationAPI.markAsRead(n._id);
+      } catch {}
+    }
+    setItems((prev) =>
+      prev.map((x) => (x._id === n._id ? { ...x, isRead: true } : x))
+    );
+    if (n.link) {
+      router.push(n.link as any);
+    }
+  };
+
+  const formatRelative = (iso: string) => {
+    try {
+      const diff = Date.now() - new Date(iso).getTime();
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      const days = Math.floor(hrs / 24);
+      if (days < 7) return `${days}d ago`;
+      const weeks = Math.floor(days / 7);
+      return `${weeks}w ago`;
+    } catch {
+      return '';
+    }
+  };
+
+  return (
+    <SafeAreaView edges={['top']} style={styles.safe}>
+      {/* TOP BAR */}
+      <View style={styles.topBar}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => router.back()}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="arrow-back" size={22} color="#1A1A1A" />
+        </TouchableOpacity>
+
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>Notification</Text>
+          <Ionicons
+            name="notifications"
+            size={18}
+            color="#1A1A1A"
+            style={{ marginLeft: 6 }}
+          />
+        </View>
+
+        <TouchableOpacity
+          style={styles.markAllBtn}
+          onPress={markAllRead}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="checkmark-done" size={20} color="#2E7D32" />
+        </TouchableOpacity>
+      </View>
+
+      {/* LIST */}
+      <ScrollView
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 40 }}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2E7D32" />
+        }
+        showsVerticalScrollIndicator={false}
+      >
+        {items.length === 0 ? (
+          <View style={styles.emptyBox}>
+            <Ionicons name="notifications-off-outline" size={36} color="#BDBDBD" />
+            <Text style={styles.emptyText}>You have no notifications.</Text>
+          </View>
+        ) : (
+          items.map((n) => (
+            <TouchableOpacity
+              key={n._id}
+              activeOpacity={0.85}
+              onPress={() => openNotification(n)}
+              style={[
+                styles.card,
+                {
+                  borderLeftColor: TYPE_EDGE[n.type] || TYPE_EDGE.general,
+                  backgroundColor: n.isRead ? '#FFFFFF' : '#F1F8F2',
+                },
+              ]}
+            >
+              <Text style={styles.cardTitle}>{n.title}</Text>
+              <Text style={styles.cardBody}>{n.body}</Text>
+              <View style={styles.metaRow}>
+                <View style={styles.metaDot} />
+                <Text style={styles.metaText}>{formatRelative(n.createdAt)}</Text>
+                {!n.isRead && <View style={styles.unreadPill} />}
+              </View>
+            </TouchableOpacity>
+          ))
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const GREEN = '#4CAF50';
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: '#FFFFFF' },
+
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  backBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  titleRow: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  title: { fontSize: 17, fontWeight: '800', color: '#1A1A1A' },
+  markAllBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    marginBottom: 12,
+    borderLeftWidth: 5,
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  cardTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#1A1A1A',
+  },
+  cardBody: {
+    fontSize: 12.5,
+    color: '#555',
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  metaDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#2E7D32',
+    marginRight: 6,
+  },
+  metaText: {
+    fontSize: 11,
+    color: '#2E7D32',
+    fontWeight: '600',
+  },
+  unreadPill: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: GREEN,
+    marginLeft: 8,
+  },
+
+  emptyBox: {
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  emptyText: { color: '#777', marginTop: 8, fontSize: 13 },
+});
