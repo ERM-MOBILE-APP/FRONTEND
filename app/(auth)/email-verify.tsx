@@ -81,6 +81,8 @@ export default function EmailVerifyScreen() {
   const validateEmail = (e: string) =>
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
 
+  const canSubmit = email.trim().length > 0 && validateEmail(email) && !loading;
+
   const handleSendOtp = async () => {
     if (!email.trim()) {
       Alert.alert('Missing email', 'Please enter your registered email.');
@@ -98,7 +100,16 @@ export default function EmailVerifyScreen() {
         'OTP Sent',
         res?.data?.message ||
           `An OTP has been sent to ${email.trim()}. Please check your inbox.`,
-        [{ text: 'OK', onPress: () => router.back() }]
+        [
+          {
+            text: 'Enter OTP',
+            onPress: () =>
+              router.push({
+                pathname: '/(auth)/otp',
+                params: { email: email.trim() },
+              }),
+          },
+        ]
       );
     } catch (err: any) {
       Alert.alert(
@@ -186,9 +197,9 @@ export default function EmailVerifyScreen() {
 
             {/* Send OTP Button */}
             <TouchableOpacity
-              style={[styles.sendBtn, loading && { opacity: 0.85 }]}
+              style={[styles.sendBtn, !canSubmit && styles.sendBtnDisabled]}
               onPress={handleSendOtp}
-              disabled={loading}
+              disabled={!canSubmit}
               activeOpacity={0.9}
             >
               {loading ? (
@@ -239,11 +250,11 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 90,
-    paddingBottom: 40,
+    paddingVertical: 40,
+    justifyContent: 'center', // vertically center card like Figma
   },
 
-  logoWrap: { alignItems: 'center', marginBottom: 40 },
+  logoWrap: { alignItems: 'center', marginBottom: 28 },
   logo: {
     // matches logo.png native ratio 145:40 (~3.6:1)
     width: 190,
@@ -349,6 +360,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     shadowRadius: 10,
     elevation: 5,
+  },
+  sendBtnDisabled: {
+    backgroundColor: '#C6E5BF',
+    shadowOpacity: 0,
+    elevation: 0,
   },
   sendText: {
     color: '#FFFFFF',

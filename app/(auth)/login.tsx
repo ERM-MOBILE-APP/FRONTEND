@@ -87,6 +87,12 @@ export default function LoginScreen() {
   const validateEmail = (e: string) =>
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
 
+  const canSubmit =
+    email.trim().length > 0 &&
+    password.length > 0 &&
+    validateEmail(email) &&
+    !loading;
+
   const handleLogin = async () => {
     if (!email.trim() || !password) {
       Alert.alert('Missing fields', 'Please enter your email and password.');
@@ -222,9 +228,9 @@ export default function LoginScreen() {
 
             {/* Log In Button */}
             <TouchableOpacity
-              style={[styles.loginBtn, loading && { opacity: 0.85 }]}
+              style={[styles.loginBtn, !canSubmit && styles.loginBtnDisabled]}
               onPress={handleLogin}
-              disabled={loading}
+              disabled={!canSubmit}
               activeOpacity={0.9}
             >
               {loading ? (
@@ -276,8 +282,8 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 80,
-    paddingBottom: 40,
+    paddingVertical: 40,
+    justifyContent: 'center', // vertically center card like Figma
   },
 
   logoWrap: {
@@ -383,6 +389,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     shadowRadius: 10,
     elevation: 5,
+  },
+  loginBtnDisabled: {
+    backgroundColor: '#C6E5BF',
+    shadowOpacity: 0,
+    elevation: 0,
   },
   loginText: {
     color: '#FFFFFF',
