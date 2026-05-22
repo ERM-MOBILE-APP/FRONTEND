@@ -32,29 +32,13 @@ type Announcement = {
   createdAt: string;
 };
 
-const FALLBACK_ANNOUNCEMENTS: Announcement[] = [
-  {
-    _id: 'a1',
-    title: 'Office Holiday Notice',
-    body: 'Office will remain closed for the upcoming public holiday...',
-    postedBy: 'HR',
-    createdAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
-  },
-  {
-    _id: 'a2',
-    title: 'Office Holiday Notice',
-    body: 'Office will remain closed for the upcoming public holiday...',
-    postedBy: 'HR',
-    createdAt: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
-  },
-];
-
 export default function HomeScreen() {
   const [user, setUser] = useState<any>(null);
   const [now, setNow] = useState(new Date());
   const [today, setToday] = useState<TodayData>({});
-  const [announcements, setAnnouncements] =
-    useState<Announcement[]>(FALLBACK_ANNOUNCEMENTS);
+  // Start empty — only show real announcements from the API. If the API
+  // returns nothing we render an empty-state below instead of fake data.
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const checkedIn = !!today.checkIn;
@@ -79,11 +63,11 @@ export default function HomeScreen() {
   const refreshAnnouncements = useCallback(async () => {
     try {
       const res = await announcementAPI.list();
-      if (Array.isArray(res?.data) && res.data.length > 0) {
-        setAnnouncements(res.data);
-      }
+      // Always trust the server — set whatever it returned (even if empty)
+      // so deleted announcements actually disappear.
+      setAnnouncements(Array.isArray(res?.data) ? res.data : []);
     } catch {
-      // fallback already set
+      // network/server error → leave the current list alone
     }
   }, []);
 
@@ -297,17 +281,25 @@ export default function HomeScreen() {
               Latest company updates and important notices
             </Text>
 
-            {announcements.slice(0, 4).map((a) => (
-              <View key={a._id} style={styles.annCard}>
-                <Text style={styles.annCardTitle}>{a.title}</Text>
-                <Text style={styles.annCardBody} numberOfLines={2}>
-                  {a.body}
-                </Text>
-                <Text style={styles.annCardMeta}>
-                  Posted by {a.postedBy}  •  {formatRelative(a.createdAt)}
+            {announcements.length === 0 ? (
+              <View style={[styles.annCard, { alignItems: 'center' }]}>
+                <Text style={[styles.annCardBody, { textAlign: 'center' }]}>
+                  No announcements yet.
                 </Text>
               </View>
-            ))}
+            ) : (
+              announcements.slice(0, 4).map((a) => (
+                <View key={a._id} style={styles.annCard}>
+                  <Text style={styles.annCardTitle}>{a.title}</Text>
+                  <Text style={styles.annCardBody} numberOfLines={2}>
+                    {a.body}
+                  </Text>
+                  <Text style={styles.annCardMeta}>
+                    Posted by {a.postedBy}  •  {formatRelative(a.createdAt)}
+                  </Text>
+                </View>
+              ))
+            )}
           </View>
         </ScrollView>
       </SafeAreaView>

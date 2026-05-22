@@ -59,6 +59,22 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
+// Mirror of backend REQUEST_WINDOW_DAYS — employees can only file a
+// regularisation request within this many days of the missed date.
+const REQUEST_WINDOW_DAYS = 2;
+
+function daysBetweenTodayAnd(dateStr: string): number {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const d = new Date(dateStr + 'T00:00:00');
+    if (isNaN(d.getTime())) return Number.POSITIVE_INFINITY;
+    return Math.floor((today.getTime() - d.getTime()) / 86400000);
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
 export default function AttendanceScreen() {
   const [cursor, setCursor] = useState(new Date());
   const [calendar, setCalendar] = useState<Record<string, CalendarItem>>({});
@@ -338,7 +354,12 @@ export default function AttendanceScreen() {
             <Text style={styles.emptyText}>No attendance records for this month.</Text>
           </View>
         ) : (
-          history.map((h) => (
+          history.map((h) => {
+            const daysOld = daysBetweenTodayAnd(h.date);
+            // Disable Request after the 2-day window has passed, or if the
+            // record is for a future date (shouldn't happen but guard anyway).
+            const requestClosed = daysOld < 0 || daysOld > REQUEST_WINDOW_DAYS;
+            return (
             <View key={h._id} style={styles.histCard}>
               <View style={styles.histTopRow}>
                 <Text style={styles.histDate}>{formatHistoryDate(h.date)}</Text>
@@ -361,14 +382,30 @@ export default function AttendanceScreen() {
               </View>
 
               <TouchableOpacity
-                style={styles.requestBtn}
-                onPress={() => setReqModalDate(h.date)}
-                activeOpacity={0.85}
+                style={[styles.requestBtn, requestClosed && styles.requestBtnDisabled]}
+                onPress={() => {
+                  if (requestClosed) {
+                    Alert.alert(
+                      'Request window closed',
+                      `You can only file a request within ${REQUEST_WINDOW_DAYS} days of the missed date. ` +
+                      `This date is ${daysOld} days old — please contact HR directly.`
+                    );
+                    return;
+                  }
+                  setReqModalDate(h.date);
+                }}
+                activeOpacity={requestClosed ? 1 : 0.85}
+                disabled={requestClosed}
               >
-                <Text style={styles.requestBtnText}>Request</Text>
+                <Text
+                  style={[styles.requestBtnText, requestClosed && styles.requestBtnTextDisabled]}
+                >
+                  {requestClosed ? 'Request window closed' : 'Request'}
+                </Text>
               </TouchableOpacity>
             </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
 
@@ -703,10 +740,16 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginTop: 4,
   },
+  requestBtnDisabled: {
+    backgroundColor: '#E0E0E0',
+  },
   requestBtnText: {
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
+  },
+  requestBtnTextDisabled: {
+    color: '#9E9E9E',
   },
 
   emptyBox: {
