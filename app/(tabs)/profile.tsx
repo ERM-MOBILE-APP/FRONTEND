@@ -31,6 +31,12 @@ type UserProfile = {
   address?: string;
 };
 
+// What we show for a missing/empty field. Keeping this in one place so
+// we never accidentally render a hard-coded placeholder like the previous
+// "20-09-2005" / "Bhvhjh@Gmail.Com" / "+91 9988776655" again.
+const EMPTY = 'Not set';
+const show = (v?: string) => (v && String(v).trim()) ? String(v).trim() : EMPTY;
+
 export default function ProfileScreen() {
   const [user, setUser] = useState<UserProfile>({});
   const [editing, setEditing] = useState<keyof UserProfile | null>(null);
@@ -100,7 +106,9 @@ export default function ProfileScreen() {
     }
   };
 
-  const initial = (user.name && user.name[0]) || 'V';
+  // Derived from the real name — no hard-coded "V" fallback. Shows "?"
+  // only if the user has somehow logged in without a name on record.
+  const initial = (user.name && user.name.trim()[0]?.toUpperCase()) || '?';
 
   return (
     <SafeAreaView edges={['top']} style={styles.safe}>
@@ -123,37 +131,54 @@ export default function ProfileScreen() {
         </View>
 
         {/* NAME + DESIGNATION */}
-        <Text style={styles.name}>{user.name || 'Vijay'}</Text>
+        <Text style={styles.name}>{user.name || EMPTY}</Text>
         <Text style={styles.designation}>
-          {(user.designation || 'UI UX Designer').toUpperCase()}
+          {show(user.designation).toUpperCase()}
         </Text>
 
-        {/* INFO CARDS */}
+        {/* INFO CARDS — every value is whatever's stored in MongoDB.
+            "Not set" means HR / the user hasn't filled it in yet. Tap any
+            row to edit (Employee ID is read-only). */}
         <View style={styles.infoList}>
           <InfoRow
             label="Employee ID"
-            value={user.userId || 'TES005'}
+            value={show(user.userId)}
             editable={false}
           />
           <InfoRow
             label="Mobile No"
-            value={user.phone || '+91 9988776655'}
+            value={show(user.phone)}
             onPress={() => openEdit('phone')}
           />
           <InfoRow
             label="Email ID"
-            value={user.email || 'Bhvhjh@Gmail.Com'}
+            value={show(user.email)}
             onPress={() => openEdit('email')}
           />
           <InfoRow
             label="DOB"
-            value={user.dob || '20-09-2005'}
+            value={show(user.dob)}
             onPress={() => openEdit('dob')}
           />
           <InfoRow
             label="Blood Group"
-            value={user.bloodGroup || 'A+'}
+            value={show(user.bloodGroup)}
             onPress={() => openEdit('bloodGroup')}
+          />
+          <InfoRow
+            label="Gender"
+            value={show(user.gender)}
+            onPress={() => openEdit('gender')}
+          />
+          <InfoRow
+            label="Designation"
+            value={show(user.designation)}
+            onPress={() => openEdit('designation')}
+          />
+          <InfoRow
+            label="Address"
+            value={show(user.address)}
+            onPress={() => openEdit('address')}
           />
         </View>
 
@@ -209,13 +234,14 @@ export default function ProfileScreen() {
 
 function prettyLabel(key: string) {
   const map: Record<string, string> = {
-    phone: 'Mobile No',
-    email: 'Email ID',
-    dob: 'DOB',
-    bloodGroup: 'Blood Group',
-    name: 'Name',
+    phone:       'Mobile No',
+    email:       'Email ID',
+    dob:         'DOB',
+    bloodGroup:  'Blood Group',
+    gender:      'Gender',
+    name:        'Name',
     designation: 'Designation',
-    address: 'Address',
+    address:     'Address',
   };
   return map[key] || key;
 }
