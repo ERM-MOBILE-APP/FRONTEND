@@ -273,7 +273,7 @@ export default function HomeScreen() {
                   style={{ marginLeft: 6 }}
                 />
               </View>
-              <TouchableOpacity>
+              <TouchableOpacity onPress={() => router.push('/announcement' as any)}>
                 <Text style={styles.viewAll}>View All</Text>
               </TouchableOpacity>
             </View>
@@ -289,7 +289,12 @@ export default function HomeScreen() {
               </View>
             ) : (
               announcements.slice(0, 4).map((a) => (
-                <View key={a._id} style={styles.annCard}>
+                <TouchableOpacity
+                  key={a._id}
+                  style={styles.annCard}
+                  activeOpacity={0.85}
+                  onPress={() => router.push('/announcement' as any)}
+                >
                   <Text style={styles.annCardTitle}>{a.title}</Text>
                   <Text style={styles.annCardBody} numberOfLines={2}>
                     {a.body}
@@ -297,7 +302,7 @@ export default function HomeScreen() {
                   <Text style={styles.annCardMeta}>
                     Posted by {a.postedBy}  •  {formatRelative(a.createdAt)}
                   </Text>
-                </View>
+                </TouchableOpacity>
               ))
             )}
           </View>

@@ -86,7 +86,7 @@ export default function SideDrawer({ visible, onClose, user }: Props) {
     {
       label: 'Announcement',
       icon: <Ionicons name="megaphone-outline" size={20} color="#1A1A1A" />,
-      route: '/(tabs)/',
+      route: '/announcement',
     },
   ];
 

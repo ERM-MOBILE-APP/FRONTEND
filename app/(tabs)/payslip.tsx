@@ -69,11 +69,25 @@ export default function PayslipScreen() {
   const [reqYear,  setReqYear]  = useState(new Date().getFullYear());
   const [requesting, setRequesting] = useState(false);
 
+  // Today's month/year — used to disable "upcoming" (future) month chips
+  // in the request modal. You can only request a payslip for a month that
+  // has already started (current month or earlier).
+  const now             = new Date();
+  const currentMonth    = now.getMonth() + 1;
+  const currentYear     = now.getFullYear();
+
   const availableYears = [
     new Date().getFullYear(),
     new Date().getFullYear() - 1,
     new Date().getFullYear() - 2,
   ];
+
+  // A month is "future" (and therefore not requestable) if its year is
+  // later than the current year, OR same year but later month.
+  const isFutureMonth = (m: number, y: number) =>
+    y > currentYear || (y === currentYear && m > currentMonth);
+
+  const submitDisabled = requesting || isFutureMonth(reqMonth, reqYear);
 
   useEffect(() => {
     AsyncStorage.getItem('user').then((u) => {
@@ -313,15 +327,27 @@ export default function PayslipScreen() {
             <Text style={styles.fieldLabel}>Month</Text>
             <View style={styles.monthGrid}>
               {MONTHS.slice(1).map((m, i) => {
-                const v = i + 1;
-                const active = v === reqMonth;
+                const v        = i + 1;
+                const active   = v === reqMonth;
+                const isFuture = isFutureMonth(v, reqYear);
                 return (
                   <TouchableOpacity
                     key={m}
-                    style={[styles.monthChip, active && styles.monthChipActive]}
-                    onPress={() => setReqMonth(v)}
+                    style={[
+                      styles.monthChip,
+                      active && !isFuture && styles.monthChipActive,
+                      isFuture && styles.monthChipDisabled,
+                    ]}
+                    onPress={() => { if (!isFuture) setReqMonth(v); }}
+                    disabled={isFuture}
                   >
-                    <Text style={[styles.monthChipText, active && { color: '#FFFFFF' }]}>
+                    <Text
+                      style={[
+                        styles.monthChipText,
+                        active && !isFuture && { color: '#FFFFFF' },
+                        isFuture && { color: '#BBBBBB' },
+                      ]}
+                    >
                       {m}
                     </Text>
                   </TouchableOpacity>
@@ -347,13 +373,23 @@ export default function PayslipScreen() {
               ))}
             </View>
 
+            {isFutureMonth(reqMonth, reqYear) && (
+              <Text style={styles.futureWarn}>
+                {MONTHS[reqMonth]} {reqYear} hasn't happened yet — pick a past or current month.
+              </Text>
+            )}
+
             <TouchableOpacity
-              style={[styles.submitReqBtn, requesting && { opacity: 0.6 }]}
+              style={[styles.submitReqBtn, submitDisabled && { opacity: 0.45 }]}
               onPress={submitRequest}
-              disabled={requesting}
+              disabled={submitDisabled}
             >
               <Text style={styles.submitReqBtnText}>
-                {requesting ? 'Submitting…' : `Request ${MONTHS[reqMonth]} ${reqYear}`}
+                {requesting
+                  ? 'Submitting…'
+                  : isFutureMonth(reqMonth, reqYear)
+                  ? 'Pick a past month'
+                  : `Request ${MONTHS[reqMonth]} ${reqYear}`}
               </Text>
             </TouchableOpacity>
           </Pressable>
@@ -524,8 +560,15 @@ const styles = StyleSheet.create({
     marginRight: 7, marginBottom: 7,
     backgroundColor: '#FAFAFA',
   },
-  monthChipActive: { backgroundColor: GREEN, borderColor: GREEN },
-  monthChipText:   { fontSize: 12, fontWeight: '600', color: '#444' },
+  monthChipActive:   { backgroundColor: GREEN, borderColor: GREEN },
+  monthChipDisabled: { backgroundColor: '#F2F2F2', borderColor: '#EAEAEA', opacity: 0.7 },
+  monthChipText:     { fontSize: 12, fontWeight: '600', color: '#444' },
+  futureWarn: {
+    marginTop: 12,
+    fontSize: 12,
+    color: '#C62828',
+    fontWeight: '600',
+  },
   yearChip: {
     paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16,
     borderWidth: 1, borderColor: '#E0E0E0',
