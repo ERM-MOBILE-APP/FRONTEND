@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, Feather } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { profileAPI } from '../../services/api';
 
 type UserProfile = {
@@ -63,6 +63,15 @@ export default function ProfileScreen() {
   useEffect(() => {
     loadProfile();
   }, [loadProfile]);
+
+  // Re-fetch every time the Profile tab regains focus, so any changes an
+  // admin makes via admin.html (or the user's own edits from another
+  // device) appear immediately when the user comes back to this screen.
+  useFocusEffect(
+    useCallback(() => {
+      loadProfile();
+    }, [loadProfile])
+  );
 
   const handleLogout = async () => {
     Alert.alert('Log out', 'Are you sure you want to log out?', [
