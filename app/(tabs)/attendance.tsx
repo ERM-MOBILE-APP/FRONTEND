@@ -45,14 +45,34 @@ type HistoryItem = {
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+// One canonical colour per status — used by legend + as the base for
+// multi-colour day dots below.
 const STATUS_DOT: Record<string, string> = {
-  present: '#4CAF50',
-  absent: '#F44336',
-  permission: '#F9C846',
-  late: '#FF9800',
-  halfday: '#9C27B0',
-  leave: '#E96A66',
+  present:    '#4CAF50', // green
+  absent:     '#F44336', // red
+  permission: '#F9C846', // yellow
+  late:       '#FF9800', // orange
+  halfday:    '#9C27B0', // purple
+  leave:      '#E96A66', // coral
 };
+
+/**
+ * Return the list of dots to render for a given day status. A "late" day
+ * is both "late" AND "present" (the employee did show up), so it shows
+ * BOTH the present (green) and late (orange) dots side by side. Same for
+ * halfday: green + purple, because they did come in, just for half a day.
+ */
+function dotsForStatus(status: string | undefined): string[] {
+  switch (status) {
+    case 'present':    return [STATUS_DOT.present];
+    case 'late':       return [STATUS_DOT.present, STATUS_DOT.late];
+    case 'halfday':    return [STATUS_DOT.present, STATUS_DOT.halfday];
+    case 'permission': return [STATUS_DOT.permission];
+    case 'leave':      return [STATUS_DOT.leave];
+    case 'absent':     return [STATUS_DOT.absent];
+    default:           return [];
+  }
+}
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -267,16 +287,21 @@ export default function AttendanceScreen() {
                     </Text>
                   </View>
                   <View style={styles.dotRow}>
-                    {status ? (
-                      <View
-                        style={[
-                          styles.statusDot,
-                          { backgroundColor: STATUS_DOT[status] || '#999' },
-                        ]}
-                      />
-                    ) : (
-                      <View style={styles.statusDotPlaceholder} />
-                    )}
+                    {(() => {
+                      const dots = dotsForStatus(status);
+                      if (dots.length === 0) {
+                        return <View style={styles.statusDotPlaceholder} />;
+                      }
+                      return dots.map((c, i) => (
+                        <View
+                          key={i}
+                          style={[
+                            styles.statusDot,
+                            { backgroundColor: c, marginHorizontal: 1 },
+                          ]}
+                        />
+                      ));
+                    })()}
                   </View>
                 </View>
               );
@@ -291,7 +316,11 @@ export default function AttendanceScreen() {
           <View style={[styles.legendRow, { marginTop: 6 }]}>
             <LegendItem color={STATUS_DOT.late} label="Late" />
             <LegendItem color={STATUS_DOT.halfday} label="Half day" />
+            <LegendItem color={STATUS_DOT.leave} label="Leave" />
           </View>
+          <Text style={styles.legendHint}>
+            Late & half-day show two dots — present + the second status.
+          </Text>
         </View>
 
         {/* ============ SECTION 2: STAT CARDS ============ */}
@@ -315,10 +344,21 @@ export default function AttendanceScreen() {
           </View>
         </View>
 
+        {/* Box counts:
+            PRESENT  = pure present + late + halfday   (anyone who showed up)
+            ABSENTS  = backend's absent count (workdays − all others)
+            LATE IN  = pure late count
+            PERMISSIONS = permission count
+            Late and halfday days are also counted in PRESENT because the
+            employee did actually attend — they just came late or for half. */}
         <View style={styles.statsGrid}>
           {/* Row 1 — Present + Absents side by side */}
           <View style={styles.statsRow}>
-            <StatCard color="#4CAF50" label="PRESENT" value={summary.present} />
+            <StatCard
+              color="#4CAF50"
+              label="PRESENT"
+              value={summary.present + summary.late + summary.halfday}
+            />
             <StatCard color="#F44336" label="ABSENTS" value={summary.absent} />
           </View>
           {/* Row 2 — Late In + Permissions side by side */}
@@ -600,6 +640,9 @@ const styles = StyleSheet.create({
   dayNumDim: { color: '#CFCFCF' },
   dayNumToday: { color: '#1B5E20', fontWeight: '700' },
   dotRow: {
+    // Horizontal so multi-status days (late = green + orange) lay out
+    // side by side, not stacked.
+    flexDirection: 'row',
     height: 8,
     marginTop: 2,
     alignItems: 'center',
@@ -625,6 +668,13 @@ const styles = StyleSheet.create({
     marginRight: 5,
   },
   legendText: { fontSize: 11, color: '#5A5A5A' },
+  legendHint: {
+    fontSize: 10,
+    color: '#888',
+    textAlign: 'center',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
 
   /* SUMMARY HEADER */
   summaryHeader: {
@@ -655,26 +705,26 @@ const styles = StyleSheet.create({
   },
   pickerText: { fontSize: 12, color: '#333', marginRight: 4, fontWeight: '600' },
 
-  /* STAT CARDS — explicit 2-per-row grid */
+  /* STAT CARDS — explicit 2-per-row grid, matches Figma style */
   statsGrid: {
     paddingHorizontal: 12,
   },
   statsRow: {
     flexDirection: 'row',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   statCard: {
     flex: 1,
-    marginHorizontal: 4,
-    borderRadius: 16,
-    paddingVertical: 18,
+    marginHorizontal: 6,
+    borderRadius: 18,        // slightly more rounded — matches figma corner radius
+    paddingVertical: 22,     // a bit taller for the bold numbers
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 8,
-    elevation: 3,
+    shadowOpacity: 0.12,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 10,
+    elevation: 4,
   },
   statCardLabel: {
     color: '#FFFFFF',
@@ -684,9 +734,10 @@ const styles = StyleSheet.create({
   },
   statCardValue: {
     color: '#FFFFFF',
-    fontSize: 30,
+    fontSize: 34,
     fontWeight: '800',
-    marginTop: 8,
+    marginTop: 10,
+    letterSpacing: 0.5,
   },
 
   /* HISTORY */

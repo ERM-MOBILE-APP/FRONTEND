@@ -229,6 +229,16 @@ export const payslipAPI = {
   getById: (id: string) => api.get(`/payslip/${id}`),
 };
 
+export const complaintAPI = {
+  list:   ()                        => api.get('/complaint'),
+  getOne: (id: string)              => api.get(`/complaint/${id}`),
+  create: (data: {
+    subject: string;
+    priority?: 'low' | 'medium' | 'high' | 'critical';
+    description?: string;
+  }) => api.post('/complaint', data),
+};
+
 export const announcementAPI = {
   list: (limit = 20) => api.get(`/announcement?limit=${limit}`),
   getById: (id: string) => api.get(`/announcement/${id}`),

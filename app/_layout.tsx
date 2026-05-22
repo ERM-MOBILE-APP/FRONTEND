@@ -26,6 +26,14 @@ export default function RootLayout() {
       />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="notifications" options={{ presentation: 'card' }} />
+      <Stack.Screen
+        name="complaint"
+        options={{ presentation: 'card', animation: 'slide_from_right' }}
+      />
+      <Stack.Screen
+        name="payslip-summary"
+        options={{ presentation: 'card', animation: 'slide_from_right' }}
+      />
     </Stack>
   );
 }
