@@ -27,6 +27,7 @@ interface PayslipDetail {
   month: number;
   year: number;
   monthLabel?: string;
+  status?: 'requested' | 'processed' | 'pending' | 'rejected';
   earnings: {
     basicSalary: number;
     hraAllowance: number;
@@ -159,36 +160,82 @@ export default function PayslipSummaryScreen() {
           <DetailRow label="PF"               value={data.deductions.healthInsurance} last />
         </View>
 
-        {/* Action buttons */}
-        <View style={styles.actionsRow}>
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: ORANGE }]}
-            activeOpacity={0.85}
-            onPress={() =>
-              Alert.alert(
-                'Request',
-                'Your request to HR has been queued. (Workflow to be wired by your admin.)'
-              )
-            }
-          >
-            <Feather name="message-square" size={16} color="#FFFFFF" />
-            <Text style={styles.actionText}>Request</Text>
-          </TouchableOpacity>
+        {/* Action buttons.
+            Download is only enabled once HR has uploaded the payslip
+            (status === 'processed'). Request is only meaningful BEFORE
+            that — for a record that's already 'requested' it shows as
+            disabled "Requested" so the user knows HR is on it. */}
+        {(() => {
+          const status = data.status || 'processed';
+          const isProcessed = status === 'processed';
+          const isRequested = status === 'requested' || status === 'pending';
 
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: GREEN }]}
-            activeOpacity={0.85}
-            onPress={() =>
-              Alert.alert(
-                'Download',
-                'PDF download will be available once HR enables it.'
-              )
-            }
-          >
-            <Feather name="download" size={16} color="#FFFFFF" />
-            <Text style={styles.actionText}>Download</Text>
-          </TouchableOpacity>
-        </View>
+          return (
+            <View style={styles.actionsRow}>
+              <TouchableOpacity
+                style={[
+                  styles.actionBtn,
+                  { backgroundColor: ORANGE },
+                  (isRequested || isProcessed) && styles.actionBtnDisabled,
+                ]}
+                activeOpacity={(isRequested || isProcessed) ? 1 : 0.85}
+                disabled={isRequested || isProcessed}
+                onPress={() =>
+                  Alert.alert(
+                    'Request',
+                    'This payslip already exists — no need to request again.'
+                  )
+                }
+              >
+                <Feather
+                  name={isRequested ? 'clock' : 'message-square'}
+                  size={16}
+                  color={(isRequested || isProcessed) ? '#999' : '#FFFFFF'}
+                />
+                <Text
+                  style={[
+                    styles.actionText,
+                    (isRequested || isProcessed) && styles.actionTextDisabled,
+                  ]}
+                >
+                  {isRequested ? 'Requested' : isProcessed ? 'Available' : 'Request'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.actionBtn,
+                  { backgroundColor: GREEN },
+                  !isProcessed && styles.actionBtnDisabled,
+                ]}
+                activeOpacity={isProcessed ? 0.85 : 1}
+                disabled={!isProcessed}
+                onPress={() =>
+                  Alert.alert(
+                    'Download',
+                    isProcessed
+                      ? 'PDF download will be available once HR enables it.'
+                      : 'Wait for HR to upload this payslip before downloading.'
+                  )
+                }
+              >
+                <Feather
+                  name="download"
+                  size={16}
+                  color={isProcessed ? '#FFFFFF' : '#999'}
+                />
+                <Text
+                  style={[
+                    styles.actionText,
+                    !isProcessed && styles.actionTextDisabled,
+                  ]}
+                >
+                  Download
+                </Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })()}
       </ScrollView>
     </SafeAreaView>
   );
@@ -398,4 +445,12 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   actionText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14, marginLeft: 8 },
+  actionBtnDisabled: {
+    backgroundColor: '#E0E0E0',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  actionTextDisabled: {
+    color: '#999',
+  },
 });

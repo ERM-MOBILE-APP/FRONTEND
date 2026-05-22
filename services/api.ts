@@ -227,6 +227,9 @@ export const payslipAPI = {
   getHistory: (year?: number) =>
     api.get('/payslip/history', { params: year ? { year } : {} }),
   getById: (id: string) => api.get(`/payslip/${id}`),
+  // Employee asks HR to upload a payslip for { month, year }
+  request: (month: number, year: number) =>
+    api.post('/payslip/request', { month, year }),
 };
 
 export const complaintAPI = {

@@ -31,6 +31,34 @@ type Summary = {
   permission: number;
   halfday: number;
   leave: number;
+  leavePolicy?: LeavePolicy;
+};
+
+type LeavePolicy = {
+  month: number;
+  year: number;
+  policy: {
+    monthlyLeaveAllowed: number;
+    monthlyPermissionAllowed: number;
+    maxPermissionHours: number;
+    hoursPerLopDay: number;
+  };
+  usage: {
+    leaveUsedDays: number;
+    permissionsUsed: number;
+    permissionHoursUsed: number;
+    permissionExcessHours: number;
+  };
+  balance: {
+    leaveRemainingDays: number;
+    permissionsRemaining: number;
+  };
+  lop: {
+    fromExtraLeaveDays: number;
+    fromExtraPermissions: number;
+    fromPermissionExcessHours: number;
+    totalDays: number;
+  };
 };
 
 type HistoryItem = {
@@ -101,6 +129,7 @@ export default function AttendanceScreen() {
   const [summary, setSummary] = useState<Summary>({
     present: 0, absent: 0, late: 0, permission: 0, halfday: 0, leave: 0,
   });
+  const [leavePolicy, setLeavePolicy] = useState<LeavePolicy | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [showMonthPicker, setShowMonthPicker] = useState(false);
   const [showYearPicker, setShowYearPicker] = useState(false);
@@ -131,10 +160,12 @@ export default function AttendanceScreen() {
         halfday: sumRes.data?.halfday || 0,
         leave: sumRes.data?.leave || 0,
       });
+      setLeavePolicy(sumRes.data?.leavePolicy || null);
       setHistory(Array.isArray(histRes.data) ? histRes.data : []);
     } catch {
       setCalendar({});
       setHistory([]);
+      setLeavePolicy(null);
     }
   }, [month, year]);
 
@@ -367,6 +398,88 @@ export default function AttendanceScreen() {
             <StatCard color="#2196F3" label="PERMISSIONS" value={summary.permission} />
           </View>
         </View>
+
+        {/* ============ SECTION 2b: LEAVE POLICY / LOP CARD ============ */}
+        {leavePolicy && (
+          <View style={styles.policyCard}>
+            <View style={styles.policyHeader}>
+              <Text style={styles.policyTitle}>Leave Policy — This Month</Text>
+              {leavePolicy.lop.totalDays > 0 ? (
+                <View style={styles.lopBadge}>
+                  <Text style={styles.lopBadgeText}>
+                    {leavePolicy.lop.totalDays} day{leavePolicy.lop.totalDays === 1 ? '' : 's'} LOP
+                  </Text>
+                </View>
+              ) : (
+                <View style={[styles.lopBadge, { backgroundColor: '#E8F5E9' }]}>
+                  <Text style={[styles.lopBadgeText, { color: '#1B5E20' }]}>No LOP ✓</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Leave row */}
+            <View style={styles.policyRow}>
+              <View style={styles.policyCol}>
+                <Text style={styles.policyLabel}>Leave used</Text>
+                <Text style={styles.policyValue}>
+                  {leavePolicy.usage.leaveUsedDays} / {leavePolicy.policy.monthlyLeaveAllowed} day
+                </Text>
+              </View>
+              <View style={styles.policyCol}>
+                <Text style={styles.policyLabel}>Leave LOP</Text>
+                <Text style={[styles.policyValue, leavePolicy.lop.fromExtraLeaveDays > 0 && styles.lopValue]}>
+                  {leavePolicy.lop.fromExtraLeaveDays} day{leavePolicy.lop.fromExtraLeaveDays === 1 ? '' : 's'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.policyDivider} />
+
+            {/* Permission row */}
+            <View style={styles.policyRow}>
+              <View style={styles.policyCol}>
+                <Text style={styles.policyLabel}>Permissions used</Text>
+                <Text style={styles.policyValue}>
+                  {leavePolicy.usage.permissionsUsed} / {leavePolicy.policy.monthlyPermissionAllowed}
+                </Text>
+              </View>
+              <View style={styles.policyCol}>
+                <Text style={styles.policyLabel}>Hours used</Text>
+                <Text style={styles.policyValue}>
+                  {leavePolicy.usage.permissionHoursUsed} hr
+                  {leavePolicy.usage.permissionExcessHours > 0 && (
+                    <Text style={styles.lopHint}>  (+{leavePolicy.usage.permissionExcessHours} extra)</Text>
+                  )}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.policyDivider} />
+
+            {/* LOP breakdown */}
+            <View style={styles.policyRow}>
+              <View style={styles.policyCol}>
+                <Text style={styles.policyLabel}>Permission LOP</Text>
+                <Text style={[styles.policyValue,
+                  (leavePolicy.lop.fromExtraPermissions + leavePolicy.lop.fromPermissionExcessHours) > 0
+                    && styles.lopValue]}>
+                  {Math.round((leavePolicy.lop.fromExtraPermissions + leavePolicy.lop.fromPermissionExcessHours) * 100) / 100} day
+                </Text>
+              </View>
+              <View style={styles.policyCol}>
+                <Text style={styles.policyLabel}>Total LOP</Text>
+                <Text style={[styles.policyValue, leavePolicy.lop.totalDays > 0 && styles.lopValue]}>
+                  {leavePolicy.lop.totalDays} day{leavePolicy.lop.totalDays === 1 ? '' : 's'}
+                </Text>
+              </View>
+            </View>
+
+            <Text style={styles.policyHint}>
+              1 leave + 2 permissions (≤ 2 hr each) free per month.
+              Anything beyond becomes Loss of Pay.
+            </Text>
+          </View>
+        )}
 
         {/* ============ SECTION 3: HISTORY LIST ============ */}
         <View style={styles.summaryHeader}>
@@ -738,6 +851,81 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginTop: 10,
     letterSpacing: 0.5,
+  },
+
+  /* LEAVE POLICY / LOP CARD */
+  policyCard: {
+    marginHorizontal: 16,
+    marginTop: 18,
+    marginBottom: 4,
+    padding: 16,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#EEF1EE',
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  policyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  policyTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#1A1A1A',
+  },
+  lopBadge: {
+    backgroundColor: '#FFE7E7',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  lopBadgeText: {
+    color: '#C62828',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  policyRow: {
+    flexDirection: 'row',
+  },
+  policyCol: {
+    flex: 1,
+  },
+  policyLabel: {
+    fontSize: 11.5,
+    color: '#7A7A7A',
+    fontWeight: '600',
+  },
+  policyValue: {
+    fontSize: 14,
+    color: '#1A1A1A',
+    fontWeight: '700',
+    marginTop: 3,
+  },
+  lopValue: {
+    color: '#C62828',
+  },
+  lopHint: {
+    fontSize: 11,
+    color: '#C62828',
+    fontWeight: '600',
+  },
+  policyDivider: {
+    height: 1,
+    backgroundColor: '#F0F0F0',
+    marginVertical: 10,
+  },
+  policyHint: {
+    fontSize: 10.5,
+    color: '#9A9A9A',
+    marginTop: 10,
+    fontStyle: 'italic',
   },
 
   /* HISTORY */

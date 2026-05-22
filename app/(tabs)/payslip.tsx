@@ -9,11 +9,12 @@ import {
   RefreshControl,
   Modal,
   Alert,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { payslipAPI } from '../../services/api';
 
 const GREEN      = '#4CAF50';
@@ -52,7 +53,7 @@ interface Payslip {
   netPay: number;
   totalGross?: number;
   totalDeductions?: number;
-  status?: string;
+  status?: 'requested' | 'processed' | 'pending' | 'rejected';
 }
 
 export default function PayslipScreen() {
@@ -63,6 +64,10 @@ export default function PayslipScreen() {
   const [error, setError]                 = useState('');
   const [selectedYear, setSelectedYear]   = useState(new Date().getFullYear());
   const [yearPickerVisible, setYearPickerVisible] = useState(false);
+  const [requestVisible, setRequestVisible] = useState(false);
+  const [reqMonth, setReqMonth] = useState(new Date().getMonth() + 1);
+  const [reqYear,  setReqYear]  = useState(new Date().getFullYear());
+  const [requesting, setRequesting] = useState(false);
 
   const availableYears = [
     new Date().getFullYear(),
@@ -97,6 +102,36 @@ export default function PayslipScreen() {
     await fetchHistory(selectedYear);
     setRefreshing(false);
   }, [selectedYear, fetchHistory]);
+
+  // Refresh on tab focus so an HR upload (status → processed) shows up
+  // without needing to pull-to-refresh.
+  useFocusEffect(
+    useCallback(() => {
+      fetchHistory(selectedYear);
+    }, [selectedYear, fetchHistory])
+  );
+
+  const submitRequest = async () => {
+    if (requesting) return;
+    setRequesting(true);
+    try {
+      await payslipAPI.request(reqMonth, reqYear);
+      Alert.alert(
+        'Request submitted',
+        `HR has been notified to upload your ${MONTHS[reqMonth]} ${reqYear} payslip. ` +
+        `You'll get a notification once it's ready to download.`
+      );
+      setRequestVisible(false);
+      fetchHistory(selectedYear);
+    } catch (err: any) {
+      Alert.alert(
+        'Could not request',
+        err?.response?.data?.message || 'Please try again later.'
+      );
+    } finally {
+      setRequesting(false);
+    }
+  };
 
   return (
     <View style={styles.root}>
@@ -133,6 +168,16 @@ export default function PayslipScreen() {
             </TouchableOpacity>
           </View>
 
+          {/* Request-a-payslip button — opens month/year picker modal */}
+          <TouchableOpacity
+            style={styles.requestPayslipBtn}
+            onPress={() => setRequestVisible(true)}
+            activeOpacity={0.85}
+          >
+            <Feather name="plus-circle" size={16} color="#FFFFFF" />
+            <Text style={styles.requestPayslipBtnText}>Request a payslip from HR</Text>
+          </TouchableOpacity>
+
           {loading ? (
             <View style={styles.centered}>
               <ActivityIndicator color={GREEN} />
@@ -157,7 +202,10 @@ export default function PayslipScreen() {
               }
             >
               {history.map((p, idx) => {
-                const palette = ICON_PALETTE[idx % ICON_PALETTE.length];
+                const palette     = ICON_PALETTE[idx % ICON_PALETTE.length];
+                const isProcessed = p.status === 'processed';
+                const isRequested = p.status === 'requested' || p.status === 'pending';
+                const isRejected  = p.status === 'rejected';
                 return (
                   <TouchableOpacity
                     key={p._id}
@@ -177,22 +225,49 @@ export default function PayslipScreen() {
                     <View style={{ flex: 1, marginLeft: 12 }}>
                       <View style={styles.payRow}>
                         <Text style={styles.payMonth}>{MONTHS[p.month] || '—'}</Text>
-                        <Text style={styles.payAmount}>{fmtRupees(p.netPay)}</Text>
+                        <Text style={styles.payAmount}>
+                          {isProcessed ? fmtRupees(p.netPay) : '—'}
+                        </Text>
                       </View>
                       <View style={[styles.payRow, { marginTop: 4 }]}>
-                        <Text style={styles.payDates}>{fmtDateRange(p.year, p.month)}</Text>
-                        <TouchableOpacity
-                          onPress={(e) => {
-                            e.stopPropagation?.();
-                            Alert.alert(
-                              'Download',
-                              'PDF download will be available once HR enables it.'
-                            );
-                          }}
-                          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                        >
-                          <Feather name="download" size={16} color="#777" />
-                        </TouchableOpacity>
+                        <Text style={styles.payDates}>
+                          {fmtDateRange(p.year, p.month)}
+                        </Text>
+
+                        {/* Status pill + download. Download icon is disabled
+                            (grey, no-op alert) until HR uploads → status='processed'. */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          {isRequested && (
+                            <View style={[styles.statusPill, { backgroundColor: '#FFF3CD' }]}>
+                              <Text style={[styles.statusPillText, { color: '#8A6300' }]}>Awaiting HR</Text>
+                            </View>
+                          )}
+                          {isRejected && (
+                            <View style={[styles.statusPill, { backgroundColor: '#FFE3E3' }]}>
+                              <Text style={[styles.statusPillText, { color: '#C62828' }]}>Declined</Text>
+                            </View>
+                          )}
+                          <TouchableOpacity
+                            onPress={(e) => {
+                              e.stopPropagation?.();
+                              Alert.alert(
+                                'Download',
+                                isProcessed
+                                  ? 'PDF download will be available once HR enables it.'
+                                  : 'Wait for HR to upload this payslip before downloading.'
+                              );
+                            }}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            style={{ marginLeft: 10 }}
+                            disabled={!isProcessed}
+                          >
+                            <Feather
+                              name="download"
+                              size={16}
+                              color={isProcessed ? '#2E7D32' : '#CCC'}
+                            />
+                          </TouchableOpacity>
+                        </View>
                       </View>
                     </View>
                   </TouchableOpacity>
@@ -203,6 +278,74 @@ export default function PayslipScreen() {
         </View>
 
       </SafeAreaView>
+
+      {/* ───── REQUEST PAYSLIP MODAL ──────────────────────────────────── */}
+      <Modal
+        visible={requestVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setRequestVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setRequestVisible(false)}
+        >
+          <Pressable style={styles.requestSheet} onPress={() => {}}>
+            <Text style={styles.yearModalTitle}>Request a payslip</Text>
+            <Text style={styles.requestSub}>
+              Pick the month and year. HR will be notified and upload your
+              payslip — you'll get a notification once it's ready to download.
+            </Text>
+
+            <Text style={styles.fieldLabel}>Month</Text>
+            <View style={styles.monthGrid}>
+              {MONTHS.slice(1).map((m, i) => {
+                const v = i + 1;
+                const active = v === reqMonth;
+                return (
+                  <TouchableOpacity
+                    key={m}
+                    style={[styles.monthChip, active && styles.monthChipActive]}
+                    onPress={() => setReqMonth(v)}
+                  >
+                    <Text style={[styles.monthChipText, active && { color: '#FFFFFF' }]}>
+                      {m}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Year</Text>
+            <View style={{ flexDirection: 'row' }}>
+              {availableYears.map((y) => (
+                <TouchableOpacity
+                  key={y}
+                  style={[
+                    styles.yearChip,
+                    y === reqYear && styles.yearChipActive,
+                  ]}
+                  onPress={() => setReqYear(y)}
+                >
+                  <Text style={[styles.yearChipText, y === reqYear && { color: '#FFFFFF' }]}>
+                    {y}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={[styles.submitReqBtn, requesting && { opacity: 0.6 }]}
+              onPress={submitRequest}
+              disabled={requesting}
+            >
+              <Text style={styles.submitReqBtnText}>
+                {requesting ? 'Submitting…' : `Request ${MONTHS[reqMonth]} ${reqYear}`}
+              </Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* ───── YEAR PICKER MODAL ──────────────────────────────────────── */}
       <Modal
@@ -327,4 +470,60 @@ const styles = StyleSheet.create({
   },
   yearOptionActive: { backgroundColor: '#F1F8F1', borderRadius: 10, paddingHorizontal: 8 },
   yearOptionText: { fontSize: 15, color: '#333' },
+
+  /* Request a payslip — list-level button */
+  requestPayslipBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1565C0',
+    borderRadius: 24,
+    paddingVertical: 12,
+    marginBottom: 14,
+  },
+  requestPayslipBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '700',
+    marginLeft: 8,
+  },
+
+  /* Status pill on each payslip card */
+  statusPill: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10,
+  },
+  statusPillText: { fontSize: 10.5, fontWeight: '700' },
+
+  /* Request modal — month/year chips */
+  requestSheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 22, borderTopRightRadius: 22,
+    paddingTop: 20, paddingHorizontal: 22, paddingBottom: 28,
+    width: '100%',
+    position: 'absolute', bottom: 0,
+  },
+  requestSub: { fontSize: 12, color: '#7A7A7A', marginTop: 4, marginBottom: 14, lineHeight: 17 },
+  fieldLabel: { fontSize: 13, fontWeight: '700', color: '#1A1A1A', marginBottom: 8 },
+  monthGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  monthChip: {
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16,
+    borderWidth: 1, borderColor: '#E0E0E0',
+    marginRight: 7, marginBottom: 7,
+    backgroundColor: '#FAFAFA',
+  },
+  monthChipActive: { backgroundColor: GREEN, borderColor: GREEN },
+  monthChipText:   { fontSize: 12, fontWeight: '600', color: '#444' },
+  yearChip: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16,
+    borderWidth: 1, borderColor: '#E0E0E0',
+    marginRight: 8, backgroundColor: '#FAFAFA',
+  },
+  yearChipActive: { backgroundColor: GREEN, borderColor: GREEN },
+  yearChipText:   { fontSize: 13, fontWeight: '600', color: '#444' },
+  submitReqBtn: {
+    backgroundColor: GREEN, borderRadius: 26, paddingVertical: 14,
+    alignItems: 'center', marginTop: 22,
+    shadowColor: GREEN, shadowOpacity: 0.3, shadowOffset: { width: 0, height: 6 }, shadowRadius: 10, elevation: 5,
+  },
+  submitReqBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
 });

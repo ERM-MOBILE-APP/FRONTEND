@@ -31,26 +31,21 @@ const TYPE_EDGE: Record<string, string> = {
   general: '#9E9E9E',
 };
 
-const FALLBACK: NotificationItem[] = Array.from({ length: 5 }).map((_, i) => ({
-  _id: `f${i}`,
-  title: 'Leave Approved',
-  body: 'Your annual leave request for Oct 12-15 has been approved by the manager.',
-  type: 'leave',
-  isRead: false,
-  createdAt: new Date(Date.now() - (i + 1) * 2 * 3600 * 1000).toISOString(),
-}));
-
 export default function NotificationsScreen() {
-  const [items, setItems] = useState<NotificationItem[]>(FALLBACK);
+  // Start empty — only show real server-side notifications.
+  const [items, setItems] = useState<NotificationItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const res = await notificationAPI.list({ limit: 50 });
       const list = res?.data?.items;
-      if (Array.isArray(list) && list.length > 0) setItems(list);
+      // Always trust the server — set whatever it returned (including [])
+      // so notifications the user already read or that were deleted
+      // disappear correctly.
+      setItems(Array.isArray(list) ? list : []);
     } catch {
-      // keep fallback
+      // Network/server error — leave whatever's currently on screen alone.
     }
   }, []);
 
@@ -72,7 +67,7 @@ export default function NotificationsScreen() {
   };
 
   const openNotification = async (n: NotificationItem) => {
-    if (!n.isRead && !n._id.startsWith('f')) {
+    if (!n.isRead) {
       try {
         await notificationAPI.markAsRead(n._id);
       } catch {}

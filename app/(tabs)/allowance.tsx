@@ -43,6 +43,53 @@ const MONTHS_SHORT = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ];
+
+// Petrol allowance is reimbursed at ₹10 per km by default. Change this in
+// one place if HR updates the policy. The amount is auto-calculated when
+// the user taps "Calculate" so it always matches distance × rate.
+const PETROL_RATE_PER_KM = 10;
+
+/**
+ * Geocode an address via OpenStreetMap's Nominatim service (free, no API key).
+ * Returns { lat, lng } or null if the address couldn't be resolved.
+ * Note: Nominatim asks callers to set a custom User-Agent.
+ */
+async function geocode(address: string): Promise<{ lat: number; lng: number } | null> {
+  if (!address || !address.trim()) return null;
+  const url =
+    'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' +
+    encodeURIComponent(address.trim());
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': 'TescoERM/1.0 (allowance)' } });
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) return null;
+    return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Great-circle distance between two lat/lng points in km (haversine).
+ * Good enough as an estimate — actual driving distance is usually 20-40%
+ * longer, so the user can bump the number up before submitting if needed.
+ */
+function haversineKm(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number }
+): number {
+  const R = 6371;
+  const toRad = (n: number) => (n * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLng = Math.sin(dLng / 2);
+  const c =
+    sinDLat * sinDLat +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * sinDLng * sinDLng;
+  const distance = 2 * R * Math.atan2(Math.sqrt(c), Math.sqrt(1 - c));
+  return Math.round(distance * 100) / 100;
+}
 const MONTHS_LONG = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -58,6 +105,7 @@ export default function AllowanceScreen() {
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showDate, setShowDate] = useState(false);
+  const [calculating, setCalculating] = useState(false);
 
   // History
   const now = new Date();
@@ -72,15 +120,19 @@ export default function AllowanceScreen() {
 
   const loadAll = useCallback(async () => {
     try {
+      // Petrol reimbursement is derived from travel — pull the travel
+      // records and compute the petrol breakdown from them. The travel
+      // tab keeps using its own type as before.
+      const fetchType = type === 'petrol' ? 'travel' : type;
       const [hRes, sRes] = await Promise.all([
-        allowanceAPI.getMyAllowances({ month: histMonth, year: histYear, type }),
-        allowanceAPI.getSummary({ month: histMonth, year: histYear, type }),
+        allowanceAPI.getMyAllowances({ month: histMonth, year: histYear, type: fetchType }),
+        allowanceAPI.getSummary    ({ month: histMonth, year: histYear, type: fetchType }),
       ]);
       setHistory(Array.isArray(hRes.data) ? hRes.data : []);
       setSummary({
-        approved: sRes.data?.approved || 0,
-        rejected: sRes.data?.rejected || 0,
-        pending: sRes.data?.pending || 0,
+        approved:     sRes.data?.approved      || 0,
+        rejected:     sRes.data?.rejected      || 0,
+        pending:      sRes.data?.pending       || 0,
         totalDistance: sRes.data?.totalDistance || 0,
       });
     } catch {
@@ -92,6 +144,37 @@ export default function AllowanceScreen() {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // Auto-fill distance + amount for petrol by geocoding From / To and
+  // computing the straight-line distance × ₹/km rate. The user can still
+  // edit either field after — useful when the road distance differs from
+  // the bird's-eye distance.
+  const calculate = async () => {
+    if (!fromLoc.trim() || !toLoc.trim()) {
+      Alert.alert('From and To required', 'Enter both addresses before calculating.');
+      return;
+    }
+    try {
+      setCalculating(true);
+      const [a, b] = await Promise.all([geocode(fromLoc), geocode(toLoc)]);
+      if (!a || !b) {
+        Alert.alert(
+          'Could not locate',
+          'One of the addresses could not be found. Try adding more detail ' +
+          '(city, state, pincode) or enter the distance manually.'
+        );
+        return;
+      }
+      const km = haversineKm(a, b);
+      const amt = Math.round(km * PETROL_RATE_PER_KM);
+      setDistance(String(km));
+      setAmount(String(amt));
+    } catch {
+      Alert.alert('Calculation failed', 'Could not look up the route. Enter the distance manually.');
+    } finally {
+      setCalculating(false);
+    }
+  };
 
   const submit = async () => {
     if (!fromLoc.trim() || !toLoc.trim() || !date || !amount) {
@@ -202,8 +285,8 @@ export default function AllowanceScreen() {
           />
         </View>
 
-        {/* FORM — only shown for Travel allowance. Petrol shows only the
-            "This Month" summary + History sections below. */}
+        {/* FORM — Travel only. The Petrol tab shows reimbursement derived
+            from the Travel records (this-month summary + history below). */}
         {!isPetrol && (
         <View style={styles.form}>
           <Text style={styles.label}>From</Text>
@@ -244,6 +327,19 @@ export default function AllowanceScreen() {
 
           {isPetrol && (
             <>
+              {/* Tap to auto-fill distance + amount from From / To addresses */}
+              <TouchableOpacity
+                style={[styles.calcBtn, calculating && { opacity: 0.6 }]}
+                onPress={calculate}
+                disabled={calculating}
+                activeOpacity={0.85}
+              >
+                <MaterialCommunityIcons name="calculator-variant" size={18} color="#FFFFFF" />
+                <Text style={styles.calcBtnText}>
+                  {calculating ? 'Calculating…' : 'Calculate Distance & Amount'}
+                </Text>
+              </TouchableOpacity>
+
               <Text style={styles.label}>Distance (km)</Text>
               <View style={styles.input}>
                 <MaterialCommunityIcons
@@ -254,13 +350,22 @@ export default function AllowanceScreen() {
                 />
                 <TextInput
                   value={distance}
-                  onChangeText={setDistance}
-                  placeholder="Enter Distance"
+                  onChangeText={(v) => {
+                    setDistance(v);
+                    // If the user edits distance manually, also recompute amount
+                    // at the standard rate so the two always agree.
+                    const n = parseFloat(v);
+                    if (!isNaN(n)) setAmount(String(Math.round(n * PETROL_RATE_PER_KM)));
+                  }}
+                  placeholder="Auto-filled — tap Calculate"
                   placeholderTextColor="#9A9A9A"
                   keyboardType="numeric"
                   style={styles.textInput}
                 />
               </View>
+              <Text style={styles.rateHint}>
+                Reimbursed at ₹{PETROL_RATE_PER_KM} / km
+              </Text>
             </>
           )}
 
@@ -270,10 +375,11 @@ export default function AllowanceScreen() {
             <TextInput
               value={amount}
               onChangeText={setAmount}
-              placeholder="Enter Amount"
+              placeholder={isPetrol ? 'Auto-filled from distance' : 'Enter Amount'}
               placeholderTextColor="#9A9A9A"
               keyboardType="numeric"
               style={styles.textInput}
+              editable={!isPetrol}      /* lock the field for petrol — derived from distance */
             />
           </View>
 
@@ -682,6 +788,31 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   submitBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+
+  /* Calculate button (petrol only) */
+  calcBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1565C0',
+    borderRadius: 22,
+    paddingVertical: 11,
+    marginBottom: 10,
+  },
+  calcBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    marginLeft: 8,
+  },
+  rateHint: {
+    fontSize: 10.5,
+    color: '#7A7A7A',
+    marginTop: -8,
+    marginBottom: 8,
+    marginLeft: 4,
+    fontStyle: 'italic',
+  },
 
   /* MONTH PICKER ROW */
   monthRow: {
