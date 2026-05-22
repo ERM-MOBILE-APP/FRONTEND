@@ -124,10 +124,23 @@ export default function PayslipScreen() {
       setRequestVisible(false);
       fetchHistory(selectedYear);
     } catch (err: any) {
-      Alert.alert(
-        'Could not request',
-        err?.response?.data?.message || 'Please try again later.'
-      );
+      // Surface the SPECIFIC reason from the server (e.g. "Already requested")
+      // instead of a bland "Please try again later." A 409 'ALREADY_EXISTS'
+      // is informational, not a real failure, so we treat it as a success-ish
+      // alert with the existing-record context.
+      const data    = err?.response?.data || {};
+      const status  = err?.response?.status;
+      const message = data.message
+        || (status === 401 ? 'Please sign in again.' : null)
+        || err?.message
+        || 'Please try again later.';
+      const title = status === 409 ? 'Already requested' : 'Could not request';
+      Alert.alert(title, message);
+      if (status === 409) {
+        // Refresh the list so the user sees the existing record.
+        setRequestVisible(false);
+        fetchHistory(selectedYear);
+      }
     } finally {
       setRequesting(false);
     }
