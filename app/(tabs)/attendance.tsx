@@ -300,10 +300,16 @@ export default function AttendanceScreen() {
         </View>
 
         <View style={styles.statsGrid}>
-          <StatCard color="#4CAF50" label="PRESENT" value={summary.present} />
-          <StatCard color="#F44336" label="ABSENTS" value={summary.absent} />
-          <StatCard color="#FFA726" label="LATE IN" value={summary.late} />
-          <StatCard color="#2196F3" label="PERMISSIONS" value={summary.permission} />
+          {/* Row 1 — Present + Absents side by side */}
+          <View style={styles.statsRow}>
+            <StatCard color="#4CAF50" label="PRESENT" value={summary.present} />
+            <StatCard color="#F44336" label="ABSENTS" value={summary.absent} />
+          </View>
+          {/* Row 2 — Late In + Permissions side by side */}
+          <View style={styles.statsRow}>
+            <StatCard color="#FFA726" label="LATE IN" value={summary.late} />
+            <StatCard color="#2196F3" label="PERMISSIONS" value={summary.permission} />
+          </View>
         </View>
 
         {/* ============ SECTION 3: HISTORY LIST ============ */}
@@ -612,15 +618,17 @@ const styles = StyleSheet.create({
   },
   pickerText: { fontSize: 12, color: '#333', marginRight: 4, fontWeight: '600' },
 
-  /* STAT CARDS */
+  /* STAT CARDS — explicit 2-per-row grid */
   statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     paddingHorizontal: 12,
   },
+  statsRow: {
+    flexDirection: 'row',
+    marginBottom: 8,
+  },
   statCard: {
-    width: '47%',
-    margin: '1.5%',
+    flex: 1,
+    marginHorizontal: 4,
     borderRadius: 16,
     paddingVertical: 18,
     alignItems: 'center',

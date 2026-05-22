@@ -96,23 +96,8 @@ export const authAPI = {
    * UI flow works even when the backend route doesn't exist yet.
    */
   sendOtp: async (email: string) => {
-    try {
-      const res = await api.post('/auth/send-otp', { email });
-      return res;
-    } catch (err: any) {
-      const status = err?.response?.status;
-      // 404 = endpoint not implemented yet → return mock so UI keeps working
-      if (status === 404) {
-        console.log('[authAPI.sendOtp] mock fallback for', email);
-        return {
-          data: {
-            success: true,
-            message: `OTP sent to ${email}. (mock — backend route not implemented)`,
-          },
-        } as any;
-      }
-      throw err;
-    }
+    const res = await api.post('/auth/send-otp', { email });
+    return res;
   },
 
   /**
@@ -120,48 +105,21 @@ export const authAPI = {
    * Mock fallback accepts "123456" while backend route is missing.
    */
   verifyOtp: async (email: string, otp: string) => {
-    try {
-      const res = await api.post('/auth/verify-otp', { email, otp });
-      return res;
-    } catch (err: any) {
-      const status = err?.response?.status;
-      if (status === 404) {
-        if (otp === '123456') {
-          return {
-            data: {
-              success: true,
-              message: 'OTP verified (mock)',
-              resetToken: 'mock-reset-token',
-            },
-          } as any;
-        }
-      }
-      throw err;
-    }
+    const res = await api.post('/auth/verify-otp', { email, otp });
+    return res;
   },
 
   /**
    * Reset password using a valid resetToken from verifyOtp.
+   * NOTE: No mock fallback — if this fails the user MUST know so they
+   * don't think their password was changed when it wasn't.
    */
   resetPassword: async (resetToken: string, newPassword: string) => {
-    try {
-      const res = await api.post('/auth/reset-password', {
-        resetToken,
-        newPassword,
-      });
-      return res;
-    } catch (err: any) {
-      const status = err?.response?.status;
-      if (status === 404) {
-        return {
-          data: {
-            success: true,
-            message: 'Password reset successful (mock)',
-          },
-        } as any;
-      }
-      throw err;
-    }
+    const res = await api.post('/auth/reset-password', {
+      resetToken,
+      newPassword,
+    });
+    return res;
   },
 };
 

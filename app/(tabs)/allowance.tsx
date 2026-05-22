@@ -202,7 +202,9 @@ export default function AllowanceScreen() {
           />
         </View>
 
-        {/* FORM */}
+        {/* FORM — only shown for Travel allowance. Petrol shows only the
+            "This Month" summary + History sections below. */}
+        {!isPetrol && (
         <View style={styles.form}>
           <Text style={styles.label}>From</Text>
           <View style={styles.input}>
@@ -300,6 +302,7 @@ export default function AllowanceScreen() {
             </Text>
           </TouchableOpacity>
         </View>
+        )}
 
         {/* MONTH PICKER */}
         <View style={styles.monthRow}>

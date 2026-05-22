@@ -148,23 +148,26 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* Logo */}
-          <View style={styles.logoWrap}>
-            <Image
-              source={require('../../assets/logo.png')}
-              style={styles.logo}
-              resizeMode="contain"
-            />
-          </View>
+          {/* Centered content wrapper — keeps everything vertically and
+              horizontally centered on the mobile screen */}
+          <View style={styles.centerWrap}>
+            {/* Logo */}
+            <View style={styles.logoWrap}>
+              <Image
+                source={require('../../assets/logo.png')}
+                style={styles.logo}
+                resizeMode="contain"
+              />
+            </View>
 
-          {/* Title */}
-          <Text style={styles.title}>Sign in to{'\n'}your Account</Text>
-          <Text style={styles.subtitle}>
-            Enter your email and password to log in
-          </Text>
+            {/* Title */}
+            <Text style={styles.title}>Sign in to{'\n'}your Account</Text>
+            <Text style={styles.subtitle}>
+              Enter your email and password to log in
+            </Text>
 
-          {/* Card */}
-          <View style={styles.card}>
+            {/* Card */}
+            <View style={styles.card}>
             {/* Email input */}
             <View style={styles.inputWrap}>
               <TextInput
@@ -232,19 +235,20 @@ export default function LoginScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Log In Button */}
-            <TouchableOpacity
-              style={[styles.loginBtn, !canSubmit && styles.loginBtnDisabled]}
-              onPress={handleLogin}
-              disabled={!canSubmit}
-              activeOpacity={0.9}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.loginText}>Log In</Text>
-              )}
-            </TouchableOpacity>
+              {/* Log In Button */}
+              <TouchableOpacity
+                style={[styles.loginBtn, !canSubmit && styles.loginBtnDisabled]}
+                onPress={handleLogin}
+                disabled={!canSubmit}
+                activeOpacity={0.9}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.loginText}>Log In</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -288,8 +292,19 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingVertical: 40,
+    paddingVertical: 24,
     justifyContent: 'center', // vertically center card like Figma
+    alignItems: 'center',     // horizontally center inner wrapper
+  },
+
+  // Wraps logo + title + card. We let it grow naturally but center it
+  // both ways inside the ScrollView so the form sits in the middle of
+  // the device — exactly what the Figma intends.
+  centerWrap: {
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    justifyContent: 'center',
   },
 
   logoWrap: {
