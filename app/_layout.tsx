@@ -1,5 +1,10 @@
 import { Stack } from 'expo-router';
 
+// Import-only side-effect: registers the background location ping task
+// with TaskManager so the OS can invoke it even when the app is killed.
+// Must run at module load time, before any screen renders.
+import '../services/locationTask';
+
 export default function RootLayout() {
   return (
     <Stack screenOptions={{ headerShown: false }}>

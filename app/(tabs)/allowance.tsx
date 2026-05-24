@@ -49,6 +49,101 @@ const MONTHS_SHORT = [
 // the user taps "Calculate" so it always matches distance × rate.
 const PETROL_RATE_PER_KM = 10;
 
+// Tamil Nadu locations — comprehensive list covering all 38 district
+// headquarters, every taluk centre, major industrial / tourist / hill /
+// pilgrimage towns, plus the high-traffic Chennai / Coimbatore / Madurai
+// suburbs employees actually commute between. Curated (not fetched) so
+// it works offline and renders instantly on low-end Androids.
+//
+// The picker's bottom-sheet has a search box — typing any 1+ characters
+// filters via substring match (case-insensitive), so "kov" matches both
+// "Kovilpatti" and "Vadakkankulam (Kovilpatti)" etc.
+const TN_LOCATIONS = [
+  // ── District headquarters (all 38) ───────────────────────────────
+  'Ariyalur', 'Chengalpattu', 'Chennai', 'Coimbatore', 'Cuddalore',
+  'Dharmapuri', 'Dindigul', 'Erode', 'Kallakurichi', 'Kanchipuram',
+  'Kanyakumari', 'Karur', 'Krishnagiri', 'Madurai', 'Mayiladuthurai',
+  'Nagapattinam', 'Namakkal', 'Nilgiris (Udhagamandalam)', 'Perambalur',
+  'Pudukkottai', 'Ramanathapuram', 'Ranipet', 'Salem', 'Sivaganga',
+  'Tenkasi', 'Thanjavur', 'Theni', 'Thoothukudi (Tuticorin)', 'Tiruchirappalli (Trichy)',
+  'Tirunelveli', 'Tirupathur', 'Tiruppur', 'Tiruvallur', 'Tiruvannamalai',
+  'Tiruvarur', 'Vellore', 'Viluppuram', 'Virudhunagar',
+  // ── Major / industrial / tourist / pilgrimage towns ─────────────
+  'Ambasamudram', 'Ambattur', 'Ambur', 'Aranthangi', 'Aravakurichi',
+  'Arakkonam', 'Arani', 'Arcot', 'Arumbavur', 'Aruppukkottai',
+  'Attur', 'Avinashi', 'Bhavani', 'Bodinayakanur', 'Chidambaram',
+  'Chinnamanur', 'Coonoor', 'Courtallam (Kuttralam)', 'Cumbum',
+  'Denkanikottai', 'Devakottai', 'Dharapuram', 'Dharmapuri',
+  'Edappadi', 'Eraniel', 'Gingee (Senji)', 'Gobichettipalayam',
+  'Gudalur', 'Gudiyatham', 'Hosur', 'Idappadi', 'Jayankondam',
+  'Jolarpettai', 'Kadayanallur', 'Kallakkurichi', 'Kambam',
+  'Kangayam', 'Karaikal', 'Karaikudi', 'Karambakkudi', 'Karumandurai',
+  'Kaveripattinam', 'Kayalpattinam', 'Killiyoor', 'Kodaikanal',
+  'Kodumudi', 'Kolathur', 'Kolli Hills', 'Kotagiri', 'Kovilpatti',
+  'Kulithalai', 'Kumbakonam', 'Kunnam', 'Kurinjipadi', 'Madavaram',
+  'Madukkarai', 'Madurantakam', 'Mahabalipuram (Mamallapuram)',
+  'Manapparai', 'Manamadurai', 'Mannargudi', 'Marakanam', 'Mecheri',
+  'Melur', 'Mettupalayam', 'Mettur', 'Musiri', 'Muthupettai',
+  'Nagercoil', 'Nanguneri', 'Neyveli', 'Omalur', 'Ottapidaram',
+  'Padmanabhapuram', 'Palani', 'Palladam', 'Pallavaram', 'Pallipalayam',
+  'Panruti', 'Papanasam', 'Paramakudi', 'Pattukkottai', 'Periyakulam',
+  'Perundurai', 'Pollachi', 'Ponneri', 'Pudur', 'Puliyangudi',
+  'Rajapalayam', 'Rameswaram', 'Rasipuram', 'Sankarankovil', 'Sankari',
+  'Sathyamangalam', 'Sholinghur', 'Sirkali (Sirkazhi)', 'Sivakasi',
+  'Srimushnam', 'Srivilliputhur', 'Tambaram', 'Tenkasi',
+  'Thiruchendur', 'Thirukoilur', 'Thiruparankundram',
+  'Thiruporur', 'Thirupparankunram', 'Thiruthuraipoondi',
+  'Thiruvaiyaru', 'Thiruvallur', 'Thiruvarur', 'Thiruvotriyur',
+  'Thondi', 'Thuraiyur', 'Tindivanam', 'Tiruchengode', 'Tirukoilur',
+  'Tirukkalukundram', 'Tirukoyilur', 'Tirupanandal', 'Tiruttani',
+  'Turaiyur', 'Udumalaipettai', 'Ulundurpet', 'Usilampatti',
+  'Uthukottai', 'Valangaiman', 'Valliyoor', 'Valparai', 'Vandavasi',
+  'Vaniyambadi', 'Vedaranyam', 'Vellakoil', 'Vellore', 'Vembakkam',
+  'Vikravandi', 'Villupuram', 'Virudhachalam', 'Walajapet', 'Yercaud',
+  // ── Chennai metro / suburbs ─────────────────────────────────────
+  'Chennai - Adyar', 'Chennai - Alandur', 'Chennai - Anna Nagar',
+  'Chennai - Ashok Nagar', 'Chennai - Avadi', 'Chennai - Besant Nagar',
+  'Chennai - Chromepet', 'Chennai - Egmore', 'Chennai - Ennore',
+  'Chennai - Guindy', 'Chennai - K.K. Nagar', 'Chennai - Kilpauk',
+  'Chennai - Kodambakkam', 'Chennai - Madhavaram', 'Chennai - Madipakkam',
+  'Chennai - Manapakkam', 'Chennai - Medavakkam', 'Chennai - Meenambakkam',
+  'Chennai - Mylapore', 'Chennai - Nungambakkam', 'Chennai - OMR (Old Mahabalipuram Rd)',
+  'Chennai - Pallavaram', 'Chennai - Pallikaranai', 'Chennai - Perambur',
+  'Chennai - Perungudi', 'Chennai - Porur', 'Chennai - Royapettah',
+  'Chennai - Royapuram', 'Chennai - Saidapet', 'Chennai - Sholinganallur',
+  'Chennai - Siruseri', 'Chennai - T. Nagar', 'Chennai - Tambaram',
+  'Chennai - Thiruvanmiyur', 'Chennai - Thoraipakkam', 'Chennai - Triplicane',
+  'Chennai - Vadapalani', 'Chennai - Velachery', 'Chennai - Washermanpet',
+  // ── Coimbatore suburbs / nearby ─────────────────────────────────
+  'Coimbatore - Gandhipuram', 'Coimbatore - Peelamedu',
+  'Coimbatore - R.S. Puram', 'Coimbatore - Saibaba Colony',
+  'Coimbatore - Saravanampatti', 'Coimbatore - Singanallur',
+  'Coimbatore - Sulur', 'Coimbatore - Thudiyalur', 'Coimbatore - Ukkadam',
+  'Coimbatore - Vadavalli',
+  // ── Madurai suburbs ─────────────────────────────────────────────
+  'Madurai - Anna Nagar', 'Madurai - K.K. Nagar', 'Madurai - Mattuthavani',
+  'Madurai - Palanganatham', 'Madurai - Thirunagar', 'Madurai - Vilangudi',
+  // ── Tiruchirappalli suburbs ─────────────────────────────────────
+  'Trichy - K.K. Nagar', 'Trichy - Srirangam', 'Trichy - Thillai Nagar',
+  'Trichy - Thuvakudi', 'Trichy - Woraiyur',
+  // ── Salem / Coimbatore ring towns ───────────────────────────────
+  'Salem - Hasthampatti', 'Salem - Suramangalam', 'Salem - Yercaud Road',
+  // ── Hill stations & tourist destinations ────────────────────────
+  'Ooty (Udhagamandalam)', 'Kotagiri', 'Coonoor', 'Yercaud', 'Kodaikanal',
+  'Valparai', 'Topslip', 'Yelagiri', 'Kolli Hills', 'Sirumalai',
+  // ── Pilgrimage centres ──────────────────────────────────────────
+  'Tiruchendur', 'Palani', 'Rameswaram', 'Thiruvannamalai', 'Madurai (Meenakshi Temple)',
+  'Srirangam', 'Chidambaram', 'Velankanni', 'Tirukkalukundram',
+  // ── Beach / coastal towns ───────────────────────────────────────
+  'Mahabalipuram (Mamallapuram)', 'Pondicherry (via Tindivanam)',
+  'Marina Beach (Chennai)', 'Kanyakumari', 'Tranquebar (Tharangambadi)',
+  'Poompuhar', 'Kovalam (Tamil Nadu)',
+];
+// De-dup + sort once so we never ship duplicates.
+const TN_LOCATIONS_UNIQUE = Array.from(new Set(TN_LOCATIONS)).sort((a, b) =>
+  a.localeCompare(b)
+);
+
 /**
  * Geocode an address via OpenStreetMap's Nominatim service (free, no API key).
  * Returns { lat, lng } or null if the address couldn't be resolved.
@@ -99,6 +194,9 @@ export default function AllowanceScreen() {
   const [type, setType] = useState<AllowanceType>('travel');
   const [fromLoc, setFromLoc] = useState('');
   const [toLoc, setToLoc] = useState('');
+  // Which picker is open ('from' | 'to' | null). One modal serves both.
+  const [pickerOpen, setPickerOpen] = useState<null | 'from' | 'to'>(null);
+  const [pickerSearch, setPickerSearch] = useState('');
   const [date, setDate] = useState('');
   const [distance, setDistance] = useState('');
   const [amount, setAmount] = useState('');
@@ -144,6 +242,17 @@ export default function AllowanceScreen() {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // For PETROL only — auto-recalculate distance + amount the moment both
+  // From and To are set (debounced ~600 ms so we don't geocode on every
+  // keystroke). The user can still hit Calculate manually for travel.
+  useEffect(() => {
+    if (type !== 'petrol') return;
+    if (!fromLoc.trim() || !toLoc.trim()) return;
+    const id = setTimeout(() => { calculate(); }, 600);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromLoc, toLoc, type]);
 
   // Auto-fill distance + amount for petrol by geocoding From / To and
   // computing the straight-line distance × ₹/km rate. The user can still
@@ -290,28 +399,30 @@ export default function AllowanceScreen() {
         {!isPetrol && (
         <View style={styles.form}>
           <Text style={styles.label}>From</Text>
-          <View style={styles.input}>
+          <TouchableOpacity
+            style={styles.input}
+            onPress={() => { setPickerSearch(''); setPickerOpen('from'); }}
+            activeOpacity={0.75}
+          >
             <Ionicons name="locate-outline" size={18} color="#888" style={{ marginRight: 8 }} />
-            <TextInput
-              value={fromLoc}
-              onChangeText={setFromLoc}
-              placeholder={isPetrol ? 'Home' : 'San Francisco HQ'}
-              placeholderTextColor="#9A9A9A"
-              style={styles.textInput}
-            />
-          </View>
+            <Text style={[styles.textInput, !fromLoc && { color: '#9A9A9A' }]}>
+              {fromLoc || 'Select pickup location'}
+            </Text>
+            <Ionicons name="chevron-down" size={16} color="#9A9A9A" />
+          </TouchableOpacity>
 
           <Text style={styles.label}>To</Text>
-          <View style={styles.input}>
+          <TouchableOpacity
+            style={styles.input}
+            onPress={() => { setPickerSearch(''); setPickerOpen('to'); }}
+            activeOpacity={0.75}
+          >
             <Ionicons name="location-outline" size={18} color="#888" style={{ marginRight: 8 }} />
-            <TextInput
-              value={toLoc}
-              onChangeText={setToLoc}
-              placeholder={isPetrol ? 'Office' : 'Enter Destination'}
-              placeholderTextColor="#9A9A9A"
-              style={styles.textInput}
-            />
-          </View>
+            <Text style={[styles.textInput, !toLoc && { color: '#9A9A9A' }]}>
+              {toLoc || 'Select destination'}
+            </Text>
+            <Ionicons name="chevron-down" size={16} color="#9A9A9A" />
+          </TouchableOpacity>
 
           <Text style={styles.label}>Date</Text>
           <TouchableOpacity
@@ -599,6 +710,95 @@ export default function AllowanceScreen() {
               </TouchableOpacity>
             ))}
           </View>
+        </Pressable>
+      </Modal>
+
+      {/* ─── Tamil Nadu location picker (shared by From / To) ──────────── */}
+      <Modal
+        visible={pickerOpen !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPickerOpen(null)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setPickerOpen(null)}>
+          <Pressable style={styles.locPickerSheet} onPress={() => {}}>
+            <View style={styles.locPickerHeader}>
+              <Text style={styles.locPickerTitle}>
+                {pickerOpen === 'from' ? 'Pickup location' : 'Destination'}
+              </Text>
+              <TouchableOpacity onPress={() => setPickerOpen(null)} hitSlop={{ top:8,bottom:8,left:8,right:8 }}>
+                <Ionicons name="close" size={22} color="#666" />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.locPickerSub}>Tamil Nadu places — type to filter</Text>
+
+            <View style={styles.locSearchWrap}>
+              <Ionicons name="search" size={16} color="#999" />
+              <TextInput
+                value={pickerSearch}
+                onChangeText={setPickerSearch}
+                placeholder="Search city / town"
+                placeholderTextColor="#9A9A9A"
+                style={styles.locSearchInput}
+                autoFocus
+              />
+            </View>
+
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              style={{ maxHeight: 380 }}
+            >
+              {TN_LOCATIONS_UNIQUE
+                .filter((p) => {
+                  if (!pickerSearch) return true;
+                  const q   = pickerSearch.toLowerCase();
+                  const low = p.toLowerCase();
+                  // Match whole string, OR any whitespace/dash/comma-separated
+                  // token within. Lets the user type "adyar" and hit
+                  // "Chennai - Adyar", or "peelamedu" for "Coimbatore - Peelamedu".
+                  if (low.includes(q)) return true;
+                  const parts = low.split(/[\s\-,()]+/).filter(Boolean);
+                  return parts.some((tok) => tok.startsWith(q));
+                })
+                .map((place) => {
+                  const active =
+                    (pickerOpen === 'from' && place === fromLoc) ||
+                    (pickerOpen === 'to'   && place === toLoc);
+                  return (
+                    <TouchableOpacity
+                      key={place}
+                      style={[styles.locRow, active && styles.locRowActive]}
+                      onPress={() => {
+                        if (pickerOpen === 'from') setFromLoc(place);
+                        else                       setToLoc(place);
+                        setPickerOpen(null);
+                      }}
+                    >
+                      <Ionicons
+                        name="location-outline"
+                        size={16}
+                        color={active ? '#2E7D32' : '#777'}
+                        style={{ marginRight: 10 }}
+                      />
+                      <Text style={[styles.locRowText, active && { color: '#2E7D32', fontWeight: '700' }]}>
+                        {place}
+                      </Text>
+                      {active && <Ionicons name="checkmark" size={16} color="#2E7D32" />}
+                    </TouchableOpacity>
+                  );
+                })}
+              {TN_LOCATIONS_UNIQUE.filter((p) => {
+                if (!pickerSearch) return true;
+                const q   = pickerSearch.toLowerCase();
+                const low = p.toLowerCase();
+                if (low.includes(q)) return true;
+                const parts = low.split(/[\s\-,()]+/).filter(Boolean);
+                return parts.some((tok) => tok.startsWith(q));
+              }).length === 0 && (
+                <Text style={styles.locEmpty}>No matching places.</Text>
+              )}
+            </ScrollView>
+          </Pressable>
         </Pressable>
       </Modal>
     </SafeAreaView>
@@ -985,4 +1185,63 @@ const styles = StyleSheet.create({
     borderBottomColor: '#F0F0F0',
   },
   modalRowText: { fontSize: 14, color: '#222' },
+
+  /* ─── Shared modal overlay (backdrop) used by the location picker ─ */
+  // Without this, <Modal>'s child Pressable has no positioning / dim
+  // background and the From/To picker appears empty or unreachable.
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+
+  /* ─── Location picker sheet (TN places) ──────────────────────────── */
+  locPickerSheet: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0, right: 0,
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    paddingTop: 16,
+    paddingHorizontal: 20,
+    paddingBottom: 22,
+    maxHeight: '75%',
+  },
+  locPickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  locPickerTitle: { fontSize: 16, fontWeight: '800', color: '#111' },
+  locPickerSub:   { fontSize: 11.5, color: '#888', marginTop: 2, marginBottom: 12 },
+
+  locSearchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F4F6F4',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 10,
+  },
+  locSearchInput: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 13.5,
+    color: '#1A1A1A',
+    paddingVertical: 0,
+  },
+
+  locRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F2F2F2',
+  },
+  locRowActive: { backgroundColor: '#F1F8F1', borderRadius: 8 },
+  locRowText:   { flex: 1, fontSize: 14, color: '#222' },
+  locEmpty:     { textAlign: 'center', color: '#999', fontSize: 13, paddingVertical: 24 },
 });

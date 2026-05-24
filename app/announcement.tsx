@@ -85,7 +85,7 @@ const CATEGORY_THEME: Record<
 };
 
 function CategoryIcon({ cat, size = 18 }: { cat: Category; size?: number }) {
-  const t = CATEGORY_THEME[cat];
+  const t = CATEGORY_THEME[cat] || CATEGORY_THEME.general;
   if (t.iconLib === 'mci') {
     return <MaterialCommunityIcons name={t.iconName as any} size={size} color={t.fg} />;
   }
@@ -153,9 +153,11 @@ export default function AnnouncementScreen() {
     setRefreshing(false);
   }, [fetchItems]);
 
-  const visible = filter === 'all'
-    ? items
-    : items.filter((a) => (a.category || 'general') === filter);
+  // Categories were removed at HR's request — show everything in one
+  // flat list, newest first. `filter` state is kept so the rest of the
+  // file (analytics, badge colour, etc.) still has a defined value, but
+  // it's effectively always 'all' now.
+  const visible = items;
 
   return (
     <View style={styles.root}>
@@ -186,29 +188,8 @@ export default function AnnouncementScreen() {
         {/* ─── Body card ──────────────────────────────────────────────── */}
         <View style={styles.body}>
 
-          {/* Filter chips */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.filterRow}
-            contentContainerStyle={{ paddingHorizontal: 18, paddingVertical: 12 }}
-          >
-            {FILTERS.map((f) => {
-              const active = filter === f.key;
-              return (
-                <TouchableOpacity
-                  key={f.key}
-                  style={[styles.filterChip, active && styles.filterChipActive]}
-                  onPress={() => setFilter(f.key)}
-                  activeOpacity={0.85}
-                >
-                  <Text style={[styles.filterChipText, active && { color: '#FFFFFF' }]}>
-                    {f.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+          {/* Category filter chips removed — HR asked for a single flat
+              list, no All / Holidays / Policies / Events / General tabs. */}
 
           {loading ? (
             <View style={styles.centered}>
@@ -245,7 +226,15 @@ export default function AnnouncementScreen() {
               }
             >
               {visible.map((a, idx) => {
-                const cat   = (a.category || 'general') as Category;
+                // HRMS may post with capitalised categories ('General',
+                // 'HR', 'Policy', 'Event', etc.). Normalize to the lowercase
+                // enum the mobile theme map expects, and fall back to
+                // 'general' when no theme exists for the value.
+                const raw = String(a.category || 'general').toLowerCase();
+                const cat = (raw.includes('holiday') ? 'holiday'
+                          :  raw.includes('policy')  ? 'policy'
+                          :  raw.includes('event')   ? 'event'
+                          :                             'general') as Category;
                 const theme = CATEGORY_THEME[cat];
                 const isExpanded = expandedId === a._id;
                 const isFeatured = idx === 0 && filter === 'all';

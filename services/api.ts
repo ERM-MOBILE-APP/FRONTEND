@@ -121,12 +121,42 @@ export const authAPI = {
     });
     return res;
   },
+
+  /**
+   * Logged-in user changes their own password (no OTP). Used after the
+   * employee logs in with the HR-assigned default password and wants to
+   * pick their own.
+   */
+  changePassword: async (oldPassword: string, newPassword: string) =>
+    api.post('/auth/change-password', { oldPassword, newPassword }),
 };
 
 export const attendanceAPI = {
-  checkIn: (location: 'remote' | 'office' = 'office') =>
-    api.post('/attendance/checkin', { location }),
-  checkOut: () => api.post('/attendance/checkout'),
+  checkIn: (
+    location: 'remote' | 'office' = 'office',
+    coords?: { lat?: number; lng?: number; accuracy?: number },
+  ) =>
+    api.post('/attendance/checkin', {
+      location,
+      lat:      coords?.lat,
+      lng:      coords?.lng,
+      accuracy: coords?.accuracy,
+    }),
+  checkOut: (coords?: { lat?: number; lng?: number; accuracy?: number }) =>
+    api.post('/attendance/checkout', {
+      lat:      coords?.lat,
+      lng:      coords?.lng,
+      accuracy: coords?.accuracy,
+    }),
+  /** Auto-checkout fired when GPS turns off mid-day. */
+  autoCheckOut: (reason?: string) =>
+    api.post('/attendance/auto-checkout', { reason: reason || 'gps-off' }),
+  /** Every 2 min while checked in, send the live location. */
+  locationPing: (lat: number, lng: number, accuracy?: number, speed?: number) =>
+    api.post('/attendance/location-ping', { lat, lng, accuracy, speed }),
+  /** Presence state: 'active' | 'idle' | 'offline'. */
+  setPresence: (state: 'active' | 'idle' | 'offline') =>
+    api.post('/attendance/presence', { state }),
   today: () => api.get('/attendance/today'),
   getMonthly: (month: number, year: number) =>
     api.get(`/attendance/monthly?month=${month}&year=${year}`),

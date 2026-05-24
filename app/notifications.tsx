@@ -49,8 +49,20 @@ export default function NotificationsScreen() {
     }
   }, []);
 
+  // On screen mount: load notifications AND automatically mark them all
+  // read so the bell badge on the home page clears as soon as the user
+  // opens this screen. We still keep the list items visible — only the
+  // unread DOT is hidden — so they can scroll through everything.
   useEffect(() => {
-    load();
+    (async () => {
+      await load();
+      try {
+        await notificationAPI.markAllRead();
+      } catch {
+        // Silent — if this fails the worst case is the badge stays one
+        // extra render; user can pull-to-refresh to retry.
+      }
+    })();
   }, [load]);
 
   const onRefresh = async () => {

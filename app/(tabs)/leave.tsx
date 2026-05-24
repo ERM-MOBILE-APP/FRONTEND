@@ -114,9 +114,58 @@ export default function LeaveScreen() {
     loadHistory();
   }, [loadHistory]);
 
+  /**
+   * Check whether the employee already has a leave OR permission request
+   * touching any of the dates in [from, to] (inclusive). Returns the first
+   * matching date string (YYYY-MM-DD) or null if none.
+   *
+   * Used to block duplicate submissions BEFORE we hit the backend — the
+   * user sees an immediate "already requested for this date" toast instead
+   * of a vague server error.
+   */
+  const findOverlappingRequest = (from: string, to: string): string | null => {
+    if (!from) return null;
+    const target = new Set<string>();
+    const start  = new Date(from + 'T00:00:00');
+    const end    = new Date((to || from) + 'T00:00:00');
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      target.add(d.toISOString().split('T')[0]);
+    }
+    for (const h of history) {
+      // Skip rejected/cancelled requests — re-applying after a rejection
+      // is legitimate.
+      const status = String((h as any).status || '').toLowerCase();
+      if (status === 'rejected' || status === 'cancelled') continue;
+
+      if (h.requestType === 'permission' && (h as any).date) {
+        if (target.has(String((h as any).date).split('T')[0])) {
+          return String((h as any).date).split('T')[0];
+        }
+      } else if (h.startDate && h.endDate) {
+        const s = new Date(h.startDate.split('T')[0] + 'T00:00:00');
+        const e = new Date(h.endDate.split('T')[0]   + 'T00:00:00');
+        for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
+          const iso = d.toISOString().split('T')[0];
+          if (target.has(iso)) return iso;
+        }
+      }
+    }
+    return null;
+  };
+
   const submitLeave = async () => {
     if (!startDate || !endDate || !reason.trim()) {
       Alert.alert('Required', 'Please fill leave type, start, end and reason.');
+      return;
+    }
+    // Block duplicates — the backend may also enforce this, but catching
+    // it client-side is faster and the error message is much clearer.
+    const dup = findOverlappingRequest(startDate, endDate);
+    if (dup) {
+      Alert.alert(
+        'Already requested',
+        `You have already submitted a request for ${dup}. Wait for HR to act on it, or cancel the existing one before filing a new one.`
+      );
       return;
     }
     setSubmitting(true);
@@ -144,6 +193,14 @@ export default function LeaveScreen() {
   const submitPermission = async () => {
     if (!permDate || !startTime || !endTime || !permReason.trim()) {
       Alert.alert('Required', 'Please fill all permission fields.');
+      return;
+    }
+    const dup = findOverlappingRequest(permDate, permDate);
+    if (dup) {
+      Alert.alert(
+        'Already requested',
+        `You have already submitted a request for ${dup}. Wait for HR to act on it, or cancel the existing one before filing a new one.`
+      );
       return;
     }
     setSubmitting(true);
@@ -508,6 +565,13 @@ export default function LeaveScreen() {
             </Text>
             <Calendar
               onDayPress={(day: { dateString: string }) => setSelectedDate(day.dateString)}
+              // Past dates are read-only. Employees can only file leave or
+              // permission for TODAY or future days — backdated requests
+              // would require an HR-side adjustment instead. `minDate` is
+              // today's ISO date in local time; react-native-calendars greys
+              // out and ignores taps on anything before it.
+              minDate={new Date().toISOString().split('T')[0]}
+              disableAllTouchEventsForDisabledDays={true}
               markedDates={{
                 ...(startDate && datePickerFor === 'start'
                   ? { [startDate]: { selected: true, selectedColor: '#4CAF50' } }
@@ -523,6 +587,7 @@ export default function LeaveScreen() {
                 todayTextColor: '#2E7D32',
                 arrowColor: '#2E7D32',
                 selectedDayBackgroundColor: '#4CAF50',
+                textDisabledColor: '#CCCCCC',
               }}
             />
           </Pressable>

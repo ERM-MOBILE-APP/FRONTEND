@@ -31,7 +31,28 @@ type UserProfile = {
 // Placeholder for missing values. Kept in one place so no hard-coded test
 // strings (like the old "20-09-2005" / "Bhvhjh@Gmail.Com") slip back in.
 const EMPTY = 'Not set';
-const show = (v?: string) => (v && String(v).trim()) ? String(v).trim() : EMPTY;
+// Render any value safely. If it arrives as an object (e.g. an old API
+// response with nested address or a populated designation), flatten it to
+// a readable string so the screen never displays "[object Object]" or a
+// raw ObjectId hex.
+const show = (v?: any): string => {
+  if (v == null) return EMPTY;
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (!s) return EMPTY;
+    // Reject 24-char hex ObjectIds — they look like data but aren't readable.
+    if (/^[a-f0-9]{24}$/i.test(s)) return EMPTY;
+    return s;
+  }
+  if (typeof v === 'object') {
+    if (typeof v.name  === 'string') return v.name;
+    if (typeof v.title === 'string') return v.title;
+    const flat = [v.street, v.city, v.state, v.zipCode, v.country].filter(Boolean).join(', ');
+    if (flat) return flat;
+    return EMPTY;
+  }
+  return String(v);
+};
 
 export default function ProfileScreen() {
   const [user, setUser] = useState<UserProfile>({});
