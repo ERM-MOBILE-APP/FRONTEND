@@ -123,13 +123,27 @@ export default function LeaveScreen() {
    * user sees an immediate "already requested for this date" toast instead
    * of a vague server error.
    */
+  // Build YYYY-MM-DD from LOCAL date components. toISOString() converts
+  // to UTC first, which for IST users (UTC+5:30) shifts midnight back to
+  // the previous day — so picking 30-May produced "2026-05-29" in the
+  // duplicate-warning toast. Using local components keeps the date the
+  // user actually sees on the calendar.
+  const localISO = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // Display helper — converts YYYY-MM-DD to dd-mm-yyyy so the alert
+  // matches the format used everywhere else.
+  const toDDMMYYYY = (iso: string) => {
+    const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : String(iso || '');
+  };
+
   const findOverlappingRequest = (from: string, to: string): string | null => {
     if (!from) return null;
     const target = new Set<string>();
     const start  = new Date(from + 'T00:00:00');
     const end    = new Date((to || from) + 'T00:00:00');
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      target.add(d.toISOString().split('T')[0]);
+      target.add(localISO(d));
     }
     for (const h of history) {
       // Skip rejected/cancelled requests — re-applying after a rejection
@@ -138,14 +152,13 @@ export default function LeaveScreen() {
       if (status === 'rejected' || status === 'cancelled') continue;
 
       if (h.requestType === 'permission' && (h as any).date) {
-        if (target.has(String((h as any).date).split('T')[0])) {
-          return String((h as any).date).split('T')[0];
-        }
+        const iso = String((h as any).date).split('T')[0];
+        if (target.has(iso)) return iso;
       } else if (h.startDate && h.endDate) {
         const s = new Date(h.startDate.split('T')[0] + 'T00:00:00');
         const e = new Date(h.endDate.split('T')[0]   + 'T00:00:00');
         for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
-          const iso = d.toISOString().split('T')[0];
+          const iso = localISO(d);
           if (target.has(iso)) return iso;
         }
       }
@@ -164,7 +177,7 @@ export default function LeaveScreen() {
     if (dup) {
       Alert.alert(
         'Already requested',
-        `You have already submitted a request for ${dup}. Wait for HR to act on it, or cancel the existing one before filing a new one.`
+        `You have already submitted a request for ${toDDMMYYYY(dup)}. Wait for HR to act on it, or cancel the existing one before filing a new one.`
       );
       return;
     }
@@ -199,7 +212,7 @@ export default function LeaveScreen() {
     if (dup) {
       Alert.alert(
         'Already requested',
-        `You have already submitted a request for ${dup}. Wait for HR to act on it, or cancel the existing one before filing a new one.`
+        `You have already submitted a request for ${toDDMMYYYY(dup)}. Wait for HR to act on it, or cancel the existing one before filing a new one.`
       );
       return;
     }

@@ -106,7 +106,7 @@ function relativeTime(iso?: string): string {
   if (diffSec < 86400)  return `${Math.floor(diffSec / 3600)}h ago`;
   if (diffSec < 172800) return 'yesterday';
   if (diffSec < 604800) return `${Math.floor(diffSec / 86400)}d ago`;
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+  return (() => { const __d = d; if (!__d || isNaN(__d.getTime?.() ?? new Date(__d).getTime())) return '—'; const __dd = (__d instanceof Date) ? __d : new Date(__d); const __day = String(__dd.getDate()).padStart(2,'0'); const __mo  = String(__dd.getMonth()+1).padStart(2,'0'); const __yr  = __dd.getFullYear(); return __day + '-' + __mo + '-' + __yr; })();
 }
 
 const FILTERS: Array<{ key: Category | 'all'; label: string }> = [

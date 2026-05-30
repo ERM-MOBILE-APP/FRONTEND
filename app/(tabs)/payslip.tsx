@@ -76,18 +76,38 @@ export default function PayslipScreen() {
   const currentMonth    = now.getMonth() + 1;
   const currentYear     = now.getFullYear();
 
-  const availableYears = [
-    new Date().getFullYear(),
-    new Date().getFullYear() - 1,
-    new Date().getFullYear() - 2,
-  ];
+  // availableYears is derived from the user's joining date so the picker
+  // never shows years before they actually joined the company. April 2025
+  // is the absolute payroll floor (when company payroll started).
+  const PAYROLL_FLOOR_YEAR  = 2025;
+  const PAYROLL_FLOOR_MONTH = 4;
+  const joiningInfo = (() => {
+    const raw = (user as any)?.joiningDate;
+    if (!raw) return { year: PAYROLL_FLOOR_YEAR, month: PAYROLL_FLOOR_MONTH };
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return { year: PAYROLL_FLOOR_YEAR, month: PAYROLL_FLOOR_MONTH };
+    return { year: d.getFullYear(), month: d.getMonth() + 1 };
+  })();
+  const availableYears = (() => {
+    const start = Math.max(joiningInfo.year, PAYROLL_FLOOR_YEAR);
+    const end   = new Date().getFullYear();
+    const out: number[] = [];
+    for (let y = end; y >= start; y--) out.push(y);   // newest first for the picker
+    return out;
+  })();
 
   // A month is "future" (and therefore not requestable) if its year is
   // later than the current year, OR same year but later month.
   const isFutureMonth = (m: number, y: number) =>
     y > currentYear || (y === currentYear && m > currentMonth);
 
-  const submitDisabled = requesting || isFutureMonth(reqMonth, reqYear);
+  // A month is "before joining" when it falls earlier than the employee's
+  // joining date in HRMS. Payslips for those months don't exist (the
+  // person wasn't on payroll yet) so HR shouldn't be able to request them.
+  const isBeforeJoining = (m: number, y: number) =>
+    y < joiningInfo.year || (y === joiningInfo.year && m < joiningInfo.month);
+
+  const submitDisabled = requesting || isFutureMonth(reqMonth, reqYear) || isBeforeJoining(reqMonth, reqYear);
 
   useEffect(() => {
     AsyncStorage.getItem('user').then((u) => {
@@ -330,22 +350,26 @@ export default function PayslipScreen() {
                 const v        = i + 1;
                 const active   = v === reqMonth;
                 const isFuture = isFutureMonth(v, reqYear);
+                const isPre    = isBeforeJoining(v, reqYear);
+                // A chip is unavailable if it falls in the future OR
+                // before the employee's joining month.
+                const isOff    = isFuture || isPre;
                 return (
                   <TouchableOpacity
                     key={m}
                     style={[
                       styles.monthChip,
-                      active && !isFuture && styles.monthChipActive,
-                      isFuture && styles.monthChipDisabled,
+                      active && !isOff && styles.monthChipActive,
+                      isOff && styles.monthChipDisabled,
                     ]}
-                    onPress={() => { if (!isFuture) setReqMonth(v); }}
-                    disabled={isFuture}
+                    onPress={() => { if (!isOff) setReqMonth(v); }}
+                    disabled={isOff}
                   >
                     <Text
                       style={[
                         styles.monthChipText,
-                        active && !isFuture && { color: '#FFFFFF' },
-                        isFuture && { color: '#BBBBBB' },
+                        active && !isOff && { color: '#FFFFFF' },
+                        isOff && { color: '#BBBBBB' },
                       ]}
                     >
                       {m}
@@ -373,6 +397,11 @@ export default function PayslipScreen() {
               ))}
             </View>
 
+            {isBeforeJoining(reqMonth, reqYear) && (
+              <Text style={styles.futureWarn}>
+                You joined in {MONTHS[joiningInfo.month]} {joiningInfo.year} — no payslip exists for {MONTHS[reqMonth]} {reqYear}.
+              </Text>
+            )}
             {isFutureMonth(reqMonth, reqYear) && (
               <Text style={styles.futureWarn}>
                 {MONTHS[reqMonth]} {reqYear} hasn't happened yet — pick a past or current month.

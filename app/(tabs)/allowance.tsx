@@ -332,14 +332,16 @@ export default function AllowanceScreen() {
   };
 
   const formatDate = (iso: string) => {
-    if (!iso) return '';
-    try {
-      const d = new Date(iso + 'T00:00:00');
-      return `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
-    } catch {
-      return iso;
-    }
-  };
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    return `${dd}-${mm}-${yyyy}`;
+  } catch { return String(iso); }
+};
 
   const formatFullDate = (iso: string) => {
     if (!iso) return '';

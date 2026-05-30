@@ -6,6 +6,7 @@ import {
   StyleSheet,
   ScrollView,
   Alert,
+  StatusBar,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -579,6 +580,11 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.root}>
+      {/* Solid green status bar so the safe-area strip never shows the
+          page background through the translucent OS layer (caused the
+          attCard to look like it was overlapping the device clock when
+          the green header scrolled out of view). */}
+      <StatusBar barStyle="light-content" backgroundColor={GREEN} translucent={false} />
       <SafeAreaView edges={['top']} style={styles.safe}>
         <ScrollView
           contentContainerStyle={{ paddingBottom: 100 }}
@@ -756,8 +762,12 @@ const GREEN = '#4CAF50';
 const PAGE_BG = '#F5F7F6';
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: PAGE_BG },
-  safe: { flex: 1 },
+  // Root is the GREEN behind the safe-area inset (status-bar strip).
+  // .safe sits on top with the page colour, so the rest of the screen
+  // (including the part that becomes visible when the header scrolls
+  // out of view) doesn't bleed white into the OS clock area.
+  root: { flex: 1, backgroundColor: GREEN },
+  safe: { flex: 1, backgroundColor: PAGE_BG },
 
   greenHeader: {
     backgroundColor: GREEN,
