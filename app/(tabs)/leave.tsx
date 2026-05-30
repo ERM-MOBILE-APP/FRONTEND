@@ -238,11 +238,12 @@ export default function LeaveScreen() {
     }
   };
 
+  // dd-mm-yyyy — matches HRMS / ERM Web display format across the whole stack.
   const formatDisplay = (iso: string) => {
     if (!iso) return '';
     try {
       const d = new Date(iso + 'T00:00:00');
-      return `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+      return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
     } catch {
       return iso;
     }
@@ -252,7 +253,7 @@ export default function LeaveScreen() {
     if (!iso) return '';
     try {
       const d = new Date(iso + 'T00:00:00');
-      return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+      return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
     } catch {
       return iso;
     }
@@ -261,12 +262,8 @@ export default function LeaveScreen() {
   const formatRange = (s?: string, e?: string) => {
     if (!s || !e) return '';
     try {
-      const ds = new Date(s + 'T00:00:00');
-      const de = new Date(e + 'T00:00:00');
-      const sm = MONTHS_SHORT[ds.getMonth()];
-      const em = MONTHS_SHORT[de.getMonth()];
-      if (s === e) return `${sm} ${ds.getDate()}`;
-      return `${sm} ${ds.getDate()} - ${em} ${de.getDate()}`;
+      if (s === e) return formatDisplay(s);
+      return `${formatDisplay(s)} - ${formatDisplay(e)}`;
     } catch {
       return `${s} - ${e}`;
     }

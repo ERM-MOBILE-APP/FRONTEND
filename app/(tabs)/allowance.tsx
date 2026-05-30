@@ -343,12 +343,14 @@ export default function AllowanceScreen() {
   } catch { return String(iso); }
 };
 
+  // dd-mm-yyyy — matches HRMS / ERM Web display format across the whole stack.
   const formatFullDate = (iso: string) => {
     if (!iso) return '';
     try {
       const d = new Date(iso + 'T00:00:00');
-      const wk = d.toLocaleString('default', { weekday: 'short' });
-      return `${wk} ${MONTHS_SHORT[d.getMonth()]} ${d.getDate()} ${d.getFullYear()}`;
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      return `${dd}-${mm}-${d.getFullYear()}`;
     } catch {
       return iso;
     }
