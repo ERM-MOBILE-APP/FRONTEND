@@ -235,8 +235,29 @@ export default function AttendanceScreen() {
     }
   };
 
+  // Request window closes 2 days after the attendance date — matches the
+  // backend sweeper that auto-expires anything still pending after the
+  // same window. Block the submit + show a clear closed-window alert.
+  const REQUEST_WINDOW_DAYS = 2;
+  const isRequestWindowClosed = (dateIso: string | null): boolean => {
+    if (!dateIso) return false;
+    const target = new Date(dateIso + 'T00:00:00');
+    if (isNaN(target.getTime())) return false;
+    const cutoff = Date.now() - REQUEST_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    return target.getTime() < cutoff;
+  };
+
   const submitRequest = async () => {
     if (!reqModalDate) return;
+    if (isRequestWindowClosed(reqModalDate)) {
+      const target = new Date(reqModalDate + 'T00:00:00');
+      const daysAgo = Math.floor((Date.now() - target.getTime()) / 86400000);
+      Alert.alert(
+        'Request window closed',
+        `Regularization requests can only be filed within 2 days of the attendance date. This date is ${daysAgo} days ago.`
+      );
+      return;
+    }
     setSubmitting(true);
     try {
       await attendanceAPI.createRequest({
