@@ -107,7 +107,36 @@ export default function PayslipScreen() {
   const isBeforeJoining = (m: number, y: number) =>
     y < joiningInfo.year || (y === joiningInfo.year && m < joiningInfo.month);
 
-  const submitDisabled = requesting || isFutureMonth(reqMonth, reqYear) || isBeforeJoining(reqMonth, reqYear);
+  // A month is already requested when the local payslip history (for the
+  // currently-selected year) has a row for it. Once HR has uploaded the
+  // row will also carry downloadUrl / status='processed' — that case is
+  // covered by isAlreadyReady. Both states disable the Submit button so
+  // the employee can't double-request.
+  const isAlreadyRequested = (m: number, y: number) => {
+    if (y !== selectedYear) return false;  // history only covers the picked year
+    return (history || []).some((h: any) => {
+      const hm = Number(h.month || (h.period?.split('-')?.[1])) || 0;
+      const hy = Number(h.year  || (h.period?.split('-')?.[0])) || 0;
+      const status = String(h.status || '').toLowerCase();
+      // Don't lock the button if HR rejected — they should be able to re-file.
+      return hm === m && hy === y && status !== 'rejected';
+    });
+  };
+  const isAlreadyReady = (m: number, y: number) => {
+    if (y !== selectedYear) return false;
+    return (history || []).some((h: any) => {
+      const hm = Number(h.month || (h.period?.split('-')?.[1])) || 0;
+      const hy = Number(h.year  || (h.period?.split('-')?.[0])) || 0;
+      const status = String(h.status || '').toLowerCase();
+      const ready  = h.downloadUrl || h.pdfUrl || status === 'processed' || status === 'uploaded';
+      return hm === m && hy === y && ready;
+    });
+  };
+  const submitDisabled =
+    requesting ||
+    isFutureMonth(reqMonth, reqYear) ||
+    isBeforeJoining(reqMonth, reqYear) ||
+    isAlreadyRequested(reqMonth, reqYear);
 
   useEffect(() => {
     AsyncStorage.getItem('user').then((u) => {
