@@ -292,7 +292,14 @@ export default function LeaveScreen() {
     setTimePickerFor(null);
   };
 
-  const years = Array.from({ length: 6 }, (_, i) => now.getFullYear() - 2 + i);
+  // Company started in April 2025 — floor the year picker at 2025.
+  const years = (() => {
+    const FLOOR = 2025;
+    const top   = Math.max(now.getFullYear() + 1, FLOOR);
+    const out: number[] = [];
+    for (let y = FLOOR; y <= top; y++) out.push(y);
+    return out;
+  })();
 
   return (
     <SafeAreaView edges={['top']} style={styles.safe}>

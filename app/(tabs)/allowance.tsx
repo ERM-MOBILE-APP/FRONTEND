@@ -357,7 +357,14 @@ export default function AllowanceScreen() {
   };
 
   const rupee = (n: number) => '₹' + (n || 0).toLocaleString('en-IN');
-  const years = Array.from({ length: 6 }, (_, i) => now.getFullYear() - 2 + i);
+  // Company started in April 2025 — floor the year picker at 2025.
+  const years = (() => {
+    const FLOOR = 2025;
+    const top   = Math.max(now.getFullYear() + 1, FLOOR);
+    const out: number[] = [];
+    for (let y = FLOOR; y <= top; y++) out.push(y);
+    return out;
+  })();
 
   const isPetrol = type === 'petrol';
 

@@ -278,7 +278,14 @@ export default function AttendanceScreen() {
     }
   };
 
-  const years = Array.from({ length: 6 }, (_, i) => year - 2 + i);
+  // Company started in April 2025 — floor the year picker at 2025.
+  const years = (() => {
+    const FLOOR = 2025;
+    const top   = Math.max(year + 1, FLOOR);
+    const out: number[] = [];
+    for (let y = FLOOR; y <= top; y++) out.push(y);
+    return out;
+  })();
 
   return (
     <SafeAreaView edges={['top']} style={styles.safe}>
