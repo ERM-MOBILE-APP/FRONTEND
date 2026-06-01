@@ -218,13 +218,16 @@ export default function AllowanceScreen() {
 
   const loadAll = useCallback(async () => {
     try {
-      // Petrol reimbursement is derived from travel — pull the travel
-      // records and compute the petrol breakdown from them. The travel
-      // tab keeps using its own type as before.
-      const fetchType = type === 'petrol' ? 'travel' : type;
+      // Each tab now strictly fetches its own type. Previously the petrol
+      // tab pulled the employee's travel records and computed a petrol
+      // breakdown from them — that meant a Travel allowance the user
+      // submitted (with type='travel') ended up listed under the Petrol
+      // section, which confused both employees and HR. Now Travel rows
+      // only show in the Travel tab and Petrol rows only in the Petrol
+      // tab, matching what HRMS shows.
       const [hRes, sRes] = await Promise.all([
-        allowanceAPI.getMyAllowances({ month: histMonth, year: histYear, type: fetchType }),
-        allowanceAPI.getSummary    ({ month: histMonth, year: histYear, type: fetchType }),
+        allowanceAPI.getMyAllowances({ month: histMonth, year: histYear, type }),
+        allowanceAPI.getSummary    ({ month: histMonth, year: histYear, type }),
       ]);
       setHistory(Array.isArray(hRes.data) ? hRes.data : []);
       setSummary({
