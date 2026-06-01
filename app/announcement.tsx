@@ -283,11 +283,15 @@ export default function AnnouncementScreen() {
                           {a.body}
                         </Text>
 
-                        {/* Attachments — images render inline (max 240px tall),
-                            other files surface as a tappable chip. HR uploads them
-                            via HRMS; we read them off the same announcement doc. */}
+                        {/* Attachments — images preview inline plus an
+                            explicit "View document" button (tap = open in
+                            the system viewer). Non-image files surface as
+                            a row with the filename and a tappable "View"
+                            chip. HR uploads them from HRMS; we render
+                            whatever lands on the shared announcement
+                            doc's `attachments` array. */}
                         {Array.isArray((a as any).attachments) && (a as any).attachments.length > 0 && (
-                          <View style={{ marginTop: 10, gap: 8 }}>
+                          <View style={{ marginTop: 10, gap: 10 }}>
                             {(a as any).attachments.map((att: any, i: number) => {
                               const src = att.dataBase64
                                 ? `data:${att.mimeType || 'application/octet-stream'};base64,${att.dataBase64}`
@@ -295,31 +299,63 @@ export default function AnnouncementScreen() {
                               if (!src) return null;
                               const isImage = String(att.mimeType || '').startsWith('image/') ||
                                               /\.(png|jpe?g|gif|webp|svg)$/i.test(att.name || '');
+                              const sizeLbl = att.size ? ` (${Math.round(att.size / 1024)} KB)` : '';
                               if (isImage) {
                                 return (
-                                  <Image
-                                    key={i}
-                                    source={{ uri: src }}
-                                    style={{ width: '100%', height: 200, borderRadius: 8, backgroundColor: '#F1F5F9' }}
-                                    resizeMode="cover"
-                                  />
+                                  <View key={i} style={{ gap: 6 }}>
+                                    <Image
+                                      source={{ uri: src }}
+                                      style={{ width: '100%', height: 200, borderRadius: 8, backgroundColor: '#F1F5F9' }}
+                                      resizeMode="cover"
+                                    />
+                                    <TouchableOpacity
+                                      onPress={() => Linking.openURL(src).catch(() => {})}
+                                      style={{
+                                        alignSelf: 'flex-start',
+                                        flexDirection: 'row', alignItems: 'center', gap: 6,
+                                        paddingVertical: 6, paddingHorizontal: 12,
+                                        backgroundColor: '#EFF6FF', borderRadius: 8,
+                                        borderWidth: 1, borderColor: '#BFDBFE',
+                                      }}
+                                    >
+                                      <Text style={{ fontSize: 12, color: '#1D4ED8', fontWeight: '700' }}>
+                                        View document{sizeLbl}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
                                 );
                               }
                               return (
-                                <TouchableOpacity
+                                <View
                                   key={i}
-                                  onPress={() => Linking.openURL(src).catch(() => {})}
                                   style={{
-                                    flexDirection: 'row', alignItems: 'center', gap: 8,
-                                    paddingVertical: 8, paddingHorizontal: 12,
-                                    backgroundColor: '#F8FAFC', borderRadius: 8,
+                                    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                                    paddingVertical: 10, paddingHorizontal: 12,
+                                    backgroundColor: '#F8FAFC', borderRadius: 10,
                                     borderWidth: 1, borderColor: '#E2E8F0',
                                   }}
                                 >
-                                  <Text style={{ fontSize: 14, color: '#2563EB', fontWeight: '600' }}>
-                                    📎 {att.name || 'Open attachment'}
+                                  <Text
+                                    style={{ flex: 1, fontSize: 13, color: '#0F172A', fontWeight: '600' }}
+                                    numberOfLines={1}
+                                  >
+                                    📎 {att.name || 'Attachment'}{sizeLbl}
                                   </Text>
-                                </TouchableOpacity>
+                                  <TouchableOpacity
+                                    onPress={() => Linking.openURL(src).catch(() => {})}
+                                    style={{
+                                      flexDirection: 'row', alignItems: 'center', gap: 4,
+                                      paddingVertical: 6, paddingHorizontal: 12,
+                                      backgroundColor: '#EFF6FF', borderRadius: 8,
+                                      borderWidth: 1, borderColor: '#BFDBFE',
+                                      marginLeft: 8,
+                                    }}
+                                  >
+                                    <Text style={{ fontSize: 12, color: '#1D4ED8', fontWeight: '700' }}>
+                                      View
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
                               );
                             })}
                           </View>
@@ -443,92 +479,5 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     marginBottom: 14,
   },
-  emptyTitle: { fontSize: 15, fontWeight: '700', color: '#333', marginBottom: 4 },
-  emptyBody:  { fontSize: 12.5, color: '#888', textAlign: 'center', lineHeight: 18 },
-
-  /* Card */
-  card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    borderLeftWidth: 4,
-    borderTopWidth: 1,
-    borderRightWidth: 1,
-    borderBottomWidth: 1,
-    borderTopColor: '#F0F0F0',
-    borderRightColor: '#F0F0F0',
-    borderBottomColor: '#F0F0F0',
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    marginBottom: 12,
-    position: 'relative',
-  },
-  cardFeatured: {
-    shadowColor: '#000',
-    shadowOpacity: 0.07,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 2,
-    backgroundColor: '#FFFFFF',
-  },
-  cardRow: { flexDirection: 'row', alignItems: 'flex-start' },
-  iconCircle: {
-    width: 42, height: 42, borderRadius: 21,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  cardTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#1A1A1A',
-    paddingRight: 72, /* room for the category badge */
-  },
-  cardBody: {
-    fontSize: 12.5,
-    color: '#5A5A5A',
-    marginTop: 6,
-    lineHeight: 18,
-  },
-
-  catBadge: {
-    position: 'absolute',
-    top: 12, right: 12,
-    paddingHorizontal: 9,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  catBadgeText: { fontSize: 10.5, fontWeight: '800', letterSpacing: 0.3 },
-
-  featuredRibbon: {
-    position: 'absolute',
-    top: -1, left: -1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: GREEN_SOFT,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderTopLeftRadius: 12,
-    borderBottomRightRadius: 10,
-  },
-  featuredRibbonText: {
-    color: '#FFFFFF',
-    fontSize: 9.5,
-    fontWeight: '800',
-    letterSpacing: 0.7,
-    marginLeft: 4,
-  },
-
-  metaRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  metaLeft: { flexDirection: 'row', alignItems: 'center' },
-  metaAvatar: {
-    width: 18, height: 18, borderRadius: 9,
-    backgroundColor: '#E8F5E9',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  metaAvatarText: { color: GREEN, fontSize: 9, fontWeight: '800' },
-  metaText: { fontSize: 11, color: '#7A7A7A', fontWeight: '600', marginLeft: 5 },
-  metaDot:  { fontSize: 11, color: '#BBB', marginHorizontal: 5 },
+  emptyTitle: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 6, textAlign: 'center' },
 });

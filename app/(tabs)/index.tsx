@@ -57,8 +57,18 @@ export default function HomeScreen() {
   const refreshUnread = useCallback(async () => {
     try {
       const res = await notificationAPI.unreadCount();
-      const n = Number(res?.data?.count ?? 0);
-      setUnreadCount(isNaN(n) ? 0 : n);
+      // The mobile backend serialises the count as `unreadCount` (see
+      // controllers/notificationController.js). An older build of this
+      // app read `res.data.count` which always evaluated to undefined
+      // → 0 → no badge ever appeared. We now accept either shape so a
+      // schema change doesn't silently break the bell again.
+      const n = Number(
+        res?.data?.unreadCount ??
+        res?.data?.count       ??
+        res?.data?.unread      ??
+        0
+      );
+      setUnreadCount(Number.isFinite(n) ? n : 0);
     } catch {
       // Network error — leave whatever the previous value was.
     }

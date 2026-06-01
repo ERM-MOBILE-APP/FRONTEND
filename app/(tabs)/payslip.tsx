@@ -151,7 +151,16 @@ export default function PayslipScreen() {
     try {
       setError('');
       const res = await payslipAPI.getHistory(year);
-      setHistory(Array.isArray(res.data) ? res.data : []);
+      const all = Array.isArray(res.data) ? res.data : [];
+      // Drop the stub payslip row the backend creates on "Request" —
+      // it has no real numbers and shows up in the list like a sample
+      // payslip with ₹— amount. Employees only need to see real
+      // payslips here; the "Awaiting HR" pill on top of the request
+      // button already tells them their request is in progress.
+      const ready = all.filter(
+        (p) => p.status === 'processed' || !!p.downloadUrl
+      );
+      setHistory(ready);
     } catch (e: any) {
       setError(e?.response?.data?.message || 'Could not load payslip history.');
       setHistory([]);
@@ -635,12 +644,16 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#E0E0E0',
     marginRight: 8, backgroundColor: '#FAFAFA',
   },
-  yearChipActive: { backgroundColor: GREEN, borderColor: GREEN },
-  yearChipText:   { fontSize: 13, fontWeight: '600', color: '#444' },
-  submitReqBtn: {
-    backgroundColor: GREEN, borderRadius: 26, paddingVertical: 14,
-    alignItems: 'center', marginTop: 22,
-    shadowColor: GREEN, shadowOpacity: 0.3, shadowOffset: { width: 0, height: 6 }, shadowRadius: 10, elevation: 5,
+  yearChipActive: {
+    backgroundColor: GREEN,
+    borderColor: GREEN,
   },
-  submitReqBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+  yearChipText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  yearChipTextActive: {
+    color: '#FFFFFF',
+  },
 });

@@ -91,9 +91,18 @@ export default function LeaveScreen() {
 
   // History
   const [history, setHistory] = useState<LeaveItem[]>([]);
+  // Production launch floor: ERM went live company-wide in June 2026,
+  // so no leave history exists before that — the month + year picker
+  // must not let the employee navigate back to anything earlier.
+  const LAUNCH_MONTH = 6;
+  const LAUNCH_YEAR  = 2026;
   const now = new Date();
-  const [histMonth, setHistMonth] = useState(now.getMonth() + 1);
-  const [histYear, setHistYear] = useState(now.getFullYear());
+  const _curM = now.getMonth() + 1;
+  const _curY = now.getFullYear();
+  const _isAtOrAfterLaunch =
+    _curY > LAUNCH_YEAR || (_curY === LAUNCH_YEAR && _curM >= LAUNCH_MONTH);
+  const [histMonth, setHistMonth] = useState(_isAtOrAfterLaunch ? _curM : LAUNCH_MONTH);
+  const [histYear,  setHistYear]  = useState(_isAtOrAfterLaunch ? _curY : LAUNCH_YEAR);
   const [showHistMonth, setShowHistMonth] = useState(false);
   const [showHistYear, setShowHistYear] = useState(false);
 
@@ -292,9 +301,10 @@ export default function LeaveScreen() {
     setTimePickerFor(null);
   };
 
-  // Company started in April 2025 — floor the year picker at 2025.
+  // ERM rolled out in June 2026 — floor the year picker so employees
+  // can't browse to a time before the production launch.
   const years = (() => {
-    const FLOOR = 2025;
+    const FLOOR = LAUNCH_YEAR;
     const top   = Math.max(now.getFullYear() + 1, FLOOR);
     const out: number[] = [];
     for (let y = FLOOR; y <= top; y++) out.push(y);
@@ -638,11 +648,20 @@ export default function LeaveScreen() {
           <View style={styles.modalSheet}>
             <Text style={styles.modalTitle}>Select Month</Text>
             <ScrollView>
-              {MONTHS_LONG.map((m, i) => (
+              {MONTHS_LONG.map((m, i) => {
+                // Pre-launch months are dimmed and inert. Without this
+                // the employee could tap "January" with LAUNCH_YEAR
+                // selected and get an empty result with no explanation.
+                const allowed =
+                  histYear > LAUNCH_YEAR ||
+                  (histYear === LAUNCH_YEAR && i + 1 >= LAUNCH_MONTH);
+                return (
                 <TouchableOpacity
                   key={m}
-                  style={styles.modalRow}
+                  style={[styles.modalRow, !allowed && { opacity: 0.35 }]}
+                  disabled={!allowed}
                   onPress={() => {
+                    if (!allowed) return;
                     setHistMonth(i + 1);
                     setShowHistMonth(false);
                   }}
@@ -656,7 +675,8 @@ export default function LeaveScreen() {
                     {m}
                   </Text>
                 </TouchableOpacity>
-              ))}
+                );
+              })}
             </ScrollView>
           </View>
         </Pressable>

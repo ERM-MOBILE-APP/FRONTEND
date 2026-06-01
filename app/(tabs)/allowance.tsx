@@ -206,9 +206,20 @@ export default function AllowanceScreen() {
   const [calculating, setCalculating] = useState(false);
 
   // History
+  // Production launch floor: ERM rolled out to all employees in June
+  // 2026, so the month / year picker must NOT let employees navigate
+  // back to anything earlier — there's simply no data there. The floor
+  // also drives the default state (current month, but never older than
+  // the launch month).
+  const LAUNCH_MONTH = 6;
+  const LAUNCH_YEAR  = 2026;
   const now = new Date();
-  const [histMonth, setHistMonth] = useState(now.getMonth() + 1);
-  const [histYear, setHistYear] = useState(now.getFullYear());
+  const _curM = now.getMonth() + 1;
+  const _curY = now.getFullYear();
+  const _isAtOrAfterLaunch =
+    _curY > LAUNCH_YEAR || (_curY === LAUNCH_YEAR && _curM >= LAUNCH_MONTH);
+  const [histMonth, setHistMonth] = useState(_isAtOrAfterLaunch ? _curM : LAUNCH_MONTH);
+  const [histYear,  setHistYear]  = useState(_isAtOrAfterLaunch ? _curY : LAUNCH_YEAR);
   const [showHistMonth, setShowHistMonth] = useState(false);
   const [showHistYear, setShowHistYear] = useState(false);
   const [history, setHistory] = useState<AllowanceItem[]>([]);
@@ -360,14 +371,20 @@ export default function AllowanceScreen() {
   };
 
   const rupee = (n: number) => '₹' + (n || 0).toLocaleString('en-IN');
-  // Company started in April 2025 — floor the year picker at 2025.
+  // ERM production rollout is June 2026 — floor the year picker at 2026
+  // (data simply doesn't exist before then). The list goes up to the
+  // current year + 1 so the picker still works in early-January edge
+  // cases.
   const years = (() => {
-    const FLOOR = 2025;
-    const top   = Math.max(now.getFullYear() + 1, FLOOR);
+    const top = Math.max(now.getFullYear() + 1, LAUNCH_YEAR);
     const out: number[] = [];
-    for (let y = FLOOR; y <= top; y++) out.push(y);
+    for (let y = LAUNCH_YEAR; y <= top; y++) out.push(y);
     return out;
   })();
+  // Helper used by both the month + year pickers to disable rows that
+  // would otherwise let an employee select a pre-launch month.
+  const _isMonthAllowed = (mIdx0: number) =>
+    histYear > LAUNCH_YEAR || (histYear === LAUNCH_YEAR && mIdx0 + 1 >= LAUNCH_MONTH);
 
   const isPetrol = type === 'petrol';
 
@@ -676,25 +693,30 @@ export default function AllowanceScreen() {
           <View style={styles.modalSheet}>
             <Text style={styles.modalTitle}>Select Month</Text>
             <ScrollView>
-              {MONTHS_LONG.map((m, i) => (
-                <TouchableOpacity
-                  key={m}
-                  style={styles.modalRow}
-                  onPress={() => {
-                    setHistMonth(i + 1);
-                    setShowHistMonth(false);
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.modalRowText,
-                      i === histMonth - 1 && { color: '#2E7D32', fontWeight: '700' },
-                    ]}
+              {MONTHS_LONG.map((m, i) => {
+                const allowed = _isMonthAllowed(i);
+                return (
+                  <TouchableOpacity
+                    key={m}
+                    style={[styles.modalRow, !allowed && { opacity: 0.35 }]}
+                    disabled={!allowed}
+                    onPress={() => {
+                      if (!allowed) return;
+                      setHistMonth(i + 1);
+                      setShowHistMonth(false);
+                    }}
                   >
-                    {m}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+                    <Text
+                      style={[
+                        styles.modalRowText,
+                        i === histMonth - 1 && { color: '#2E7D32', fontWeight: '700' },
+                      ]}
+                    >
+                      {m}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           </View>
         </Pressable>
@@ -1211,40 +1233,37 @@ const styles = StyleSheet.create({
 
   /* ─── Location picker sheet (TN places) ──────────────────────────── */
   locPickerSheet: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0, right: 0,
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
-    paddingTop: 16,
-    paddingHorizontal: 20,
-    paddingBottom: 22,
-    maxHeight: '75%',
+    padding: 18,
+    maxHeight: '85%',
   },
   locPickerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: 4,
   },
-  locPickerTitle: { fontSize: 16, fontWeight: '800', color: '#111' },
-  locPickerSub:   { fontSize: 11.5, color: '#888', marginTop: 2, marginBottom: 12 },
+  locPickerTitle: { fontSize: 16, fontWeight: '700', color: '#111' },
+  locPickerSub:   { fontSize: 11, color: '#777', marginBottom: 12 },
 
   locSearchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F4F6F4',
-    borderRadius: 10,
+    gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 10,
     marginBottom: 10,
   },
   locSearchInput: {
     flex: 1,
-    marginLeft: 8,
-    fontSize: 13.5,
-    color: '#1A1A1A',
-    paddingVertical: 0,
+    fontSize: 13,
+    color: '#111',
+    padding: 0,
   },
 
   locRow: {
@@ -1255,7 +1274,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F2F2F2',
   },
-  locRowActive: { backgroundColor: '#F1F8F1', borderRadius: 8 },
+  locRowActive: { backgroundColor: '#F1F9EE' },
   locRowText:   { flex: 1, fontSize: 14, color: '#222' },
-  locEmpty:     { textAlign: 'center', color: '#999', fontSize: 13, paddingVertical: 24 },
+  locEmpty:     { paddingVertical: 20, textAlign: 'center', color: '#999', fontSize: 13 },
 });
