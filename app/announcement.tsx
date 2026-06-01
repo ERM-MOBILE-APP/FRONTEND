@@ -27,6 +27,8 @@ import {
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
+  Image,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -280,6 +282,48 @@ export default function AnnouncementScreen() {
                         >
                           {a.body}
                         </Text>
+
+                        {/* Attachments — images render inline (max 240px tall),
+                            other files surface as a tappable chip. HR uploads them
+                            via HRMS; we read them off the same announcement doc. */}
+                        {Array.isArray((a as any).attachments) && (a as any).attachments.length > 0 && (
+                          <View style={{ marginTop: 10, gap: 8 }}>
+                            {(a as any).attachments.map((att: any, i: number) => {
+                              const src = att.dataBase64
+                                ? `data:${att.mimeType || 'application/octet-stream'};base64,${att.dataBase64}`
+                                : (att.url || '');
+                              if (!src) return null;
+                              const isImage = String(att.mimeType || '').startsWith('image/') ||
+                                              /\.(png|jpe?g|gif|webp|svg)$/i.test(att.name || '');
+                              if (isImage) {
+                                return (
+                                  <Image
+                                    key={i}
+                                    source={{ uri: src }}
+                                    style={{ width: '100%', height: 200, borderRadius: 8, backgroundColor: '#F1F5F9' }}
+                                    resizeMode="cover"
+                                  />
+                                );
+                              }
+                              return (
+                                <TouchableOpacity
+                                  key={i}
+                                  onPress={() => Linking.openURL(src).catch(() => {})}
+                                  style={{
+                                    flexDirection: 'row', alignItems: 'center', gap: 8,
+                                    paddingVertical: 8, paddingHorizontal: 12,
+                                    backgroundColor: '#F8FAFC', borderRadius: 8,
+                                    borderWidth: 1, borderColor: '#E2E8F0',
+                                  }}
+                                >
+                                  <Text style={{ fontSize: 14, color: '#2563EB', fontWeight: '600' }}>
+                                    📎 {att.name || 'Open attachment'}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        )}
 
                         <View style={styles.metaRow}>
                           <View style={styles.metaLeft}>

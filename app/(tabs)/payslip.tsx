@@ -97,9 +97,12 @@ export default function PayslipScreen() {
   })();
 
   // A month is "future" (and therefore not requestable) if its year is
-  // later than the current year, OR same year but later month.
+  // later than the current year, OR same year but later/equal current
+  // month. Current month is in-progress until midnight on the last day,
+  // so we treat it as not yet available — payslips only generate for
+  // months that are fully OVER.
   const isFutureMonth = (m: number, y: number) =>
-    y > currentYear || (y === currentYear && m > currentMonth);
+    y > currentYear || (y === currentYear && m >= currentMonth);
 
   // A month is "before joining" when it falls earlier than the employee's
   // joining date in HRMS. Payslips for those months don't exist (the
