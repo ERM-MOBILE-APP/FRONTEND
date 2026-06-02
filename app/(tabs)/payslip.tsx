@@ -458,8 +458,12 @@ export default function PayslipScreen() {
               </Text>
             )}
             {isFutureMonth(reqMonth, reqYear) && (
+              // Updated Jun 2026 — current month gets disabled too because
+              // it isn't fully over (payslips only generate for completed
+              // months). Wording now reflects that instead of telling the
+              // employee to pick "current", which is also blocked.
               <Text style={styles.futureWarn}>
-                {MONTHS[reqMonth]} {reqYear} hasn't happened yet — pick a past or current month.
+                {MONTHS[reqMonth]} {reqYear} isn't over yet — pick a past month.
               </Text>
             )}
 
