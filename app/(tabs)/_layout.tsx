@@ -1,11 +1,22 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const ACTIVE = '#FFFFFF';
 const INACTIVE = 'rgba(255,255,255,0.7)';
 const GREEN = '#4CAF50';
 
 export default function TabLayout() {
+  // Bottom inset = height of the system gesture / navigation bar. On
+  // gesture-navigation phones (most new Android devices) this is ~30 px;
+  // on classic 3-button-nav phones it's 0. Adding it to the tab bar's
+  // padding + height keeps the gesture pill in its own band UNDER the
+  // tab bar, so Home / Attendance / Leave / Allowance / Profile labels
+  // are never sliced by the system overlay (the issue HR reported in
+  // the Jun 2026 prod screenshot).
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, 8);
+
   return (
     <Tabs
       screenOptions={{
@@ -17,8 +28,8 @@ export default function TabLayout() {
           backgroundColor: GREEN,
           borderTopWidth: 0,
           elevation: 12,
-          height: 72,
-          paddingBottom: 8,
+          height: 64 + bottomPad,
+          paddingBottom: bottomPad,
           paddingTop: 8,
         },
       }}
