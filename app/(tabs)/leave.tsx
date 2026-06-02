@@ -16,6 +16,19 @@ import { Ionicons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
 import { leaveAPI } from '../../services/api';
 
+
+// confirmAsync — promise-based wrapper around Alert.alert so we can
+// 'await' a yes/no in a normal submit handler without restructuring
+// the surrounding try/catch.
+function confirmAsync(title: string, message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(title, message, [
+      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'Submit', onPress: () => resolve(true) },
+    ], { cancelable: true });
+  });
+}
+
 type Tab = 'leave' | 'permission';
 type LeaveStatus = 'pending' | 'approved' | 'rejected';
 
@@ -190,6 +203,7 @@ export default function LeaveScreen() {
       );
       return;
     }
+    if (!(await confirmAsync('Submit leave request?', 'HR will be notified once you confirm.'))) return;
     setSubmitting(true);
     try {
       await leaveAPI.applyLeave({
@@ -225,6 +239,7 @@ export default function LeaveScreen() {
       );
       return;
     }
+    if (!(await confirmAsync('Submit permission request?', 'HR will be notified once you confirm.'))) return;
     setSubmitting(true);
     try {
       await leaveAPI.applyPermission({

@@ -15,6 +15,19 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
 import { allowanceAPI } from '../../services/api';
 
+
+// confirmAsync — promise-based wrapper around Alert.alert so we can
+// 'await' a yes/no in a normal submit handler without restructuring
+// the surrounding try/catch.
+function confirmAsync(title: string, message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(title, message, [
+      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'Submit', onPress: () => resolve(true) },
+    ], { cancelable: true });
+  });
+}
+
 type AllowanceType = 'travel' | 'petrol';
 type AllowanceStatus = 'pending' | 'approved' | 'rejected';
 
@@ -314,6 +327,7 @@ export default function AllowanceScreen() {
       Alert.alert('Invalid', 'Please enter the distance in km.');
       return;
     }
+    if (!(await confirmAsync('Submit allowance claim?', 'HR will review the claim once you confirm.'))) return;
     setSubmitting(true);
     try {
       await allowanceAPI.submit({

@@ -17,6 +17,19 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect } from 'expo-router';
 import { payslipAPI } from '../../services/api';
 
+
+// confirmAsync — promise-based wrapper around Alert.alert so we can
+// 'await' a yes/no in a normal submit handler without restructuring
+// the surrounding try/catch.
+function confirmAsync(title: string, message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(title, message, [
+      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'Submit', onPress: () => resolve(true) },
+    ], { cancelable: true });
+  });
+}
+
 const GREEN      = '#4CAF50';
 const GREEN_DARK = '#2E7D32';
 
@@ -188,6 +201,7 @@ export default function PayslipScreen() {
 
   const submitRequest = async () => {
     if (requesting) return;
+    if (!(await confirmAsync('Request payslip?', `HR will be notified for ${MONTHS[reqMonth]} ${reqYear}.`))) return;
     setRequesting(true);
     try {
       await payslipAPI.request(reqMonth, reqYear);
