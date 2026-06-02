@@ -183,9 +183,16 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
   //                                       persistent low-priority sticky
   //                                       notification (cannot be swiped
   //                                       away by accident).
+  // Production-tuned config (Jun 2026): switched to High accuracy and a
+  // 90-second interval. The OS WILL throttle this on most OEM phones —
+  // but asking for "high + 90s" effectively gives us "balanced + 2min"
+  // delivery in practice, which is exactly what the backend's 25-min
+  // stale window needs. Asking for the original "balanced + 2min" was
+  // letting OEM doze rules push real delivery out to 6–12 minutes and
+  // bumping users to Offline mid-shift.
   await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-    accuracy:         Location.Accuracy.Balanced,
-    timeInterval:     2 * 60 * 1000,
+    accuracy:         Location.Accuracy.High,
+    timeInterval:     90 * 1000,
     distanceInterval: 0,
     showsBackgroundLocationIndicator: true,
     pausesUpdatesAutomatically:       false,
@@ -194,8 +201,10 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
     deferredUpdatesDistance:          0,
     mayShowUserSettingsDialog:        true,
     foregroundService: Platform.OS === 'android' ? {
+      // Sticky notification keeps the foreground service alive even
+      // through Doze and app-swipe-away on most Android OEMs.
       notificationTitle: 'Tesco ERM · Live tracking active',
-      notificationBody:  'Sharing your location with HR until you check out. Tap to open.',
+      notificationBody:  'Sharing your location with HR until you check out. Do not swipe away.',
       notificationColor: '#4CAF50',
       // killServiceOnDestroy: false — keep the foreground service alive
       // even if the user swipes the task away from "Recent apps". The OS
@@ -207,6 +216,33 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
   });
   console.log('[bg-location] background updates started');
   return true;
+}
+
+/**
+ * Open the Android battery-optimization-exempt settings page so the
+ * user can whitelist Tesco ERM from being killed by Doze + OEM battery
+ * savers. This is the single biggest reason the foreground service
+ * dies mid-shift on Xiaomi / Oppo / Vivo / Realme / OnePlus.
+ *
+ * No-op on iOS (Apple doesn't expose this and isn't required there).
+ *
+ * We don't *require* the user to grant the exemption — denying just
+ * means the background task may die earlier. The check-in flow calls
+ * this once after a successful check-in so the prompt only fires
+ * during active onboarding, not every app open.
+ */
+export async function requestBatteryOptimizationExemption(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  try {
+    const IntentLauncher = await import('expo-intent-launcher').catch(() => null);
+    if (!IntentLauncher) return;
+    await IntentLauncher.startActivityAsync(
+      'android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
+      { data: 'package:com.tescodigitals26.tescoerm' }
+    ).catch(() => {});
+  } catch {
+    /* best-effort — silent fail keeps check-in flowing */
+  }
 }
 
 /** Stop the background task. Call on check-out / logout. Idempotent. */

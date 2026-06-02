@@ -137,21 +137,33 @@ export default function AttendanceScreen() {
   const [reqReason, setReqReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   // Dates the employee has already filed an attendance request for —
-  // stored as a Set<YYYY-MM-DD>. Drives the per-row "Requested" pill so
-  // the button flips after submit (and stays flipped after a page
-  // refresh). Refreshed on mount + every time a new request is saved.
-  const [requestedDates, setRequestedDates] = useState<Set<string>>(new Set());
+  // stored as a Map<YYYY-MM-DD, 'pending'|'approved'|'rejected'>. Drives
+  // the per-row button label so it tracks the request lifecycle:
+  //   pending  → "Requested"
+  //   approved → "Approved"
+  //   rejected → "Rejected"
+  // Rejected/expired don't lock the button — the employee can file
+  // again if HR rejected (something they typed wrong, say).
+  // Refreshed on mount + every time a new request is saved.
+  const [requestedDates, setRequestedDates] = useState<Map<string, string>>(new Map());
   const refreshRequestedDates = useCallback(async () => {
     try {
       const r = await attendanceAPI.listRequests();
       const items = Array.isArray(r.data) ? r.data : [];
-      // Treat 'pending' and 'approved' as "already requested" — only an
-      // explicit rejection or expiry frees the date for re-filing.
-      const dates = items
-        .filter((x: any) => ['pending', 'approved'].includes(String(x?.status || '').toLowerCase()))
-        .map((x: any) => x.date)
-        .filter(Boolean);
-      setRequestedDates(new Set(dates));
+      const next = new Map<string, string>();
+      for (const x of items) {
+        const date   = x?.date;
+        const status = String(x?.status || '').toLowerCase();
+        if (!date) continue;
+        // For each date, keep the most recent NON-rejected status if one
+        // exists (pending > approved). A rejected row alone we still
+        // record so the button shows "Rejected" until they re-file.
+        if (status === 'pending' || status === 'approved' || status === 'rejected') {
+          const existing = next.get(date);
+          if (!existing || existing === 'rejected') next.set(date, status);
+        }
+      }
+      setRequestedDates(next);
     } catch { /* leave previous value */ }
   }, []);
   useEffect(() => { refreshRequestedDates(); }, [refreshRequestedDates]);
@@ -286,10 +298,11 @@ export default function AttendanceScreen() {
       });
       // Optimistic UI update so the button flips to "Requested" the
       // moment the API returns success. We also re-fetch in the
-      // background so the canonical server state catches up.
+      // background so the canonical server state (including any later
+      // approve/reject from manager or HR) catches up.
       setRequestedDates((prev) => {
-        const next = new Set(prev);
-        next.add(reqModalDate);
+        const next = new Map(prev);
+        next.set(reqModalDate, 'pending');
         return next;
       });
       refreshRequestedDates();
@@ -591,13 +604,46 @@ export default function AttendanceScreen() {
               </View>
 
               {(() => {
-                const alreadyRequested = requestedDates.has(h.date);
-                const btnDisabled = requestClosed || alreadyRequested;
+                // Reflect the actual lifecycle: pending → "Requested",
+                // approved → "Approved", rejected → "Rejected". A
+                // rejected row should NOT lock the button (the employee
+                // is allowed to re-file with the correct details).
+                const status = requestedDates.get(h.date) || '';
+                const isPending  = status === 'pending';
+                const isApproved = status === 'approved';
+                const isRejected = status === 'rejected';
+                const btnDisabled = requestClosed || isPending || isApproved;
+                let label: string;
+                if (isApproved)        label = 'Approved';
+                else if (isRejected)   label = 'Rejected — tap to re-file';
+                else if (isPending)    label = 'Requested';
+                else if (requestClosed) label = 'Request window closed';
+                else                    label = 'Request';
+                // Tint the button to match status. Approved = green
+                // (same as primary), Rejected = red, Pending/disabled
+                // = grey. The base requestBtn already uses GREEN so we
+                // only override for the new states.
+                const tintStyle =
+                  isRejected ? { backgroundColor: '#FCE4E4' } :
+                  isApproved ? { backgroundColor: '#DCFCE7' } :
+                  null;
+                const textTintStyle =
+                  isRejected ? { color: '#B91C1C' } :
+                  isApproved ? { color: '#15803D' } :
+                  null;
                 return (
                   <TouchableOpacity
-                    style={[styles.requestBtn, btnDisabled && styles.requestBtnDisabled]}
+                    style={[
+                      styles.requestBtn,
+                      btnDisabled && styles.requestBtnDisabled,
+                      tintStyle,
+                    ]}
                     onPress={() => {
-                      if (alreadyRequested) {
+                      if (isApproved) {
+                        Alert.alert('Already approved', 'This request has already been approved.');
+                        return;
+                      }
+                      if (isPending) {
                         Alert.alert(
                           'Already requested',
                           `You've already filed a regularisation request for this date. Wait for HR / your manager to act on it.`
@@ -618,13 +664,13 @@ export default function AttendanceScreen() {
                     disabled={btnDisabled}
                   >
                     <Text
-                      style={[styles.requestBtnText, btnDisabled && styles.requestBtnTextDisabled]}
+                      style={[
+                        styles.requestBtnText,
+                        btnDisabled && !isApproved && !isRejected && styles.requestBtnTextDisabled,
+                        textTintStyle,
+                      ]}
                     >
-                      {alreadyRequested
-                        ? 'Requested'
-                        : requestClosed
-                          ? 'Request window closed'
-                          : 'Request'}
+                      {label}
                     </Text>
                   </TouchableOpacity>
                 );

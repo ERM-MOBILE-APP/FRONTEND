@@ -19,6 +19,7 @@ import SideDrawer from '../../components/SideDrawer';
 import {
   startBackgroundLocationUpdates,
   stopBackgroundLocationUpdates,
+  requestBatteryOptimizationExemption,
   BACKGROUND_LOCATION_TASK,
 } from '../../services/locationTask';
 
@@ -330,9 +331,33 @@ export default function HomeScreen() {
       try {
         const servicesOn = await Location.hasServicesEnabledAsync();
         if (!servicesOn) { await handleGpsOffWarn(); return; }
-        const fix = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
+
+        // Get a fix. On Indian OEM phones with aggressive radios,
+        // getCurrentPositionAsync can hang for 30+s indoors — race it
+        // against an 8-second timeout and fall back to the last-known
+        // position so a ping STILL goes out every cycle. A slightly
+        // stale fix is dramatically better than nothing because the
+        // backend's 25-min stale clock resets on each ping, even if
+        // the coords are 30s old.
+        let fix: Location.LocationObject | null = null;
+        try {
+          fix = await Promise.race([
+            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+          ]) as Location.LocationObject | null;
+        } catch { fix = null; }
+        if (!fix) {
+          // Fallback — accept a cached fix up to 5 minutes old.
+          fix = await Location.getLastKnownPositionAsync({
+            maxAge: 5 * 60 * 1000,
+            requiredAccuracy: 200,
+          }).catch(() => null);
+        }
+        if (!fix) {
+          console.warn('[tracking] no fix available this cycle — skipping ping');
+          return;
+        }
+
         await attendanceAPI.locationPing(
           fix.coords.latitude,
           fix.coords.longitude,
@@ -539,6 +564,33 @@ export default function HomeScreen() {
 
         await attendanceAPI.checkIn(today.location || 'office', coords);
         await attendanceAPI.setPresence('active').catch(() => {});
+
+        // One-time battery-optimization exemption prompt (Android only,
+        // first successful check-in only). Saved to AsyncStorage so we
+        // don't pester the user every day. The exemption is what stops
+        // Xiaomi / Oppo / Vivo / Realme / OnePlus battery savers from
+        // killing the foreground location service mid-shift — which is
+        // the single biggest cause of "Location on but showing Offline".
+        try {
+          const alreadyAsked = await AsyncStorage.getItem('battery_exempt_asked');
+          if (!alreadyAsked) {
+            await AsyncStorage.setItem('battery_exempt_asked', '1');
+            Alert.alert(
+              'Keep tracking running',
+              'Android battery savers can kill location updates while you\'re working. ' +
+              'On the next screen, tap "Allow" to let Tesco ERM keep running in the background. ' +
+              'Without this, HR may see you as "Offline" even when your location is on.',
+              [
+                { text: 'Maybe later', style: 'cancel' },
+                {
+                  text: 'Open settings',
+                  onPress: () => { requestBatteryOptimizationExemption().catch(() => {}); },
+                },
+              ]
+            );
+          }
+        } catch {/* best-effort */}
+
         Alert.alert('Checked In', 'Have an awesome day!');
         startTracking();
       } else if (!checkedOut) {
