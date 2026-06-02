@@ -585,9 +585,12 @@ export default function AllowanceScreen() {
         {isPetrol ? (
           <View style={styles.summaryGrid}>
             <View style={styles.summaryGridRow}>
+              {/* Label corrected Jun 2026: this tile sums every petrol
+                  row's distance for the month — not just travel — so it
+                  reads "TOTAL DISTANCE" to match what HR briefed. */}
               <BigCard
                 color="#2196F3"
-                label="TRAVEL DISTANCE"
+                label="TOTAL DISTANCE"
                 value={`${summary.totalDistance} km`}
               />
               <BigCard
