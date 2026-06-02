@@ -732,7 +732,20 @@ export default function LeaveScreen() {
       pending: { badge: '#FFA726', edge: '#FFA726', text: 'Pending' },
       rejected: { badge: '#F44336', edge: '#F44336', text: 'Rejected' },
     };
-    const conf = statusConf[item.status] || statusConf.pending;
+    // Effective status — defensive against the cross-backend race we
+    // sometimes see when ERM Web manager rejects: status stays
+    // 'pending' on the mobile DB until the ERM Web → mobile dual-write
+    // env vars are configured, but `managerStatus` is already
+    // 'Rejected' / 'Approved' on the same doc. We treat a rejection
+    // by either side as final so the badge flips immediately, even
+    // before the dual-write catches up.
+    const mgr = String((item as any).managerStatus || '').toLowerCase();
+    const effective: LeaveStatus =
+      item.status === 'rejected'         ? 'rejected' :
+      item.status === 'approved'         ? 'approved' :
+      mgr === 'rejected'                 ? 'rejected' :
+                                           item.status || 'pending';
+    const conf = statusConf[effective] || statusConf.pending;
     const isPermission = item.requestType === 'permission';
 
     const title = isPermission
@@ -963,34 +976,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 8,
   },
-  hrCommentText: { fontSize: 12, color: '#444' },
-
-  emptyBox: {
-    marginHorizontal: 16,
-    padding: 20,
-    backgroundColor: '#F5F7F6',
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  emptyText: { color: '#777', fontSize: 13 },
-
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    padding: 20,
-    maxHeight: '75%',
-  },
-  modalTitle: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 8 },
-  modalRow: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
-  },
-  modalRowText: { fontSize: 14, color: '#222' },
+  hrCommentLabel: { fontSize: 10, fontWeight: '700', color: '#6B6B6B', letterSpacing: 0.3 },
+  hrCommentText:  { fontSize: 12, color: '#1A1A1A', marginTop: 2 },
 });

@@ -670,4 +670,23 @@ const styles = StyleSheet.create({
   yearChipTextActive: {
     color: '#FFFFFF',
   },
+
+  /* ─── Submit / Request button (request modal) ─────────────────────
+     Was missing earlier — JSX referenced these style names but the
+     StyleSheet didn't declare them, so the button rendered with no
+     background/padding and HR reported "no Request button visible". */
+  submitReqBtn: {
+    marginTop: 18,
+    backgroundColor: GREEN,
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  submitReqBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
 });
