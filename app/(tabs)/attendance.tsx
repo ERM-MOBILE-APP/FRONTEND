@@ -136,6 +136,25 @@ export default function AttendanceScreen() {
   const [reqModalDate, setReqModalDate] = useState<string | null>(null);
   const [reqReason, setReqReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // Dates the employee has already filed an attendance request for —
+  // stored as a Set<YYYY-MM-DD>. Drives the per-row "Requested" pill so
+  // the button flips after submit (and stays flipped after a page
+  // refresh). Refreshed on mount + every time a new request is saved.
+  const [requestedDates, setRequestedDates] = useState<Set<string>>(new Set());
+  const refreshRequestedDates = useCallback(async () => {
+    try {
+      const r = await attendanceAPI.listRequests();
+      const items = Array.isArray(r.data) ? r.data : [];
+      // Treat 'pending' and 'approved' as "already requested" — only an
+      // explicit rejection or expiry frees the date for re-filing.
+      const dates = items
+        .filter((x: any) => ['pending', 'approved'].includes(String(x?.status || '').toLowerCase()))
+        .map((x: any) => x.date)
+        .filter(Boolean);
+      setRequestedDates(new Set(dates));
+    } catch { /* leave previous value */ }
+  }, []);
+  useEffect(() => { refreshRequestedDates(); }, [refreshRequestedDates]);
 
   const month = cursor.getMonth() + 1;
   const year = cursor.getFullYear();
@@ -265,7 +284,16 @@ export default function AttendanceScreen() {
         requestType: 'regularize',
         reason: reqReason || 'Attendance regularisation',
       });
-      Alert.alert('Submitted', 'Your request has been sent to HR.');
+      // Optimistic UI update so the button flips to "Requested" the
+      // moment the API returns success. We also re-fetch in the
+      // background so the canonical server state catches up.
+      setRequestedDates((prev) => {
+        const next = new Set(prev);
+        next.add(reqModalDate);
+        return next;
+      });
+      refreshRequestedDates();
+      Alert.alert('Submitted', 'Your request has been sent to HR and your manager.');
       setReqModalDate(null);
       setReqReason('');
     } catch (err: any) {
@@ -562,28 +590,45 @@ export default function AttendanceScreen() {
                 </View>
               </View>
 
-              <TouchableOpacity
-                style={[styles.requestBtn, requestClosed && styles.requestBtnDisabled]}
-                onPress={() => {
-                  if (requestClosed) {
-                    Alert.alert(
-                      'Request window closed',
-                      `You can only file a request within ${REQUEST_WINDOW_DAYS} days of the missed date. ` +
-                      `This date is ${daysOld} days old — please contact HR directly.`
-                    );
-                    return;
-                  }
-                  setReqModalDate(h.date);
-                }}
-                activeOpacity={requestClosed ? 1 : 0.85}
-                disabled={requestClosed}
-              >
-                <Text
-                  style={[styles.requestBtnText, requestClosed && styles.requestBtnTextDisabled]}
-                >
-                  {requestClosed ? 'Request window closed' : 'Request'}
-                </Text>
-              </TouchableOpacity>
+              {(() => {
+                const alreadyRequested = requestedDates.has(h.date);
+                const btnDisabled = requestClosed || alreadyRequested;
+                return (
+                  <TouchableOpacity
+                    style={[styles.requestBtn, btnDisabled && styles.requestBtnDisabled]}
+                    onPress={() => {
+                      if (alreadyRequested) {
+                        Alert.alert(
+                          'Already requested',
+                          `You've already filed a regularisation request for this date. Wait for HR / your manager to act on it.`
+                        );
+                        return;
+                      }
+                      if (requestClosed) {
+                        Alert.alert(
+                          'Request window closed',
+                          `You can only file a request within ${REQUEST_WINDOW_DAYS} days of the missed date. ` +
+                          `This date is ${daysOld} days old — please contact HR directly.`
+                        );
+                        return;
+                      }
+                      setReqModalDate(h.date);
+                    }}
+                    activeOpacity={btnDisabled ? 1 : 0.85}
+                    disabled={btnDisabled}
+                  >
+                    <Text
+                      style={[styles.requestBtnText, btnDisabled && styles.requestBtnTextDisabled]}
+                    >
+                      {alreadyRequested
+                        ? 'Requested'
+                        : requestClosed
+                          ? 'Request window closed'
+                          : 'Request'}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })()}
             </View>
             );
           })

@@ -94,6 +94,42 @@ export default function PayslipSummaryScreen() {
     );
   }
 
+  // ── Pending HR upload — hide the donut + the ₹0 sample summary ───────
+  // If the row is requested / pending / rejected, the figures haven't
+  // been finalised by HR yet. Showing a donut of zeros looked like a
+  // fake "sample" payslip to employees, so HR asked us to surface a
+  // friendly placeholder instead until the real numbers land.
+  const statusLower = String(data.status || '').toLowerCase();
+  const isReady = statusLower === 'processed' || statusLower === 'uploaded';
+  if (!isReady) {
+    return (
+      <SafeAreaView edges={['top']} style={styles.safe}>
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={() => router.back()}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="arrow-back" size={22} color="#1A1A1A" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Payslip Summary</Text>
+          <View style={{ width: 32 }} />
+        </View>
+        <View style={styles.centered}>
+          <Feather name="clock" size={42} color="#FB8C00" />
+          <Text style={[styles.muted, { marginTop: 12, fontSize: 14, color: '#1A1A1A', fontWeight: '600' }]}>
+            Requested for {MONTHS[data.month] || ''} {data.year}
+          </Text>
+          <Text style={[styles.muted, { textAlign: 'center', paddingHorizontal: 24, marginTop: 6 }]}>
+            HR has been notified. Your payslip will appear here once it
+            has been uploaded — you'll be able to download it from this
+            screen.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   const earningsTotal   = data.totalGross || 0;
   const deductionsTotal = data.totalDeductions || 0;
 
@@ -166,42 +202,13 @@ export default function PayslipSummaryScreen() {
             that — for a record that's already 'requested' it shows as
             disabled "Requested" so the user knows HR is on it. */}
         {(() => {
-          const status = data.status || 'processed';
-          const isProcessed = status === 'processed';
-          const isRequested = status === 'requested' || status === 'pending';
-
+          // We already early-returned for non-ready payslips above, so
+          // this block only ever renders for processed/uploaded ones.
+          // Drop the "Request" / "Available" button — mirrors ERM Web,
+          // which shows a single Download action and nothing else.
+          const isProcessed = true;
           return (
             <View style={styles.actionsRow}>
-              <TouchableOpacity
-                style={[
-                  styles.actionBtn,
-                  { backgroundColor: ORANGE },
-                  (isRequested || isProcessed) && styles.actionBtnDisabled,
-                ]}
-                activeOpacity={(isRequested || isProcessed) ? 1 : 0.85}
-                disabled={isRequested || isProcessed}
-                onPress={() =>
-                  Alert.alert(
-                    'Request',
-                    'This payslip already exists — no need to request again.'
-                  )
-                }
-              >
-                <Feather
-                  name={isRequested ? 'clock' : 'message-square'}
-                  size={16}
-                  color={(isRequested || isProcessed) ? '#999' : '#FFFFFF'}
-                />
-                <Text
-                  style={[
-                    styles.actionText,
-                    (isRequested || isProcessed) && styles.actionTextDisabled,
-                  ]}
-                >
-                  {isRequested ? 'Requested' : isProcessed ? 'Available' : 'Request'}
-                </Text>
-              </TouchableOpacity>
-
               <TouchableOpacity
                 style={[
                   styles.actionBtn,
@@ -426,29 +433,26 @@ const styles = StyleSheet.create({
 
   actionsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    marginTop: 24,
+    gap: 12,
+    marginHorizontal: 16,
+    marginTop: 16,
   },
   actionBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 13,
-    borderRadius: 26,
-    marginHorizontal: 6,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 8,
-    elevation: 4,
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 10,
   },
-  actionText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14, marginLeft: 8 },
   actionBtnDisabled: {
-    backgroundColor: '#E0E0E0',
-    shadowOpacity: 0,
-    elevation: 0,
+    backgroundColor: '#F0F0F0',
+  },
+  actionText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   actionTextDisabled: {
     color: '#999',
