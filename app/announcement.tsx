@@ -480,4 +480,49 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   emptyTitle: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 6, textAlign: 'center' },
+
+  /* Meta row (Jun 2026): the footer "[avatar] [author] . [time-ago]"
+     line was rendering vertically because none of these styles existed
+     -- RN silently dropped every undefined style name, so each View /
+     Text fell back to its default (stacked). HR reported the cards
+     looked broken with V / Vivek Kumar / . / 4d ago on four separate
+     lines. flex-direction:row on metaRow + metaLeft fixes the
+     stacking; the avatar gets a small green circle so the row visually
+     ties back to the page's green header. */
+  metaRow: {
+    marginTop: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  metaLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  metaAvatar: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#E8F5E9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  metaAvatarText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#2E7D32',
+  },
+  metaText: {
+    fontSize: 12,
+    color: '#555',
+    fontWeight: '600',
+  },
+  metaDot: {
+    fontSize: 12,
+    color: '#9A9A9A',
+    fontWeight: '700',
+    marginHorizontal: 6,
+  },
 });
