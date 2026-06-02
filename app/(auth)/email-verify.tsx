@@ -83,18 +83,27 @@ export default function EmailVerifyScreen() {
     wakeBackend();
   }, []);
 
-  const validateEmail = (e: string) =>
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
+  // Updated Jun 2026 — accept BOTH email and userId (TES047). The backend
+  // resolves whichever the user types to the registered email on file
+  // and sends the OTP there. Forcing a strict email regex used to block
+  // employees who tried to use their company ID and was the most common
+  // "forgot password doesn't work" support ticket.
+  const looksLikeEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
+  const looksLikeUserId = (e: string) => /^[A-Za-z0-9._-]{3,32}$/.test(e.trim());
+  const validateInput = (e: string) => looksLikeEmail(e) || looksLikeUserId(e);
 
-  const canSubmit = email.trim().length > 0 && validateEmail(email) && !loading;
+  const canSubmit = email.trim().length > 0 && validateInput(email) && !loading;
 
   const handleSendOtp = async () => {
     if (!email.trim()) {
-      Alert.alert('Missing email', 'Please enter your registered email.');
+      Alert.alert('Missing details', 'Please enter your registered email or User ID.');
       return;
     }
-    if (!validateEmail(email)) {
-      Alert.alert('Invalid email', 'Please enter a valid email address.');
+    if (!validateInput(email)) {
+      Alert.alert(
+        'Invalid input',
+        'Please enter a valid email (you@company.com) or your User ID (e.g. TES047).'
+      );
       return;
     }
 

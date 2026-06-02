@@ -978,4 +978,59 @@ const styles = StyleSheet.create({
   },
   hrCommentLabel: { fontSize: 10, fontWeight: '700', color: '#6B6B6B', letterSpacing: 0.3 },
   hrCommentText:  { fontSize: 12, color: '#1A1A1A', marginTop: 2 },
+
+  /* Empty-state + dropdown modal styles (Jun 2026) -- were missing
+     entirely, so the JSX referenced styles.modalBackdrop / modalSheet /
+     etc. but RN silently dropped them. Result: the dropdown opened
+     with no backdrop or padding and the "no leaves this month" message
+     rendered flush-left with no margin. Adding these fixes both. */
+  emptyBox: {
+    marginHorizontal: 16,
+    marginVertical: 12,
+    paddingVertical: 26,
+    paddingHorizontal: 18,
+    backgroundColor: '#F5F7F6',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#EEF1EE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyText: {
+    color: '#6B6B6B',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 24,
+    maxHeight: '70%',
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111',
+    marginBottom: 10,
+  },
+  modalRow: {
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  modalRowText: {
+    fontSize: 14,
+    color: '#222',
+  },
 });
