@@ -1,17 +1,19 @@
 /**
- * Announcements screen — redesigned Jun 2026 to mirror Notifications.
+ * Announcements screen — Figma reference (Jun 2026).
  *
- * Spec (HR brief):
- *   - Same top bar layout as notifications.tsx (back / centered title /
- *     mark-all-read).
- *   - Cards styled like notification cards BUT extend edge-to-edge:
- *     no horizontal padding on the ScrollView, no side rounding or
- *     side border on the card itself. Each card is a full-width strip
- *     with a colored left-edge stripe and a hairline bottom divider.
- *   - Unread cards have a light-green tint and a small dot at the
- *     bottom-right of the meta row; read cards are plain white.
- *   - Tap-to-read marks the announcement read for this user. Read state
- *     is persisted on Announcement.readBy in the DB.
+ * Design spec (per the user's screenshot):
+ *   - White background, top bar with back arrow + centered "Announcements"
+ *     title + megaphone icon + mark-all-read button on the right.
+ *   - Subtitle line "Latest company updates and important notices" in
+ *     muted grey directly below the top bar.
+ *   - Cards are rounded, soft-bordered white tiles with a small grey
+ *     drop shadow and a slim green left-edge accent stripe. Cards have
+ *     a comfortable horizontal margin from the screen edges and a small
+ *     vertical gap between them.
+ *   - Each card: title (1 line, bold), body (2 lines, grey), footer
+ *     "Posted by {who} · {time-ago}" in tiny muted grey text.
+ *   - Unread cards get a faint light-green wash; read cards are pure
+ *     white. Tap-to-read marks the announcement read for this user.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -49,8 +51,6 @@ type Announcement = {
   attachments?: Attachment[];
 };
 
-// Same edge-colour mapping the notifications screen uses, so the visual
-// language between the two screens stays identical.
 const CATEGORY_EDGE: Record<Category, string> = {
   holiday: '#FF8A65',
   policy:  '#1976D2',
@@ -89,11 +89,10 @@ export default function AnnouncementScreen() {
       const list = Array.isArray(res?.data) ? (res.data as Announcement[]) : [];
       setItems(list);
     } catch {
-      // Silent — keep whatever's on screen; pull-to-refresh retries.
+      // Silent — pull-to-refresh retries.
     }
   }, []);
 
-  // On mount: load AND auto-mark-all-read so the home bell badge clears.
   useEffect(() => {
     (async () => {
       await load();
@@ -140,9 +139,9 @@ export default function AnnouncementScreen() {
         </TouchableOpacity>
 
         <View style={styles.titleRow}>
-          <Text style={styles.title}>Announcement</Text>
+          <Text style={styles.title}>Announcements</Text>
           <Ionicons
-            name="megaphone"
+            name="megaphone-outline"
             size={18}
             color="#1A1A1A"
             style={{ marginLeft: 6 }}
@@ -158,10 +157,12 @@ export default function AnnouncementScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* LIST — edge-to-edge cards per HR's spec. ScrollView has zero
-          horizontal padding so each card spans the full screen width. */}
+      {/* Subtitle */}
+      <Text style={styles.subtitle}>Latest company updates and important notices</Text>
+
+      {/* List */}
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: 0, paddingTop: 0, paddingBottom: 40 }}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 4, paddingBottom: 40 }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={GREEN_DEEP} />
         }
@@ -189,12 +190,12 @@ export default function AnnouncementScreen() {
                   },
                 ]}
               >
-                <Text style={styles.cardTitle}>{a.title}</Text>
-                <Text style={styles.cardBody}>{a.body}</Text>
+                <Text style={styles.cardTitle} numberOfLines={1}>{a.title}</Text>
+                <Text style={styles.cardBody} numberOfLines={2}>{a.body}</Text>
 
-                {/* Attachments — images preview inline plus an explicit
-                    "View document" button. Non-image files surface as a
-                    row with the filename and a tappable "View" chip. */}
+                {/* Attachments — images preview inline plus a "View
+                    document" chip. Non-image files surface as a row
+                    with the filename and a tappable "View" chip. */}
                 {Array.isArray(a.attachments) && a.attachments.length > 0 && (
                   <View style={{ marginTop: 10, gap: 10 }}>
                     {a.attachments.map((att, i) => {
@@ -240,9 +241,12 @@ export default function AnnouncementScreen() {
                 )}
 
                 <View style={styles.metaRow}>
+                  <Text style={styles.metaText}>
+                    Posted by {a.postedBy || 'HR'}
+                  </Text>
                   <View style={styles.metaDot} />
                   <Text style={styles.metaText}>
-                    {a.postedBy ? `${a.postedBy} · ` : ''}{formatRelative(a.createdAt)}
+                    {formatRelative(a.createdAt)}
                   </Text>
                   {!a.isRead && <View style={styles.unreadPill} />}
                 </View>
@@ -265,11 +269,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
   },
   titleRow: {
     flex: 1,
@@ -279,25 +280,37 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 17, fontWeight: '800', color: '#1A1A1A' },
   markAllBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
   },
 
-  /* Card — notifications-style design but edge-to-edge per HR's spec.
-     Side rounding + side borders dropped so each card looks like a
-     clean horizontal strip spanning the full screen width. A hairline
-     bottom divider keeps cards visually separated, and the colored
-     left edge stripe preserves the category accent. */
+  /* Subtitle below the top bar */
+  subtitle: {
+    fontSize: 12.5,
+    color: '#9A9A9A',
+    paddingHorizontal: 18,
+    paddingTop: 2,
+    paddingBottom: 10,
+    fontWeight: '500',
+  },
+
+  /* Card — Figma-matched: rounded white tile with soft border, light
+     shadow, slim coloured left-edge stripe. Horizontal screen padding
+     comes from the ScrollView (paddingHorizontal: 16). */
   card: {
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderLeftWidth: 5,
-    borderBottomWidth: 1,
-    borderBottomColor: '#EEEEEE',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderLeftWidth: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 1,
   },
   cardTitle: {
     fontSize: 14,
@@ -310,29 +323,30 @@ const styles = StyleSheet.create({
     marginTop: 4,
     lineHeight: 18,
   },
+
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 10,
   },
   metaDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: GREEN_DEEP,
-    marginRight: 6,
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: '#9CA3AF',
+    marginHorizontal: 6,
   },
   metaText: {
     fontSize: 11,
-    color: GREEN_DEEP,
-    fontWeight: '600',
+    color: '#9A9A9A',
+    fontWeight: '500',
   },
   unreadPill: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     backgroundColor: GREEN,
-    marginLeft: 8,
+    marginLeft: 'auto',
   },
 
   /* Attachments */
@@ -362,9 +376,6 @@ const styles = StyleSheet.create({
   },
   viewBtnText: { fontSize: 12, color: '#1D4ED8', fontWeight: '700' },
 
-  emptyBox: {
-    alignItems: 'center',
-    paddingVertical: 60,
-  },
+  emptyBox: { alignItems: 'center', paddingVertical: 60 },
   emptyText: { color: '#777', marginTop: 8, fontSize: 13 },
 });
