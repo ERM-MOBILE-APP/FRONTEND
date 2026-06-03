@@ -282,6 +282,10 @@ export const announcementAPI = {
     postedBy?: string;
     audience?: 'all' | 'department' | 'team';
   }) => api.post('/announcement', data),
+  // Per-user read tracking — same shape as notificationAPI so the
+  // Announcements screen can reuse the Notifications pattern.
+  markAsRead:  (id: string) => api.patch(`/announcement/${id}/read`),
+  markAllRead: ()           => api.patch('/announcement/read-all'),
 };
 
 export const notificationAPI = {
