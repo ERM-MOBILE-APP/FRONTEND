@@ -809,11 +809,39 @@ export default function LeaveScreen() {
             </View>
           )}
 
-          {item.hrComment ? (
-            <View style={styles.hrCommentBar}>
-              <Text style={styles.hrCommentText}>HR: {item.hrComment}</Text>
-            </View>
-          ) : null}
+          {(() => {
+            const it: any = item;
+            const mgrStatus = String(it.managerStatus || '').toLowerCase();
+            const mgrName   = it.managerStatusBy || it.managerName || '';
+            const isReject  = effective === 'rejected';
+            if (isReject && mgrStatus === 'rejected') {
+              const extra = it.managerComment || it.managerRejectionReason;
+              return (
+                <View style={styles.hrCommentBar}>
+                  <Text style={styles.hrCommentText}>
+                    Manager rejected{mgrName ? ` (${mgrName})` : ''}{extra ? ` — ${extra}` : ''}
+                  </Text>
+                </View>
+              );
+            }
+            if (isReject) {
+              return (
+                <View style={styles.hrCommentBar}>
+                  <Text style={styles.hrCommentText}>
+                    HR rejected{it.hrComment ? ` — ${it.hrComment}` : ''}
+                  </Text>
+                </View>
+              );
+            }
+            if (it.hrComment) {
+              return (
+                <View style={styles.hrCommentBar}>
+                  <Text style={styles.hrCommentText}>HR: {it.hrComment}</Text>
+                </View>
+              );
+            }
+            return null;
+          })()}
         </View>
       </View>
     );

@@ -1,5 +1,6 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const ACTIVE = '#FFFFFF';
@@ -38,8 +39,10 @@ export default function TabLayout() {
         name="index"
         options={{
           title: 'Home',
-          tabBarIcon: ({ color }) => (
-            <Ionicons name="home-outline" size={22} color={color} />
+          tabBarIcon: ({ color, focused }) => (
+            <View style={{ width: 44, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: 15, backgroundColor: focused ? 'rgba(255,255,255,0.18)' : 'transparent' }}>
+              <Ionicons name="home-outline" size={22} color={color} />
+            </View>
           ),
         }}
       />
@@ -47,8 +50,10 @@ export default function TabLayout() {
         name="attendance"
         options={{
           title: 'Attendance',
-          tabBarIcon: ({ color }) => (
-            <Ionicons name="person-outline" size={22} color={color} />
+          tabBarIcon: ({ color, focused }) => (
+            <View style={{ width: 44, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: 15, backgroundColor: focused ? 'rgba(255,255,255,0.18)' : 'transparent' }}>
+              <Ionicons name="person-outline" size={22} color={color} />
+            </View>
           ),
         }}
       />
@@ -56,8 +61,10 @@ export default function TabLayout() {
         name="leave"
         options={{
           title: 'Leave',
-          tabBarIcon: ({ color }) => (
-            <Ionicons name="add-circle-outline" size={28} color={color} />
+          tabBarIcon: ({ color, focused }) => (
+            <View style={{ width: 44, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: 15, backgroundColor: focused ? 'rgba(255,255,255,0.18)' : 'transparent' }}>
+              <Ionicons name="add-circle-outline" size={28} color={color} />
+            </View>
           ),
         }}
       />
@@ -65,8 +72,10 @@ export default function TabLayout() {
         name="allowance"
         options={{
           title: 'Allowance',
-          tabBarIcon: ({ color }) => (
-            <Ionicons name="briefcase-outline" size={22} color={color} />
+          tabBarIcon: ({ color, focused }) => (
+            <View style={{ width: 44, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: 15, backgroundColor: focused ? 'rgba(255,255,255,0.18)' : 'transparent' }}>
+              <Ionicons name="briefcase-outline" size={22} color={color} />
+            </View>
           ),
         }}
       />
@@ -74,8 +83,10 @@ export default function TabLayout() {
         name="profile"
         options={{
           title: 'Profile',
-          tabBarIcon: ({ color }) => (
-            <Ionicons name="person-circle-outline" size={24} color={color} />
+          tabBarIcon: ({ color, focused }) => (
+            <View style={{ width: 44, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: 15, backgroundColor: focused ? 'rgba(255,255,255,0.18)' : 'transparent' }}>
+              <Ionicons name="person-circle-outline" size={24} color={color} />
+            </View>
           ),
         }}
       />

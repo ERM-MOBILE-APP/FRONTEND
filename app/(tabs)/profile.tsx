@@ -134,13 +134,15 @@ export default function ProfileScreen() {
             Profile fields can only be changed by HR / admin via the
             admin panel. Employees see their record but can't edit it. */}
         <View style={styles.infoList}>
-          <InfoRow label="Employee ID" value={show(user.userId)} />
+          <InfoRow label="Employee ID" value={show((user as any).employeeId || user.userId)} />
           <InfoRow label="Mobile No"   value={show(user.phone)} />
           <InfoRow label="Email ID"    value={show(user.email)} />
           <InfoRow label="DOB"         value={show(user.dob)} />
           <InfoRow label="Blood Group" value={show(user.bloodGroup)} />
           <InfoRow label="Gender"      value={show(user.gender)} />
           <InfoRow label="Designation" value={show(user.designation)} />
+          <InfoRow label="Department"  value={show((user as any).department)} />
+          <InfoRow label="Joining Date" value={show((user as any).joiningDate)} />
           <InfoRow label="Address"     value={show(user.address)} />
         </View>
 

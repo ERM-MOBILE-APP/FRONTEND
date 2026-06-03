@@ -444,30 +444,28 @@ export default function AllowanceScreen() {
         {!isPetrol && (
         <View style={styles.form}>
           <Text style={styles.label}>From</Text>
-          <TouchableOpacity
-            style={styles.input}
-            onPress={() => { setPickerSearch(''); setPickerOpen('from'); }}
-            activeOpacity={0.75}
-          >
+          <View style={styles.input}>
             <Ionicons name="locate-outline" size={18} color="#888" style={{ marginRight: 8 }} />
-            <Text style={[styles.textInput, !fromLoc && { color: '#9A9A9A' }]}>
-              {fromLoc || 'Select pickup location'}
-            </Text>
-            <Ionicons name="chevron-down" size={16} color="#9A9A9A" />
-          </TouchableOpacity>
+            <TextInput
+              value={fromLoc}
+              onChangeText={setFromLoc}
+              placeholder="Enter From Location"
+              placeholderTextColor="#9A9A9A"
+              style={styles.textInput}
+            />
+          </View>
 
           <Text style={styles.label}>To</Text>
-          <TouchableOpacity
-            style={styles.input}
-            onPress={() => { setPickerSearch(''); setPickerOpen('to'); }}
-            activeOpacity={0.75}
-          >
+          <View style={styles.input}>
             <Ionicons name="location-outline" size={18} color="#888" style={{ marginRight: 8 }} />
-            <Text style={[styles.textInput, !toLoc && { color: '#9A9A9A' }]}>
-              {toLoc || 'Select destination'}
-            </Text>
-            <Ionicons name="chevron-down" size={16} color="#9A9A9A" />
-          </TouchableOpacity>
+            <TextInput
+              value={toLoc}
+              onChangeText={setToLoc}
+              placeholder="Enter To Location"
+              placeholderTextColor="#9A9A9A"
+              style={styles.textInput}
+            />
+          </View>
 
           <Text style={styles.label}>Date</Text>
           <TouchableOpacity
@@ -543,12 +541,6 @@ export default function AllowanceScreen() {
           <TextInput
             value={notes}
             onChangeText={setNotes}
-            placeholder={
-              isPetrol
-                ? 'Add details about the commute...'
-                : 'Add details about the client visit...'
-            }
-            placeholderTextColor="#9A9A9A"
             multiline
             style={styles.textArea}
           />
@@ -645,6 +637,7 @@ export default function AllowanceScreen() {
                 </View>
                 <StatusBadge status={a.status} />
               </View>
+              <RejectRemarks item={a} />
             </View>
           ))
         ) : (
@@ -677,6 +670,7 @@ export default function AllowanceScreen() {
                   </Text>
                 </View>
               ) : null}
+              <RejectRemarks item={a} />
             </View>
           ))
         )}
@@ -895,6 +889,24 @@ function TypeCard({
         {subtitle}
       </Text>
     </TouchableOpacity>
+  );
+}
+
+function RejectRemarks({ item }: { item: any }) {
+  const status = String(item?.status || '').toLowerCase();
+  const mgrStatus = String(item?.managerStatus || '').toLowerCase();
+  const isRejected = status === 'rejected' || mgrStatus === 'rejected';
+  if (!isRejected) return null;
+  const mgrName = item?.managerStatusBy || item?.managerName || '';
+  const isManagerReject = mgrStatus === 'rejected';
+  const extra = isManagerReject ? (item?.managerComment || item?.managerRejectionReason) : item?.hrComment;
+  const text = isManagerReject
+    ? `Manager rejected${mgrName ? ` (${mgrName})` : ''}${extra ? ` - ${extra}` : ''}`
+    : `HR rejected${extra ? ` - ${extra}` : ''}`;
+  return (
+    <View style={[styles.notesBar, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
+      <Text style={[styles.notesText, { color: '#B91C1C' }]}>{text}</Text>
+    </View>
   );
 }
 

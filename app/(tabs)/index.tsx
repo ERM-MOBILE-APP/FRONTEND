@@ -713,22 +713,18 @@ export default function HomeScreen() {
 
             <View style={styles.timeRow}>
               <Text style={styles.bigTime}>{formatLiveTime(now)}</Text>
-              <TouchableOpacity
-                onPress={handleCheckPress}
-                activeOpacity={0.85}
-                style={[
-                  styles.checkBtn,
-                  // Color the action button per state (Jun 2026):
-                  //   • Check In (not yet in)   → primary green (default)
-                  //   • Check Out (in, not out) → blue, matches the
-                  //                              blue log-out icon below
-                  //   • Done (already out)      → muted grey
-                  checkedIn && !checkedOut && { backgroundColor: '#1565C0', shadowColor: '#1565C0' },
-                  checkedOut && { backgroundColor: '#9E9E9E', shadowColor: '#9E9E9E' },
-                ]}
-              >
-                <Text style={styles.checkBtnText}>{buttonLabel}</Text>
-              </TouchableOpacity>
+              {!checkedOut && (
+                <TouchableOpacity
+                  onPress={handleCheckPress}
+                  activeOpacity={0.85}
+                  style={[
+                    styles.checkBtn,
+                    checkedIn && !checkedOut && { backgroundColor: '#1565C0', shadowColor: '#1565C0' },
+                  ]}
+                >
+                  <Text style={styles.checkBtnText}>{buttonLabel}</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.divider} />

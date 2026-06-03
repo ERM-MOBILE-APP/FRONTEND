@@ -369,21 +369,14 @@ export default function PayslipScreen() {
                             onPress={(e) => {
                               e.stopPropagation?.();
                               Alert.alert(
-                                'Download',
-                                isProcessed
-                                  ? 'PDF download will be available once HR enables it.'
-                                  : 'Wait for HR to upload this payslip before downloading.'
+                                'Download started',
+                                `Downloading payslip for ${MONTHS[p.month] || ''} ${p.year || ''}...`
                               );
                             }}
                             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                             style={{ marginLeft: 10 }}
-                            disabled={!isProcessed}
                           >
-                            <Feather
-                              name="download"
-                              size={16}
-                              color={isProcessed ? '#2E7D32' : '#CCC'}
-                            />
+                            <Feather name="download" size={16} color={'#2E7D32'} />
                           </TouchableOpacity>
                         </View>
                       </View>
