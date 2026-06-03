@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect } from 'expo-router';
-import { payslipAPI } from '../../services/api';
+import { payslipAPI, profileAPI } from '../../services/api';
 
 
 // confirmAsync — promise-based wrapper around Alert.alert so we can
@@ -155,9 +155,25 @@ export default function PayslipScreen() {
     isAlreadyRequested(reqMonth, reqYear);
 
   useEffect(() => {
+    // Seed from cache so the month picker has SOMETHING immediately.
     AsyncStorage.getItem('user').then((u) => {
       if (u) { try { setUser(JSON.parse(u)); } catch {} }
     });
+    // Then refresh from the server. The login response used to omit
+    // joiningDate, so users who logged in before the Jun 2026 fix have
+    // a cached `user` object with no joiningDate — which made the
+    // month picker fall back to the company payroll floor (April 2025)
+    // and let employees request months from before they joined. Pulling
+    // the fresh profile here corrects that on the next app open.
+    profileAPI.getProfile()
+      .then((res) => {
+        const fresh = res?.data;
+        if (!fresh) return;
+        setUser(fresh);
+        // Re-cache so the next cold-start also has the joiningDate.
+        AsyncStorage.setItem('user', JSON.stringify(fresh)).catch(() => {});
+      })
+      .catch(() => { /* keep the cached value on network error */ });
   }, []);
 
   const fetchHistory = useCallback(async (year = selectedYear) => {

@@ -152,15 +152,22 @@ export default function ProfileScreen() {
           </Text>
         </View>
 
-        {/* LOG OUT */}
-        <TouchableOpacity
-          style={styles.logoutRow}
-          onPress={handleLogout}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.logoutText}>Log out</Text>
-          <Feather name="log-out" size={16} color="#F44336" style={{ marginLeft: 4 }} />
-        </TouchableOpacity>
+        {/* LOG OUT — round centered button (Jun 2026). Was an inline
+            "Log out" link aligned left. HR asked for a primary action
+            on its own row, so it now reads as a deliberate "log me out"
+            tap and matches the destructive-but-recoverable design used
+            for the Sign Out button in the desktop apps. */}
+        <View style={styles.logoutWrap}>
+          <TouchableOpacity
+            style={styles.logoutCircle}
+            onPress={handleLogout}
+            activeOpacity={0.8}
+            accessibilityLabel="Log out"
+          >
+            <Feather name="log-out" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
+          <Text style={styles.logoutCaption}>Log out</Text>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -270,6 +277,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  /* Legacy logoutRow/logoutText kept for any old reference but the new
+     round button below replaces it. */
   logoutRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -280,5 +289,34 @@ const styles = StyleSheet.create({
     color: '#F44336',
     fontSize: 14,
     fontWeight: '700',
+  },
+
+  /* Round, centered logout (Jun 2026) — Material-ish FAB shape. */
+  logoutWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 22,
+    marginBottom: 28,
+  },
+  logoutCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#F44336',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#F44336',
+    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  logoutCaption: {
+    marginTop: 10,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#F44336',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
 });

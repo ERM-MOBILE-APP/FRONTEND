@@ -7,6 +7,8 @@ import {
   ScrollView,
   Alert,
   StatusBar,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -54,6 +56,12 @@ export default function HomeScreen() {
   // so visiting the Notifications screen (which auto-marks them read) makes
   // the dot disappear without needing a manual reload here.
   const [unreadCount, setUnreadCount] = useState(0);
+  // Professional check-in/out modal (Jun 2026). Replaces the native
+  // Alert.alert pop-ups so success looks branded instead of like a
+  // system error dialog. `null` = closed; otherwise { kind, time }.
+  const [checkResult, setCheckResult] = useState<
+    null | { kind: 'in' | 'out' | 'done'; time: string }
+  >(null);
 
   const refreshUnread = useCallback(async () => {
     try {
@@ -591,7 +599,7 @@ export default function HomeScreen() {
           }
         } catch {/* best-effort */}
 
-        Alert.alert('Checked In', 'Have an awesome day!');
+        setCheckResult({ kind: 'in', time: formatLiveTime(new Date()) });
         startTracking();
       } else if (!checkedOut) {
         // Manual check-out doesn't require GPS, but if it's currently on
@@ -618,9 +626,9 @@ export default function HomeScreen() {
         await attendanceAPI.checkOut(outCoords);
         await attendanceAPI.setPresence('offline').catch(() => {});
         stopTracking();
-        Alert.alert('Checked Out', 'See you tomorrow!');
+        setCheckResult({ kind: 'out', time: formatLiveTime(new Date()) });
       } else {
-        Alert.alert('Done for today', 'Both check-in and check-out are recorded.');
+        setCheckResult({ kind: 'done', time: formatLiveTime(new Date()) });
       }
       refreshToday();
     } catch (err: any) {
@@ -710,7 +718,13 @@ export default function HomeScreen() {
                 activeOpacity={0.85}
                 style={[
                   styles.checkBtn,
-                  checkedOut && { backgroundColor: '#9E9E9E' },
+                  // Color the action button per state (Jun 2026):
+                  //   • Check In (not yet in)   → primary green (default)
+                  //   • Check Out (in, not out) → blue, matches the
+                  //                              blue log-out icon below
+                  //   • Done (already out)      → muted grey
+                  checkedIn && !checkedOut && { backgroundColor: '#1565C0', shadowColor: '#1565C0' },
+                  checkedOut && { backgroundColor: '#9E9E9E', shadowColor: '#9E9E9E' },
                 ]}
               >
                 <Text style={styles.checkBtnText}>{buttonLabel}</Text>
@@ -796,6 +810,93 @@ export default function HomeScreen() {
         onClose={() => setDrawerOpen(false)}
         user={user || undefined}
       />
+
+      {/* Professional check-in / check-out result modal (Jun 2026).
+          Replaces the bare native Alert.alert so the moment of clocking
+          in or out feels branded — green circle for check-in, blue for
+          check-out, with the recorded time and a single OK button. */}
+      <Modal
+        visible={!!checkResult}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCheckResult(null)}
+      >
+        <Pressable
+          style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+          onPress={() => setCheckResult(null)}
+        >
+          <Pressable
+            onPress={() => {}}
+            style={{
+              width: '100%', maxWidth: 340,
+              backgroundColor: '#FFFFFF', borderRadius: 18,
+              paddingTop: 28, paddingBottom: 18, paddingHorizontal: 22,
+              alignItems: 'center',
+              shadowColor: '#000', shadowOpacity: 0.18, shadowOffset: { width: 0, height: 10 }, shadowRadius: 24, elevation: 10,
+            }}
+          >
+            {/* Status circle */}
+            <View style={{
+              width: 76, height: 76, borderRadius: 38,
+              backgroundColor:
+                checkResult?.kind === 'in'  ? '#E8F5E9' :
+                checkResult?.kind === 'out' ? '#E3F2FD' :
+                '#F1F5F9',
+              alignItems: 'center', justifyContent: 'center',
+              marginBottom: 14,
+            }}>
+              <Feather
+                name={
+                  checkResult?.kind === 'in'  ? 'log-in' :
+                  checkResult?.kind === 'out' ? 'log-out' :
+                  'check-circle'
+                }
+                size={36}
+                color={
+                  checkResult?.kind === 'in'  ? '#2E7D32' :
+                  checkResult?.kind === 'out' ? '#1565C0' :
+                  '#64748B'
+                }
+              />
+            </View>
+
+            <Text style={{ fontSize: 19, fontWeight: '800', color: '#0F172A', marginBottom: 6, textAlign: 'center' }}>
+              {checkResult?.kind === 'in'  ? 'Checked In Successfully' :
+               checkResult?.kind === 'out' ? 'Checked Out Successfully' :
+               "You're all done for today"}
+            </Text>
+
+            <Text style={{ fontSize: 13, color: '#475569', textAlign: 'center', lineHeight: 19, marginBottom: 6 }}>
+              {checkResult?.kind === 'in'  ? 'Have a productive day. We’ll keep your location pinged with HR until you check out.' :
+               checkResult?.kind === 'out' ? 'See you tomorrow! Your hours have been recorded.' :
+               'Both check-in and check-out are recorded for today.'}
+            </Text>
+
+            <Text style={{ fontSize: 12, fontWeight: '700', color: '#0F172A', marginBottom: 18 }}>
+              {checkResult?.kind === 'in'  ? 'Check-in: ' :
+               checkResult?.kind === 'out' ? 'Check-out: ' :
+               ''}
+              {checkResult?.time || ''}
+            </Text>
+
+            <TouchableOpacity
+              onPress={() => setCheckResult(null)}
+              style={{
+                alignSelf: 'stretch',
+                paddingVertical: 12,
+                borderRadius: 999,
+                backgroundColor:
+                  checkResult?.kind === 'in'  ? '#2E7D32' :
+                  checkResult?.kind === 'out' ? '#1565C0' :
+                  '#0F172A',
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }}>OK</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }

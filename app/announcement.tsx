@@ -227,61 +227,26 @@ export default function AnnouncementScreen() {
                 />
               }
             >
-              {visible.map((a, idx) => {
-                // HRMS may post with capitalised categories ('General',
-                // 'HR', 'Policy', 'Event', etc.). Normalize to the lowercase
-                // enum the mobile theme map expects, and fall back to
-                // 'general' when no theme exists for the value.
-                const raw = String(a.category || 'general').toLowerCase();
-                const cat = (raw.includes('holiday') ? 'holiday'
-                          :  raw.includes('policy')  ? 'policy'
-                          :  raw.includes('event')   ? 'event'
-                          :                             'general') as Category;
-                const theme = CATEGORY_THEME[cat];
+              {visible.map((a) => {
                 const isExpanded = expandedId === a._id;
-                const isFeatured = idx === 0 && filter === 'all';
-
+                // Categories were removed at HR's request (Jun 2026 brief —
+                // match the Figma). Cards are now uniform white tiles with
+                // title + body + "Posted by HR · time-ago" footer.
                 return (
                   <TouchableOpacity
                     key={a._id}
                     onPress={() => setExpandedId(isExpanded ? null : a._id)}
                     activeOpacity={0.85}
-                    style={[
-                      styles.card,
-                      isFeatured && styles.cardFeatured,
-                      { borderLeftColor: theme.bg },
-                    ]}
+                    style={styles.card}
                   >
-                    {/* Category badge — top-right */}
-                    <View style={[styles.catBadge, { backgroundColor: theme.bgSoft }]}>
-                      <Text style={[styles.catBadgeText, { color: theme.fg }]}>
-                        {theme.label}
+                    <View style={{ width: '100%' }}>
+                      <Text style={styles.cardTitle}>{a.title}</Text>
+                      <Text
+                        style={styles.cardBody}
+                        numberOfLines={isExpanded ? undefined : 2}
+                      >
+                        {a.body}
                       </Text>
-                    </View>
-
-                    {/* Featured ribbon for the first item in "All" */}
-                    {isFeatured && (
-                      <View style={styles.featuredRibbon}>
-                        <Ionicons name="star" size={10} color="#FFFFFF" />
-                        <Text style={styles.featuredRibbonText}>LATEST</Text>
-                      </View>
-                    )}
-
-                    <View style={styles.cardRow}>
-                      <View style={[styles.iconCircle, { backgroundColor: theme.bgSoft }]}>
-                        <CategoryIcon cat={cat} size={20} />
-                      </View>
-
-                      <View style={{ flex: 1, marginLeft: 12 }}>
-                        <Text style={[styles.cardTitle, isFeatured && { fontSize: 15 }]}>
-                          {a.title}
-                        </Text>
-                        <Text
-                          style={styles.cardBody}
-                          numberOfLines={isExpanded ? undefined : 3}
-                        >
-                          {a.body}
-                        </Text>
 
                         {/* Attachments — images preview inline plus an
                             explicit "View document" button (tap = open in
@@ -361,28 +326,13 @@ export default function AnnouncementScreen() {
                           </View>
                         )}
 
-                        <View style={styles.metaRow}>
-                          <View style={styles.metaLeft}>
-                            <View style={styles.metaAvatar}>
-                              <Text style={styles.metaAvatarText}>
-                                {(a.postedBy || 'HR').slice(0, 1).toUpperCase()}
-                              </Text>
-                            </View>
-                            <Text style={styles.metaText}>
-                              {a.postedBy || 'HR'}
-                            </Text>
-                            <Text style={styles.metaDot}>·</Text>
-                            <Text style={styles.metaText}>
-                              {relativeTime(a.createdAt)}
-                            </Text>
-                          </View>
-                          <Feather
-                            name={isExpanded ? 'chevron-up' : 'chevron-down'}
-                            size={16}
-                            color="#9E9E9E"
-                          />
-                        </View>
-                      </View>
+                      {/* Footer (Jun 2026 Figma): plain text "Posted by HR
+                          · 2h ago" — avatar circle dropped to match the
+                          flat tile design. No chevron either; tapping
+                          the card still expands/collapses the body. */}
+                      <Text style={styles.metaFooter}>
+                        Posted by {a.postedBy || 'HR'}  ·  {relativeTime(a.createdAt)}
+                      </Text>
                     </View>
                   </TouchableOpacity>
                 );
@@ -481,48 +431,39 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 6, textAlign: 'center' },
 
-  /* Meta row (Jun 2026): the footer "[avatar] [author] . [time-ago]"
-     line was rendering vertically because none of these styles existed
-     -- RN silently dropped every undefined style name, so each View /
-     Text fell back to its default (stacked). HR reported the cards
-     looked broken with V / Vivek Kumar / . / 4d ago on four separate
-     lines. flex-direction:row on metaRow + metaLeft fixes the
-     stacking; the avatar gets a small green circle so the row visually
-     ties back to the page's green header. */
-  metaRow: {
-    marginTop: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  /* Announcement card (Jun 2026 Figma): flat white tile, no colored
+     category band, no icon circle, no chevron. Just title + body +
+     "Posted by HR · time-ago" footer. */
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#EEF1EE',
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 6,
+    elevation: 1,
   },
-  metaLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  metaAvatar: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#E8F5E9',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-  },
-  metaAvatarText: {
-    fontSize: 11,
+  cardTitle: {
+    fontSize: 15,
     fontWeight: '800',
-    color: '#2E7D32',
+    color: '#1A1A1A',
+    marginBottom: 6,
   },
-  metaText: {
-    fontSize: 12,
-    color: '#555',
+  cardBody: {
+    fontSize: 13,
+    color: '#4A4A4A',
+    lineHeight: 18,
+  },
+  metaFooter: {
+    marginTop: 14,
+    fontSize: 11,
     fontWeight: '600',
-  },
-  metaDot: {
-    fontSize: 12,
     color: '#9A9A9A',
-    fontWeight: '700',
-    marginHorizontal: 6,
   },
 });
