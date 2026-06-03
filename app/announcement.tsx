@@ -1,28 +1,17 @@
 /**
- * Announcements screen — redesigned Jun 2026 to mirror the Notifications
- * screen.
+ * Announcements screen — redesigned Jun 2026 to mirror Notifications.
  *
- * What changed (vs the old green-banner design):
- *   • Top bar matches notifications.tsx — white background, back button,
- *     centered title with a megaphone icon, mark-all-read button.
- *   • Each announcement renders as a notification-style card: colored
- *     left edge, light-green tint for unread, plain white for read,
- *     title + body + bottom meta row with a small dot + relative time.
- *   • Unread state is tracked per user (Announcement.readBy in the DB).
- *     Tapping a card marks it read for the current user. The screen
- *     also fires markAllRead on mount so the home page bell badge clears.
- *   • Attachments still render inline below the body (images + a "View
- *     document" button for any other mime type) so HR uploads from HRMS
- *     still flow through.
- *
- * Entry points:
- *   - Home page "View All" button   (app/(tabs)/index.tsx)
- *   - Side drawer "Announcement"    (components/SideDrawer.tsx)
- *
- * Data sources:
- *   - GET   /api/announcement                      → list with isRead per row
- *   - PATCH /api/announcement/:id/read             → mark one read
- *   - PATCH /api/announcement/read-all             → mark all read
+ * Spec (HR brief):
+ *   - Same top bar layout as notifications.tsx (back / centered title /
+ *     mark-all-read).
+ *   - Cards styled like notification cards BUT extend edge-to-edge:
+ *     no horizontal padding on the ScrollView, no side rounding or
+ *     side border on the card itself. Each card is a full-width strip
+ *     with a colored left-edge stripe and a hairline bottom divider.
+ *   - Unread cards have a light-green tint and a small dot at the
+ *     bottom-right of the meta row; read cards are plain white.
+ *   - Tap-to-read marks the announcement read for this user. Read state
+ *     is persisted on Announcement.readBy in the DB.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -61,7 +50,7 @@ type Announcement = {
 };
 
 // Same edge-colour mapping the notifications screen uses, so the visual
-// language between the two screens is identical.
+// language between the two screens stays identical.
 const CATEGORY_EDGE: Record<Category, string> = {
   holiday: '#FF8A65',
   policy:  '#1976D2',
@@ -72,7 +61,6 @@ const CATEGORY_EDGE: Record<Category, string> = {
 const GREEN = '#4CAF50';
 const GREEN_DEEP = '#2E7D32';
 
-/** "just now", "5m ago", "3h ago", "2d ago" — matches notifications.tsx. */
 function formatRelative(iso?: string): string {
   if (!iso) return '';
   try {
@@ -105,8 +93,7 @@ export default function AnnouncementScreen() {
     }
   }, []);
 
-  // On mount: load AND auto-mark-all-read so the home page bell badge
-  // clears the moment the user enters this screen. Cards stay visible.
+  // On mount: load AND auto-mark-all-read so the home bell badge clears.
   useEffect(() => {
     (async () => {
       await load();
@@ -114,7 +101,6 @@ export default function AnnouncementScreen() {
     })();
   }, [load]);
 
-  // Re-fetch when refocusing the tab so new posts show up.
   useFocusEffect(
     useCallback(() => {
       load();
@@ -143,7 +129,7 @@ export default function AnnouncementScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.safe}>
-      {/* TOP BAR — matches notifications.tsx layout exactly */}
+      {/* TOP BAR */}
       <View style={styles.topBar}>
         <TouchableOpacity
           style={styles.backBtn}
@@ -172,9 +158,10 @@ export default function AnnouncementScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* LIST */}
+      {/* LIST — edge-to-edge cards per HR's spec. ScrollView has zero
+          horizontal padding so each card spans the full screen width. */}
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 40 }}
+        contentContainerStyle={{ paddingHorizontal: 0, paddingTop: 0, paddingBottom: 40 }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={GREEN_DEEP} />
         }
@@ -205,10 +192,9 @@ export default function AnnouncementScreen() {
                 <Text style={styles.cardTitle}>{a.title}</Text>
                 <Text style={styles.cardBody}>{a.body}</Text>
 
-                {/* Attachments — keep the existing inline render. HR
-                    uploads images and the occasional PDF from HRMS;
-                    images render directly, other types show a "View"
-                    chip that opens in the system viewer. */}
+                {/* Attachments — images preview inline plus an explicit
+                    "View document" button. Non-image files surface as a
+                    row with the filename and a tappable "View" chip. */}
                 {Array.isArray(a.attachments) && a.attachments.length > 0 && (
                   <View style={{ marginTop: 10, gap: 10 }}>
                     {a.attachments.map((att, i) => {
@@ -300,21 +286,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
-  /* Card — identical metrics to notifications.tsx */
+  /* Card — notifications-style design but edge-to-edge per HR's spec.
+     Side rounding + side borders dropped so each card looks like a
+     clean horizontal strip spanning the full screen width. A hairline
+     bottom divider keeps cards visually separated, and the colored
+     left edge stripe preserves the category accent. */
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     paddingVertical: 14,
-    marginBottom: 12,
     borderLeftWidth: 5,
-    borderWidth: 1,
-    borderColor: '#EEEEEE',
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 6,
-    elevation: 2,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEEEEE',
   },
   cardTitle: {
     fontSize: 14,
@@ -368,7 +351,6 @@ const styles = StyleSheet.create({
   viewBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
     paddingVertical: 6,
     paddingHorizontal: 12,
     backgroundColor: '#EFF6FF',
