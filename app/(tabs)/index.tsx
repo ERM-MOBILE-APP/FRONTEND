@@ -642,6 +642,8 @@ export default function HomeScreen() {
     const h = now.getHours();
     if (h < 12) return 'Good Morning';
     if (h < 17) return 'Good Afternoon';
+    // After 8:00 PM (20:00) until midnight → Good Night.
+    if (h >= 20) return 'Good Night';
     return 'Good Evening';
   })();
 

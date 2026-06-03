@@ -31,6 +31,36 @@ type UserProfile = {
 // Placeholder for missing values. Kept in one place so no hard-coded test
 // strings (like the old "20-09-2005" / "Bhvhjh@Gmail.Com") slip back in.
 const EMPTY = 'Not set';
+
+// Force joining date to plain dd-mm-yyyy. The backend stores it as an
+// ISO string (e.g. '2024-09-20T00:00:00.000Z'). Any time/zone component
+// is stripped before display.
+const fmtJoiningDate = (v?: any): string => {
+  if (!v) return EMPTY;
+  const s = String(v).trim();
+  if (!s) return EMPTY;
+  // Already dd-mm-yyyy? leave it.
+  const ddmm = s.match(/^(\d{2})-(\d{2})-(\d{4})/);
+  if (ddmm) return `${ddmm[1]}-${ddmm[2]}-${ddmm[3]}`;
+  // ISO yyyy-mm-dd or yyyy-mm-ddTHH:MM:SS
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[3]}-${iso[2]}-${iso[1]}`;
+  // dd/mm/yyyy fallback
+  const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slash) {
+    const dd = slash[1].padStart(2, '0');
+    const mm = slash[2].padStart(2, '0');
+    return `${dd}-${mm}-${slash[3]}`;
+  }
+  // Last resort: parse as Date
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    return `${dd}-${mm}-${d.getFullYear()}`;
+  }
+  return s;
+};
 // Render any value safely. If it arrives as an object (e.g. an old API
 // response with nested address or a populated designation), flatten it to
 // a readable string so the screen never displays "[object Object]" or a
@@ -142,7 +172,7 @@ export default function ProfileScreen() {
           <InfoRow label="Gender"      value={show(user.gender)} />
           <InfoRow label="Designation" value={show(user.designation)} />
           <InfoRow label="Department"  value={show((user as any).department)} />
-          <InfoRow label="Joining Date" value={show((user as any).joiningDate)} />
+          <InfoRow label="Joining Date" value={fmtJoiningDate((user as any).joiningDate)} />
           <InfoRow label="Address"     value={show(user.address)} />
         </View>
 
