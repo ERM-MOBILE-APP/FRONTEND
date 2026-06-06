@@ -540,12 +540,36 @@ export default function HomeScreen() {
     return () => sub.remove();
   }, [checkedIn, checkedOut]);
 
+  // Locks the button while a check-in/out is in flight. Without this,
+  // a quick double-tap fired two parallel checkIn requests, the second
+  // got "Already checked in" and the user saw the success modal flicker
+  // then the error toast — confusing, looked like the button was broken.
+  const [actionBusy, setActionBusy] = useState(false);
+
+  // Wrap any promise that could hang (GPS fix, permission prompt that the
+  // user never answered, slow Render cold-start) in a hard time-out. If
+  // it doesn't resolve in `ms` we reject — handleCheckPress's catch then
+  // surfaces a friendly error and `finally` releases the actionBusy lock
+  // so the user can tap again. Without this guard the GPS chain could
+  // silently sit forever, leaving the button frozen in "Please wait..."
+  // — which is exactly what users described as "button not working".
+  const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+    Promise.race<T>([
+      p,
+      new Promise<T>((_, rej) =>
+        setTimeout(() => rej(new Error(`${label} timed out — please try again`)), ms)
+      ),
+    ]);
+
   const handleCheckPress = async () => {
+    if (actionBusy) return;
+    setActionBusy(true);
     try {
       if (!checkedIn) {
         // Mandatory location check before check-in. ensureLocationOn now
         // returns the actual fix so we can include lat/lng in the request.
-        const coords = await ensureLocationOn();
+        // Cap at 25s so a flaky GPS chip can't strand the button.
+        const coords = await withTimeout(ensureLocationOn(), 25_000, 'Location fix');
         if (!coords) return;
 
         // Require "Allow all the time" location permission BEFORE
@@ -633,6 +657,8 @@ export default function HomeScreen() {
       refreshToday();
     } catch (err: any) {
       Alert.alert('Error', err?.response?.data?.message || 'Could not record attendance');
+    } finally {
+      setActionBusy(false);
     }
   };
 
@@ -719,12 +745,16 @@ export default function HomeScreen() {
                 <TouchableOpacity
                   onPress={handleCheckPress}
                   activeOpacity={0.85}
+                  disabled={actionBusy}
                   style={[
                     styles.checkBtn,
                     checkedIn && !checkedOut && { backgroundColor: '#1565C0', shadowColor: '#1565C0' },
+                    actionBusy && { opacity: 0.6 },
                   ]}
                 >
-                  <Text style={styles.checkBtnText}>{buttonLabel}</Text>
+                  <Text style={styles.checkBtnText}>
+                    {actionBusy ? 'Please wait...' : buttonLabel}
+                  </Text>
                 </TouchableOpacity>
               )}
             </View>
