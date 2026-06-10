@@ -477,17 +477,22 @@ export default function PayslipScreen() {
             )}
 
             <TouchableOpacity
-              style={[styles.submitReqBtn, submitDisabled && { opacity: 0.45 }]}
+              style={[styles.submitReqBtn, submitDisabled && { opacity: 0.6 }]}
               onPress={submitRequest}
               disabled={submitDisabled}
             >
-              <Text style={styles.submitReqBtnText}>
-                {requesting
-                  ? 'Submitting…'
-                  : isFutureMonth(reqMonth, reqYear)
-                  ? 'Pick a past month'
-                  : `Request ${MONTHS[reqMonth]} ${reqYear}`}
-              </Text>
+              {requesting ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={[styles.submitReqBtnText, { marginLeft: 8 }]}>Submitting…</Text>
+                </View>
+              ) : (
+                <Text style={styles.submitReqBtnText}>
+                  {isFutureMonth(reqMonth, reqYear)
+                    ? 'Pick a past month'
+                    : `Request ${MONTHS[reqMonth]} ${reqYear}`}
+                </Text>
+              )}
             </TouchableOpacity>
           </Pressable>
         </Pressable>

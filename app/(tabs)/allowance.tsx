@@ -9,6 +9,7 @@ import {
   Modal,
   Pressable,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -546,14 +547,19 @@ export default function AllowanceScreen() {
           />
 
           <TouchableOpacity
-            style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
+            style={[styles.submitBtn, submitting && { opacity: 0.85 }]}
             onPress={submit}
             disabled={submitting}
             activeOpacity={0.85}
           >
-            <Text style={styles.submitBtnText}>
-              {submitting ? 'Submitting...' : 'Submit'}
-            </Text>
+            {submitting ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                <ActivityIndicator size="small" color="#fff" />
+                <Text style={[styles.submitBtnText, { marginLeft: 8 }]}>Submitting…</Text>
+              </View>
+            ) : (
+              <Text style={styles.submitBtnText}>Submit</Text>
+            )}
           </TouchableOpacity>
         </View>
         )}

@@ -39,6 +39,106 @@ type LocationTaskBody = {
   locations: Location.LocationObject[];
 };
 
+/**
+ * Offline ping queue (Jun 2026 — Requirement #7 prod fix).
+ *
+ * When the device has no internet, the location-ping POST fails. Earlier
+ * versions just dropped the sample and moved on — net effect: HR saw a
+ * straight line on the map between the last pre-outage ping and the
+ * first post-outage ping, masking that the employee had genuinely
+ * travelled across town during the outage.
+ *
+ * New behaviour: on POST failure (network error, timeout, 5xx) we push
+ * the sample into AsyncStorage under PING_QUEUE_KEY. On the next
+ * successful ping (i.e. once the network is back) we drain the queue
+ * by replaying each saved sample, preserving its original timestamp.
+ *
+ * Queue is capped at 200 entries (~3 hours at the 60 s cadence) to
+ * prevent unbounded growth if a phone is offline for an entire shift.
+ * When the cap is hit, the oldest entries are dropped first so we keep
+ * the freshest 200 samples.
+ */
+const PING_QUEUE_KEY = 'erm-bg-ping-queue-v1';
+const PING_QUEUE_MAX = 200;
+
+type QueuedPing = {
+  lat: number; lng: number;
+  accuracy?: number | null;
+  speed?: number | null;
+  recordedAt: string; // ISO, the time the sample was COLLECTED, not posted
+};
+
+async function loadQueue(): Promise<QueuedPing[]> {
+  try {
+    const raw = await AsyncStorage.getItem(PING_QUEUE_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+async function saveQueue(q: QueuedPing[]): Promise<void> {
+  try {
+    // Keep only the freshest PING_QUEUE_MAX.
+    const trimmed = q.length > PING_QUEUE_MAX ? q.slice(q.length - PING_QUEUE_MAX) : q;
+    await AsyncStorage.setItem(PING_QUEUE_KEY, JSON.stringify(trimmed));
+  } catch {/* storage full — best-effort */}
+}
+async function enqueueFailedPing(p: QueuedPing): Promise<void> {
+  const q = await loadQueue();
+  q.push(p);
+  await saveQueue(q);
+}
+
+/**
+ * Drain the offline queue by replaying each saved sample through the
+ * SAME location-ping endpoint. Each replayed sample carries its
+ * original recordedAt so the backend stamps the polyline with the
+ * actual time the employee was at that spot — not the time the network
+ * came back. Stops early on any failure so we don't churn through
+ * the queue if the network is still flaky.
+ */
+async function drainQueue(token: string): Promise<void> {
+  const q = await loadQueue();
+  if (q.length === 0) return;
+  console.log('[bg-location] draining', q.length, 'queued pings');
+  const remaining: QueuedPing[] = [];
+  let drained = 0;
+  for (const p of q) {
+    try {
+      const res = await fetch(`${BASE_URL}/api/attendance/location-ping`, {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          Authorization:   `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          lat:        p.lat,
+          lng:        p.lng,
+          accuracy:   p.accuracy ?? undefined,
+          speed:      p.speed    ?? undefined,
+          recordedAt: p.recordedAt,   // backend honours this if supplied
+        }),
+      });
+      if (!res.ok && res.status !== 401 && res.status !== 403) {
+        // Server error — stop draining and re-queue the rest.
+        remaining.push(p);
+        const idx = q.indexOf(p);
+        if (idx >= 0) remaining.push(...q.slice(idx + 1));
+        break;
+      }
+      drained++;
+    } catch {
+      // Network error — keep this one and everything after.
+      remaining.push(p);
+      const idx = q.indexOf(p);
+      if (idx >= 0) remaining.push(...q.slice(idx + 1));
+      break;
+    }
+  }
+  await saveQueue(remaining);
+  if (drained > 0) console.log('[bg-location] drained', drained, 'pings; remaining', remaining.length);
+}
+
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   if (error) {
     console.warn('[bg-location] task error:', error.message);
@@ -62,6 +162,13 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   } catch {/* AsyncStorage init failure — non-fatal */}
   if (!token) return;
 
+  const recordedAt = new Date().toISOString();
+  const payload = {
+    lat, lng,
+    accuracy: typeof accuracy === 'number' ? accuracy : undefined,
+    speed:    typeof speed    === 'number' ? speed    : undefined,
+  };
+
   try {
     const res = await fetch(`${BASE_URL}/api/attendance/location-ping`, {
       method:  'POST',
@@ -69,47 +176,34 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         'Content-Type':  'application/json',
         Authorization:   `Bearer ${token}`,
       },
-      body: JSON.stringify({
-        lat,
-        lng,
-        accuracy: typeof accuracy === 'number' ? accuracy : undefined,
-        speed:    typeof speed    === 'number' ? speed    : undefined,
-      }),
+      body: JSON.stringify(payload),
     });
 
-    // Self-healing: if the server says the token is bad (user logged out
-    // from another device, account disabled, etc.) there's no point in the
-    // OS continuing to wake us every 2 minutes. Stop the task — the
-    // foreground service notification will disappear and the user's
-    // battery stops getting drained. They'll re-arm it on next check-in.
+    // IMPORTANT — DO NOT STOP THE TASK ON 401 / 403.
+    // A transient auth hiccup (Render cold-start, brief proxy glitch)
+    // must not silently kill tracking. The task keeps firing every
+    // 60s; the next ping will succeed and tracking resumes seamlessly.
     if (res.status === 401 || res.status === 403) {
-      console.warn('[bg-location] auth rejected (', res.status, ') — stopping background task.');
-      try {
-        const running = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => false);
-        if (running) await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-      } catch {/* best-effort */}
+      console.warn('[bg-location] ping rejected (' + res.status + ') — skipping but keeping task alive.');
       return;
     }
 
-    // Optional self-heal: server responded with a body that explicitly
-    // tells us the user has checked out for the day. Backend doesn't do
-    // this today, but if a future ping endpoint sets `{ checkedOut: true }`
-    // we'll respect it and stop tracking immediately rather than running
-    // till the user manually checks out.
-    if (res.ok) {
-      try {
-        const body = await res.json().catch(() => null) as any;
-        if (body && body.checkedOut === true) {
-          console.log('[bg-location] server reports user has checked out — stopping task.');
-          const running = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => false);
-          if (running) await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-        }
-      } catch {/* response body wasn't JSON — fine */}
+    // 5xx → server is up but unhealthy. Treat as a network failure
+    // and enqueue so the sample isn't lost.
+    if (!res.ok) {
+      console.warn('[bg-location] ping HTTP', res.status, '— enqueuing for replay');
+      await enqueueFailedPing({ ...payload, recordedAt });
+      return;
     }
+
+    // POST succeeded → try to drain any queued samples from a previous
+    // network outage. Best-effort, non-blocking on errors.
+    await drainQueue(token);
   } catch (e: any) {
-    console.warn('[bg-location] ping POST failed:', e?.message || e);
-    // Swallow — TaskManager doesn't have a useful retry semantic for
-    // network errors, and the next delivery will try again in 2 min.
+    // Network error — queue the sample so it survives until the
+    // device gets back online. The OS will keep firing the task.
+    console.warn('[bg-location] ping POST failed (network):', e?.message || e);
+    await enqueueFailedPing({ ...payload, recordedAt });
   }
 });
 
@@ -183,16 +277,20 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
   //                                       persistent low-priority sticky
   //                                       notification (cannot be swiped
   //                                       away by accident).
-  // Production-tuned config (Jun 2026): switched to High accuracy and a
-  // 90-second interval. The OS WILL throttle this on most OEM phones —
-  // but asking for "high + 90s" effectively gives us "balanced + 2min"
-  // delivery in practice, which is exactly what the backend's 25-min
-  // stale window needs. Asking for the original "balanced + 2min" was
-  // letting OEM doze rules push real delivery out to 6–12 minutes and
-  // bumping users to Offline mid-shift.
+  // Production-tuned config (Jun 2026): Highest accuracy + 60-sec interval.
+  // We upgraded from High → Highest because HR complained about pin
+  // jitter on the map — employees standing still appeared to drift 20-50 m
+  // because High accuracy mode mixes GPS + cell-tower + Wi-Fi triangulation
+  // and the latter two have huge error radii. Highest forces pure GPS
+  // (or Fused with GPS preferred) so urban-canyon accuracy drops from
+  // ±50 m to ±5-10 m typical.
+  //
+  // Interval tightened from 90 s → 60 s. With the new 10-min stale
+  // window on the backend we have less headroom, and "Highest" doesn't
+  // cost meaningfully more battery than "High" once GPS is already on.
   await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-    accuracy:         Location.Accuracy.High,
-    timeInterval:     90 * 1000,
+    accuracy:         Location.Accuracy.Highest,
+    timeInterval:     60 * 1000,
     distanceInterval: 0,
     showsBackgroundLocationIndicator: true,
     pausesUpdatesAutomatically:       false,

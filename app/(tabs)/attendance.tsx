@@ -9,8 +9,9 @@ import {
   Modal,
   TextInput,
   Pressable,
+  ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { attendanceAPI } from '../../services/api';
 
@@ -124,6 +125,10 @@ function daysBetweenTodayAnd(dateStr: string): number {
 }
 
 export default function AttendanceScreen() {
+  // Bottom inset = gesture/navigation-bar height. We push every modal
+  // sheet up by this amount so the Submit button never sits under
+  // the system pill on Android phones with gesture navigation.
+  const insets = useSafeAreaInsets();
   const [cursor, setCursor] = useState(new Date());
   const [calendar, setCalendar] = useState<Record<string, CalendarItem>>({});
   const [summary, setSummary] = useState<Summary>({
@@ -205,8 +210,25 @@ export default function AttendanceScreen() {
   }, [loadAll]);
 
   const changeMonth = (dir: number) => {
+    // Block forward navigation past the current calendar month AND
+    // backward navigation below June 2026 (the app's go-live month).
     const d = new Date(cursor);
     d.setMonth(d.getMonth() + dir);
+    const _today = new Date();
+    // Future cap
+    if (
+      d.getFullYear() > _today.getFullYear() ||
+      (d.getFullYear() === _today.getFullYear() && d.getMonth() > _today.getMonth())
+    ) {
+      return;
+    }
+    // Historical floor — app launched June 2026
+    if (
+      d.getFullYear() < 2026 ||
+      (d.getFullYear() === 2026 && d.getMonth() < 5)
+    ) {
+      return;
+    }
     setCursor(d);
   };
 
@@ -319,14 +341,26 @@ export default function AttendanceScreen() {
     }
   };
 
-  // Company started in April 2025 — floor the year picker at 2025.
+  // The app went live for employees in June 2026 — there is no
+  // attendance history before that. Floor the year picker at 2026
+  // and (further down) the month picker at June for the 2026 year.
+  const YEAR_FLOOR  = 2026;
+  const MONTH_FLOOR = 5; // June (0-indexed)
   const years = (() => {
-    const FLOOR = 2025;
-    const top   = Math.max(year + 1, FLOOR);
+    const top = today.getFullYear();
     const out: number[] = [];
-    for (let y = FLOOR; y <= top; y++) out.push(y);
+    for (let y = YEAR_FLOOR; y <= top; y++) out.push(y);
     return out;
   })();
+
+  // Whether the in-page Next / Previous chevrons should be tappable.
+  // canGoForward becomes false once the cursor lands on (or after) the
+  // current month so the user can't walk into "August 2026" when today
+  // is June 2026.
+  const canGoForward = !(
+    year > today.getFullYear() ||
+    (year === today.getFullYear() && month - 1 >= today.getMonth())
+  );
 
   return (
     <SafeAreaView edges={['top']} style={styles.safe}>
@@ -346,8 +380,16 @@ export default function AttendanceScreen() {
               <TouchableOpacity onPress={() => changeMonth(-1)} style={styles.navBtn}>
                 <Ionicons name="chevron-back" size={18} color="#333" />
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => changeMonth(1)} style={styles.navBtn}>
-                <Ionicons name="chevron-forward" size={18} color="#333" />
+              <TouchableOpacity
+                onPress={() => changeMonth(1)}
+                style={styles.navBtn}
+                disabled={!canGoForward}
+              >
+                <Ionicons
+                  name="chevron-forward"
+                  size={18}
+                  color={canGoForward ? '#333' : '#C9C9C9'}
+                />
               </TouchableOpacity>
             </View>
           </View>
@@ -364,9 +406,34 @@ export default function AttendanceScreen() {
                 ? `${year}-${pad(month)}-${pad(day)}`
                 : '';
               const item = current ? calendar[dateStr] : undefined;
-              const status = item?.status;
+              let status = item?.status;
               const isToday =
                 current && isCurrentMonth && day === today.getDate();
+              // A future in-month day — dim it and suppress status dots
+              // so the calendar reads as "this hasn't happened yet"
+              // instead of "absent".
+              const isFuture =
+                current &&
+                (year > today.getFullYear() ||
+                  (year === today.getFullYear() && month - 1 > today.getMonth()) ||
+                  (isCurrentMonth && day > today.getDate()));
+
+              // If a past weekday has no attendance record at all, the
+              // backend's overnight cron hasn't run yet (or the record
+              // was never created). Display it as absent so HR's "why
+              // is the calendar empty?" question goes away. We skip
+              // Sundays (weekly off) and don't override anything the
+              // backend already said.
+              const cellDate = current ? new Date(year, month - 1, day) : null;
+              const isPastWeekday =
+                current &&
+                !isFuture &&
+                !isToday &&
+                cellDate !== null &&
+                cellDate.getDay() !== 0; // 0 = Sunday
+              if (isPastWeekday && (!status || status === '')) {
+                status = 'absent';
+              }
 
               return (
                 <View key={key} style={styles.cell}>
@@ -379,7 +446,7 @@ export default function AttendanceScreen() {
                     <Text
                       style={[
                         styles.dayNum,
-                        !current && styles.dayNumDim,
+                        (!current || isFuture) && styles.dayNumDim,
                         isToday && styles.dayNumToday,
                       ]}
                     >
@@ -388,6 +455,9 @@ export default function AttendanceScreen() {
                   </View>
                   <View style={styles.dotRow}>
                     {(() => {
+                      if (isFuture) {
+                        return <View style={styles.statusDotPlaceholder} />;
+                      }
                       const dots = dotsForStatus(status);
                       if (dots.length === 0) {
                         return <View style={styles.statusDotPlaceholder} />;
@@ -681,54 +751,91 @@ export default function AttendanceScreen() {
         )}
       </ScrollView>
 
-      {/* MONTH PICKER */}
+      {/* MONTH PICKER — disables months in the future for the currently
+          selected year. Picking Aug 2026 when "today" is Jun 2026 would
+          show an empty history with no explanation; instead we grey
+          those rows out so the user understands why. */}
       <Modal visible={showMonthPicker} transparent animationType="fade">
         <Pressable style={styles.modalBackdrop} onPress={() => setShowMonthPicker(false)}>
-          <View style={styles.modalSheet}>
+          <View style={[styles.modalSheet, { paddingBottom: insets.bottom + 16 }]}>
             <Text style={styles.modalTitle}>Select Month</Text>
             <ScrollView>
-              {MONTHS.map((m, i) => (
-                <TouchableOpacity
-                  key={m}
-                  style={styles.modalRow}
-                  onPress={() => {
-                    const d = new Date(cursor);
-                    d.setMonth(i);
-                    setCursor(d);
-                    setShowMonthPicker(false);
-                  }}
-                >
-                  <Text style={[styles.modalRowText, i === month - 1 && { color: '#2E7D32', fontWeight: '700' }]}>
-                    {m}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+              {MONTHS.map((m, i) => {
+                const isFuture =
+                  year > today.getFullYear() ||
+                  (year === today.getFullYear() && i > today.getMonth());
+                // Months before June 2026 are below the historical floor
+                // — there are no attendance records to show, so they're
+                // disabled the same way future months are.
+                const isBelowFloor =
+                  year === YEAR_FLOOR && i < MONTH_FLOOR;
+                const disabled = isFuture || isBelowFloor;
+                return (
+                  <TouchableOpacity
+                    key={m}
+                    style={styles.modalRow}
+                    disabled={disabled}
+                    onPress={() => {
+                      const d = new Date(cursor);
+                      d.setMonth(i);
+                      setCursor(d);
+                      setShowMonthPicker(false);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.modalRowText,
+                        i === month - 1 && { color: '#2E7D32', fontWeight: '700' },
+                        disabled && { color: '#C0C0C0' },
+                      ]}
+                    >
+                      {m}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           </View>
         </Pressable>
       </Modal>
 
-      {/* YEAR PICKER */}
+      {/* YEAR PICKER — disables any year after the current calendar year. */}
       <Modal visible={showYearPicker} transparent animationType="fade">
         <Pressable style={styles.modalBackdrop} onPress={() => setShowYearPicker(false)}>
-          <View style={styles.modalSheet}>
+          <View style={[styles.modalSheet, { paddingBottom: insets.bottom + 16 }]}>
             <Text style={styles.modalTitle}>Select Year</Text>
-            {years.map((y) => (
-              <TouchableOpacity
-                key={y}
-                style={styles.modalRow}
-                onPress={() => {
-                  const d = new Date(cursor);
-                  d.setFullYear(y);
-                  setCursor(d);
-                  setShowYearPicker(false);
-                }}
-              >
-                <Text style={[styles.modalRowText, y === year && { color: '#2E7D32', fontWeight: '700' }]}>
-                  {y}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            {years.map((y) => {
+              const isFuture = y > today.getFullYear();
+              return (
+                <TouchableOpacity
+                  key={y}
+                  style={styles.modalRow}
+                  disabled={isFuture}
+                  onPress={() => {
+                    const d = new Date(cursor);
+                    d.setFullYear(y);
+                    // If switching to current year while a future month is
+                    // selected, clamp the month back to today's month so
+                    // the user doesn't land on an empty future view.
+                    if (y === today.getFullYear() && d.getMonth() > today.getMonth()) {
+                      d.setMonth(today.getMonth());
+                    }
+                    setCursor(d);
+                    setShowYearPicker(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.modalRowText,
+                      y === year && { color: '#2E7D32', fontWeight: '700' },
+                      isFuture && { color: '#C0C0C0' },
+                    ]}
+                  >
+                    {y}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
         </Pressable>
       </Modal>
@@ -736,7 +843,16 @@ export default function AttendanceScreen() {
       {/* REQUEST MODAL */}
       <Modal visible={!!reqModalDate} transparent animationType="slide">
         <Pressable style={styles.modalBackdrop} onPress={() => setReqModalDate(null)}>
-          <Pressable style={styles.modalSheet} onPress={() => {}}>
+          <Pressable
+            style={[
+              styles.modalSheet,
+              // Lift the sheet above the gesture/nav bar so the Submit
+              // button is always tappable. The +16 baseline keeps a
+              // comfortable air gap on phones with no nav bar (insets.bottom = 0).
+              { paddingBottom: insets.bottom + 24 },
+            ]}
+            onPress={() => {}}
+          >
             <Text style={styles.modalTitle}>Request Regularisation</Text>
             <Text style={styles.modalSub}>For {reqModalDate}</Text>
             <TextInput
@@ -748,13 +864,18 @@ export default function AttendanceScreen() {
               style={styles.reasonInput}
             />
             <TouchableOpacity
-              style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
+              style={[styles.submitBtn, submitting && { opacity: 0.85 }]}
               onPress={submitRequest}
               disabled={submitting}
             >
-              <Text style={styles.submitBtnText}>
-                {submitting ? 'Submitting...' : 'Submit Request'}
-              </Text>
+              {submitting ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={[styles.submitBtnText, { marginLeft: 8 }]}>Submitting…</Text>
+                </View>
+              ) : (
+                <Text style={styles.submitBtnText}>Submit Request</Text>
+              )}
             </TouchableOpacity>
           </Pressable>
         </Pressable>

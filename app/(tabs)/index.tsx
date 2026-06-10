@@ -9,6 +9,7 @@ import {
   StatusBar,
   Modal,
   Pressable,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -303,11 +304,18 @@ export default function HomeScreen() {
   /**
    * Mid-shift GPS turned off. The user is STILL checked in — we just stop
    * sending pings until they re-enable it. Show a single prompt to nudge
-   * them, and mark their presence as "idle" on the backend so the HRMS
-   * Live Tracking page reflects "Location off" instead of fake-active.
+   * them, and mark their presence as "offline" on the backend so the HRMS
+   * Live Tracking page flips to "Offline" immediately on the next 45 sec
+   * poll (no 25-min grace window).
+   *
+   * Policy change (Jun 2026, HR request): the moment device location goes
+   * off, the row goes Offline. No "Location off / Idle" middle state —
+   * HR didn't want the ambiguous yellow status, only the clear red one.
+   * When the user re-enables GPS, the next ping flips them back to
+   * 'active' / 'office' / 'travelling' automatically.
    */
   const handleGpsOffWarn = async () => {
-    try { await attendanceAPI.setPresence('idle'); } catch {}
+    try { await attendanceAPI.setPresence('offline'); } catch {}
     if (gpsOffWarnedRef.current) return;
     gpsOffWarnedRef.current = true;
     Alert.alert(
@@ -387,23 +395,35 @@ export default function HomeScreen() {
 
     const watchGps = async () => {
       try {
+        // Permission check first (Jun 2026 — Requirement #6).
+        // If the user revoked location permission in Settings (or never
+        // granted it), `hasServicesEnabledAsync` can still return true
+        // because device location is on — but our app can't read it.
+        // Treat permission-denied as GPS-off so HR sees them as Offline,
+        // and re-arm the bg task the moment permission is granted.
+        const perm = await Location.getForegroundPermissionsAsync();
+        if (perm.status !== 'granted') {
+          await handleGpsOffWarn();
+          return;
+        }
         const on = await Location.hasServicesEnabledAsync();
         if (!on) {
           await handleGpsOffWarn();
           return;
         }
-        // GPS is on. Two recovery paths converge here:
-        //   1. The user just toggled GPS back on after turning it off
-        //      mid-shift (gpsOffWarnedRef latch is set).
-        //   2. GPS was always on but the bg task got killed by an OEM
-        //      battery saver while the app was offscreen.
-        // Either way, the safe move is: send a fresh ping AND make sure
-        // the OS task is alive again. startBackgroundLocationUpdates is
-        // idempotent — if the task is already running it's a no-op.
+        // GPS is on AND permission is granted. Three recovery paths
+        // converge here:
+        //   1. User toggled GPS back on after turning it off mid-shift.
+        //   2. User just granted location permission they had revoked.
+        //   3. Bg task got killed by an OEM battery saver while offscreen.
+        // Safe move: send a fresh ping AND make sure the OS task is
+        // alive again. startBackgroundLocationUpdates is idempotent —
+        // if the task is already running it's a no-op.
         if (gpsOffWarnedRef.current) {
           gpsOffWarnedRef.current = false;
-          ping();   // fire one fresh ping right away
-          startBackgroundLocationUpdates().catch(() => {});   // re-arm OS task
+          ping();                                                // fresh ping
+          startBackgroundLocationUpdates().catch(() => {});      // re-arm OS task
+          attendanceAPI.setPresence('active').catch(() => {});   // flip Offline→Online on HR's map
         }
       } catch (err: any) {
         console.warn('[tracking] gpsWatcher error:', err?.message || err);
@@ -433,11 +453,16 @@ export default function HomeScreen() {
     };
 
     // Fire one ping immediately, schedule all three intervals.
+    // Guardian cadence tightened from 60s → 30s (Jun 2026 prod fix) so
+    // a dead background task is revived within half a minute of the
+    // foreground noticing it. On OEM phones (Xiaomi/Oppo/Vivo/Realme)
+    // the foreground service can be killed multiple times an hour.
     ping();
+    guardian();
     pingTimerRef.current  = setInterval(ping,     PING_MS);
     gpsWatcherRef.current = setInterval(watchGps, WATCH_MS);
-    bgGuardianRef.current = setInterval(guardian, 60 * 1000);
-    console.log('[tracking] started (ping 2 min, gpsWatcher 30s, bgGuardian 60s)');
+    bgGuardianRef.current = setInterval(guardian, 30 * 1000);
+    console.log('[tracking] started (ping 2 min, gpsWatcher 30s, bgGuardian 30s)');
   };
 
   // Clean up intervals if the home component unmounts (e.g. logout).
@@ -749,12 +774,10 @@ export default function HomeScreen() {
                   style={[
                     styles.checkBtn,
                     checkedIn && !checkedOut && { backgroundColor: '#1565C0', shadowColor: '#1565C0' },
-                    actionBusy && { opacity: 0.6 },
+                    actionBusy && { opacity: 0.85 },
                   ]}
                 >
-                  <Text style={styles.checkBtnText}>
-                    {actionBusy ? 'Please wait...' : buttonLabel}
-                  </Text>
+                  <Text style={styles.checkBtnText}>{buttonLabel}</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -838,6 +861,34 @@ export default function HomeScreen() {
         onClose={() => setDrawerOpen(false)}
         user={user || undefined}
       />
+
+      {/* Centered check-in / check-out loader. Renders as a transparent
+          Modal so it floats above every screen element (including the
+          tab bar). The dimmed backdrop blocks taps so the user can't
+          fire other actions while the GPS / network call is in flight,
+          and the central white card with a spinner + label gives them
+          a clear "we're working" signal in the middle of the screen
+          instead of a tiny inline spinner buried in the button. */}
+      <Modal
+        visible={actionBusy}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => { /* swallow back-press while busy */ }}
+      >
+        <View style={loaderStyles.backdrop}>
+          <View style={loaderStyles.card}>
+            <ActivityIndicator
+              size="large"
+              color={!checkedIn ? '#2E7D32' : '#1565C0'}
+            />
+            <Text style={loaderStyles.label}>
+              {!checkedIn ? 'Checking in…' : 'Checking out…'}
+            </Text>
+            <Text style={loaderStyles.sub}>Please wait a moment</Text>
+          </View>
+        </View>
+      </Modal>
 
       {/* Professional check-in / check-out result modal (Jun 2026).
           Replaces the bare native Alert.alert so the moment of clocking
@@ -1112,4 +1163,43 @@ const styles = StyleSheet.create({
   annCardTitle: { fontSize: 14, fontWeight: '700', color: '#1A1A1A' },
   annCardBody: { fontSize: 12, color: '#666', marginTop: 4, lineHeight: 17 },
   annCardMeta: { fontSize: 10.5, color: '#9A9A9A', marginTop: 8 },
+});
+
+// Standalone stylesheet for the centered check-in / check-out overlay
+// loader. Kept separate from `styles` so it's easy to spot when reading
+// the file and so the colours / sizes don't accidentally pick up button
+// overrides from the home-screen tile styles above.
+const loaderStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 40,
+  },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    paddingHorizontal: 36,
+    paddingVertical: 28,
+    minWidth: 220,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  label: {
+    marginTop: 14,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111',
+  },
+  sub: {
+    marginTop: 4,
+    fontSize: 12,
+    color: '#666',
+  },
 });

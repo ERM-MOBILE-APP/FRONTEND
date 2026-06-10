@@ -1,7 +1,30 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 
 export const BASE_URL = 'https://backend-emqy.onrender.com/api';
+
+/**
+ * Session policy (Jun 2026):
+ *   • Backend signs JWT with `expiresIn: '10d'`.
+ *   • Client treats any 401 from the API as "session expired" → wipes
+ *     AsyncStorage auth keys and bounces to the login screen.
+ *
+ * forceLogout is debounced so multiple parallel 401s don't fight each
+ * other for the navigation stack.
+ */
+let _logoutInFlight = false;
+async function forceLogout(reason: string) {
+  if (_logoutInFlight) return;
+  _logoutInFlight = true;
+  try {
+    console.warn('[API] forcing logout —', reason);
+    await AsyncStorage.multiRemove(['token', 'user', 'userId']).catch(() => {});
+    try { router.replace('/(auth)/login'); } catch { /* not mounted yet */ }
+  } finally {
+    setTimeout(() => { _logoutInFlight = false; }, 2000);
+  }
+}
 
 // Render free tier cold start can take 30–60s on first request after idle.
 // We use a long default timeout and an even longer timeout for the warm-up call.
@@ -57,6 +80,15 @@ Please wait 30 seconds and try again — it warms up automatically.
       err.config?.url,
       JSON.stringify(err.response.data)
     );
+    // 401 → session has expired (10-day cap reached, or token revoked).
+    // Wipe local auth and bounce to login. Skip the trigger on the auth
+    // endpoints themselves so the wrong-password 401 stays a normal
+    // error, not a "session expired" reset.
+    const url: string = String(cfg?.url || '');
+    const onAuthRoute = /\/auth\/(login|signup|otp|reset|forgot|verify)/i.test(url);
+    if (err.response.status === 401 && !onAuthRoute) {
+      forceLogout('401 ' + url);
+    }
     return Promise.reject(err);
   }
 );

@@ -88,7 +88,18 @@ export default function AttendanceCalendar({ refreshKey = 0 }: Props) {
   const pad = (n: number) => String(n).padStart(2, '0');
   const monthName = cursor.toLocaleString('default', { month: 'long' });
 
+  // Block navigation to any month after the current one. The user can
+  // freely walk backward through history but the forward chevron is
+  // disabled once they reach the present month — there is no attendance
+  // data to show for the future, and the calendar would otherwise let
+  // them tap "September 2027" by accident.
+  const canGoForward = !(
+    cursor.getFullYear() > today.getFullYear() ||
+    (cursor.getFullYear() === today.getFullYear() && cursor.getMonth() >= today.getMonth())
+  );
+
   const changeMonth = (dir: number) => {
+    if (dir > 0 && !canGoForward) return;
     const d = new Date(cursor);
     d.setMonth(d.getMonth() + dir);
     setCursor(d);
@@ -104,8 +115,16 @@ export default function AttendanceCalendar({ refreshKey = 0 }: Props) {
           <TouchableOpacity onPress={() => changeMonth(-1)} style={styles.navBtn}>
             <Ionicons name="chevron-back" size={18} color="#333" />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => changeMonth(1)} style={styles.navBtn}>
-            <Ionicons name="chevron-forward" size={18} color="#333" />
+          <TouchableOpacity
+            onPress={() => changeMonth(1)}
+            style={styles.navBtn}
+            disabled={!canGoForward}
+          >
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={canGoForward ? '#333' : '#C9C9C9'}
+            />
           </TouchableOpacity>
         </View>
       </View>
@@ -126,20 +145,29 @@ export default function AttendanceCalendar({ refreshKey = 0 }: Props) {
           const status = current ? data[dateStr] : '';
           const fill = status ? STATUS_FILL[status as Status] : '';
           const isToday = current && isCurrentMonth && day === todayDay;
+          // A "future" day is any in-month day that hasn't happened yet.
+          // We strip the status colour and dim the number so HR's "what
+          // did I do on the 25th?" eye never lands on a tile that looks
+          // like real data when it's actually empty.
+          const isFuture =
+            current &&
+            (year > today.getFullYear() ||
+              (year === today.getFullYear() && month > today.getMonth()) ||
+              (isCurrentMonth && day > todayDay));
 
           return (
             <View key={key} style={styles.cell}>
               <View
                 style={[
                   styles.dayCircle,
-                  fill ? { backgroundColor: fill } : null,
+                  fill && !isFuture ? { backgroundColor: fill } : null,
                   isToday ? styles.todayCircle : null,
                 ]}
               >
                 <Text
                   style={[
                     styles.dayNum,
-                    !current && styles.dayNumDim,
+                    (!current || isFuture) && styles.dayNumDim,
                     isToday && styles.dayNumToday,
                   ]}
                 >

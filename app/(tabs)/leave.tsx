@@ -10,6 +10,7 @@ import {
   Modal,
   Pressable,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -419,14 +420,19 @@ export default function LeaveScreen() {
             />
 
             <TouchableOpacity
-              style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
+              style={[styles.submitBtn, submitting && { opacity: 0.85 }]}
               onPress={submitLeave}
               disabled={submitting}
               activeOpacity={0.85}
             >
-              <Text style={styles.submitBtnText}>
-                {submitting ? 'Submitting...' : 'Submit Leave Request'}
-              </Text>
+              {submitting ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={[styles.submitBtnText, { marginLeft: 8 }]}>Submitting…</Text>
+                </View>
+              ) : (
+                <Text style={styles.submitBtnText}>Submit Leave Request</Text>
+              )}
             </TouchableOpacity>
           </View>
         )}
@@ -496,14 +502,19 @@ export default function LeaveScreen() {
             />
 
             <TouchableOpacity
-              style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
+              style={[styles.submitBtn, submitting && { opacity: 0.85 }]}
               onPress={submitPermission}
               disabled={submitting}
               activeOpacity={0.85}
             >
-              <Text style={styles.submitBtnText}>
-                {submitting ? 'Submitting...' : 'Submit Leave Request'}
-              </Text>
+              {submitting ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={[styles.submitBtnText, { marginLeft: 8 }]}>Submitting…</Text>
+                </View>
+              ) : (
+                <Text style={styles.submitBtnText}>Submit Permission Request</Text>
+              )}
             </TouchableOpacity>
           </View>
         )}
