@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
 import { leaveAPI } from '../../services/api';
+import SuccessModal from '../../components/SuccessModal';
 
 
 // confirmAsync — promise-based wrapper around Alert.alert so we can
@@ -98,6 +99,9 @@ export default function LeaveScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [showTypeModal, setShowTypeModal] = useState(false);
   const [showPermTypeModal, setShowPermTypeModal] = useState(false);
+  // Designed success modal that replaces the stark white Alert.alert
+  // for every form submission. null = hidden, object = visible.
+  const [success, setSuccess] = useState<{ title: string; body: string } | null>(null);
   const [datePickerFor, setDatePickerFor] = useState<
     'start' | 'end' | 'perm' | null
   >(null);
@@ -214,7 +218,10 @@ export default function LeaveScreen() {
         isHalfDay,
         reason: reason.trim(),
       });
-      Alert.alert('Submitted', 'Your leave request has been submitted.');
+      setSuccess({
+        title: 'Leave Submitted',
+        body: 'Your request was sent to HR and your manager. You\'ll be notified once it\'s reviewed.',
+      });
       setStartDate('');
       setEndDate('');
       setReason('');
@@ -250,7 +257,10 @@ export default function LeaveScreen() {
         endTime,
         reason: permReason.trim(),
       });
-      Alert.alert('Submitted', 'Permission request submitted.');
+      setSuccess({
+        title: 'Permission Submitted',
+        body: 'Your permission request was sent to HR and your manager. You\'ll be notified once it\'s reviewed.',
+      });
       setPermDate('');
       setStartTime('');
       setEndTime('');
@@ -734,6 +744,14 @@ export default function LeaveScreen() {
           </View>
         </Pressable>
       </Modal>
+
+      <SuccessModal
+        visible={!!success}
+        title={success?.title || ''}
+        body={success?.body || ''}
+        ctaLabel="Done"
+        onClose={() => setSuccess(null)}
+      />
     </SafeAreaView>
   );
 

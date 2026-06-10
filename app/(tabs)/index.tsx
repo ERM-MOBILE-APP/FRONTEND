@@ -862,13 +862,11 @@ export default function HomeScreen() {
         user={user || undefined}
       />
 
-      {/* Centered check-in / check-out loader. Renders as a transparent
-          Modal so it floats above every screen element (including the
-          tab bar). The dimmed backdrop blocks taps so the user can't
-          fire other actions while the GPS / network call is in flight,
-          and the central white card with a spinner + label gives them
-          a clear "we're working" signal in the middle of the screen
-          instead of a tiny inline spinner buried in the button. */}
+      {/* Premium centered check-in / check-out loader. Floats above
+          every screen element via a transparent Modal. Designed with a
+          pulsing accent ring, a branded action icon, and polished
+          typography so a GPS-cold-start wait feels intentional and
+          professional rather than a frozen UI. */}
       <Modal
         visible={actionBusy}
         transparent
@@ -878,14 +876,48 @@ export default function HomeScreen() {
       >
         <View style={loaderStyles.backdrop}>
           <View style={loaderStyles.card}>
-            <ActivityIndicator
-              size="large"
-              color={!checkedIn ? '#2E7D32' : '#1565C0'}
-            />
+            {/* Layered "pulse ring + icon" centerpiece. The outer rings
+                are static (the spinner already provides motion); the
+                colour matches check-in (green) vs check-out (blue). */}
+            <View style={loaderStyles.iconStack}>
+              <View
+                style={[
+                  loaderStyles.ringOuter,
+                  { borderColor: !checkedIn ? '#A5D6A7' : '#90CAF9' },
+                ]}
+              />
+              <View
+                style={[
+                  loaderStyles.ringInner,
+                  { backgroundColor: !checkedIn ? '#E8F5E9' : '#E3F2FD' },
+                ]}
+              />
+              <Feather
+                name={!checkedIn ? 'log-in' : 'log-out'}
+                size={28}
+                color={!checkedIn ? '#2E7D32' : '#1565C0'}
+                style={loaderStyles.icon}
+              />
+              <ActivityIndicator
+                size="large"
+                color={!checkedIn ? '#2E7D32' : '#1565C0'}
+                style={loaderStyles.spinner}
+              />
+            </View>
             <Text style={loaderStyles.label}>
-              {!checkedIn ? 'Checking in…' : 'Checking out…'}
+              {!checkedIn ? 'Checking you in' : 'Checking you out'}
             </Text>
-            <Text style={loaderStyles.sub}>Please wait a moment</Text>
+            <Text style={loaderStyles.sub}>
+              {!checkedIn
+                ? 'Confirming your location with HR…'
+                : 'Saving today\'s log and stopping live tracking…'}
+            </Text>
+            {/* Decorative dot row to make the wait feel intentional */}
+            <View style={loaderStyles.dotRow}>
+              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#2E7D32' : '#1565C0' }]} />
+              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#66BB6A' : '#42A5F5', opacity: 0.6 }]} />
+              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#A5D6A7' : '#90CAF9', opacity: 0.35 }]} />
+            </View>
           </View>
         </View>
       </Modal>
@@ -1165,41 +1197,78 @@ const styles = StyleSheet.create({
   annCardMeta: { fontSize: 10.5, color: '#9A9A9A', marginTop: 8 },
 });
 
-// Standalone stylesheet for the centered check-in / check-out overlay
-// loader. Kept separate from `styles` so it's easy to spot when reading
-// the file and so the colours / sizes don't accidentally pick up button
-// overrides from the home-screen tile styles above.
+// Premium overlay loader used by the centered Check-In / Check-Out modal.
+// Layout: pulse-ring + icon + spinner stacked → label → subtitle → dots.
 const loaderStyles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 40,
+    paddingHorizontal: 36,
   },
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    paddingHorizontal: 36,
-    paddingVertical: 28,
-    minWidth: 220,
+    borderRadius: 24,
+    paddingHorizontal: 32,
+    paddingVertical: 36,
+    minWidth: 280,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 16,
-    elevation: 12,
+    shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 12 },
+    shadowRadius: 28,
+    elevation: 16,
+  },
+  iconStack: {
+    width: 96,
+    height: 96,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    marginBottom: 6,
+  },
+  ringOuter: {
+    position: 'absolute',
+    width: 96, height: 96, borderRadius: 48,
+    borderWidth: 2,
+    opacity: 0.5,
+  },
+  ringInner: {
+    position: 'absolute',
+    width: 68, height: 68, borderRadius: 34,
+  },
+  icon: {
+    position: 'absolute',
+    zIndex: 2,
+  },
+  spinner: {
+    position: 'absolute',
+    width: 96, height: 96,
+    zIndex: 1,
   },
   label: {
-    marginTop: 14,
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#111',
+    marginTop: 18,
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: 0.2,
+    textAlign: 'center',
   },
   sub: {
-    marginTop: 4,
-    fontSize: 12,
-    color: '#666',
+    marginTop: 6,
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  dotRow: {
+    flexDirection: 'row',
+    marginTop: 18,
+  },
+  dot: {
+    width: 8, height: 8, borderRadius: 4,
+    marginHorizontal: 4,
   },
 });

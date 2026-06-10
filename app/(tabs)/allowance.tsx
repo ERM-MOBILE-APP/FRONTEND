@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
 import { allowanceAPI } from '../../services/api';
+import SuccessModal from '../../components/SuccessModal';
 
 
 // confirmAsync — promise-based wrapper around Alert.alert so we can
@@ -216,6 +217,7 @@ export default function AllowanceScreen() {
   const [amount, setAmount] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [success, setSuccess] = useState<{ title: string; body: string } | null>(null);
   const [showDate, setShowDate] = useState(false);
   const [calculating, setCalculating] = useState(false);
 
@@ -342,7 +344,10 @@ export default function AllowanceScreen() {
         purpose: type === 'petrol' ? 'Daily Commute' : 'Official Meeting',
         transport: type === 'petrol' ? 'Bike' : 'Car',
       });
-      Alert.alert('Submitted', 'Your allowance request has been submitted.');
+      setSuccess({
+        title: 'Allowance Submitted',
+        body: 'Your allowance claim was sent to HR and your manager. You\'ll be notified once it\'s reviewed.',
+      });
       setFromLoc('');
       setToLoc('');
       setDate('');
@@ -854,6 +859,14 @@ export default function AllowanceScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <SuccessModal
+        visible={!!success}
+        title={success?.title || ''}
+        body={success?.body || ''}
+        ctaLabel="Done"
+        onClose={() => setSuccess(null)}
+      />
     </SafeAreaView>
   );
 }
@@ -1304,12 +1317,4 @@ const styles = StyleSheet.create({
   locRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F2F2F2',
-  },
-  locRowActive: { backgroundColor: '#F1F9EE' },
-  locRowText:   { flex: 1, fontSize: 14, color: '#222' },
-  locEmpty:     { paddingVertical: 20, textAlign: 'center', color: '#999', fontSize: 13 },
-});
+    paddingVer

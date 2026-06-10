@@ -14,6 +14,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { attendanceAPI } from '../../services/api';
+import SuccessModal from '../../components/SuccessModal';
 
 type Status = 'present' | 'absent' | 'permission' | 'late' | 'halfday' | 'leave' | '';
 
@@ -141,6 +142,7 @@ export default function AttendanceScreen() {
   const [reqModalDate, setReqModalDate] = useState<string | null>(null);
   const [reqReason, setReqReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [success, setSuccess] = useState<{ title: string; body: string } | null>(null);
   // Dates the employee has already filed an attendance request for —
   // stored as a Map<YYYY-MM-DD, 'pending'|'approved'|'rejected'>. Drives
   // the per-row button label so it tracks the request lifecycle:
@@ -328,7 +330,10 @@ export default function AttendanceScreen() {
         return next;
       });
       refreshRequestedDates();
-      Alert.alert('Submitted', 'Your request has been sent to HR and your manager.');
+      setSuccess({
+        title: 'Request Submitted',
+        body: 'Your attendance regularisation request was sent to HR and your manager. You\'ll be notified once it\'s reviewed.',
+      });
       setReqModalDate(null);
       setReqReason('');
     } catch (err: any) {
@@ -880,6 +885,14 @@ export default function AttendanceScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <SuccessModal
+        visible={!!success}
+        title={success?.title || ''}
+        body={success?.body || ''}
+        ctaLabel="Done"
+        onClose={() => setSuccess(null)}
+      />
     </SafeAreaView>
   );
 }
@@ -1030,257 +1043,4 @@ const styles = StyleSheet.create({
   },
 
   /* SUMMARY HEADER */
-  summaryHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginHorizontal: 16,
-    marginTop: 22,
-    marginBottom: 12,
-  },
-  summaryTitle: { fontSize: 16, fontWeight: '800', color: '#111' },
-  pickerRow: { flexDirection: 'row' },
-  picker: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginLeft: 8,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 1 },
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  pickerText: { fontSize: 12, color: '#333', marginRight: 4, fontWeight: '600' },
-
-  /* STAT CARDS — explicit 2-per-row grid, matches Figma style */
-  statsGrid: {
-    paddingHorizontal: 12,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    marginBottom: 10,
-  },
-  statCard: {
-    flex: 1,
-    marginHorizontal: 6,
-    borderRadius: 18,        // slightly more rounded — matches figma corner radius
-    paddingVertical: 22,     // a bit taller for the bold numbers
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 10,
-    elevation: 4,
-  },
-  statCardLabel: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-  },
-  statCardValue: {
-    color: '#FFFFFF',
-    fontSize: 34,
-    fontWeight: '800',
-    marginTop: 10,
-    letterSpacing: 0.5,
-  },
-
-  /* LEAVE POLICY / LOP CARD */
-  policyCard: {
-    marginHorizontal: 16,
-    marginTop: 18,
-    marginBottom: 4,
-    padding: 16,
-    borderRadius: 14,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#EEF1EE',
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 3 },
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  policyHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  policyTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#1A1A1A',
-  },
-  lopBadge: {
-    backgroundColor: '#FFE7E7',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  lopBadgeText: {
-    color: '#C62828',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  policyRow: {
-    flexDirection: 'row',
-  },
-  policyCol: {
-    flex: 1,
-  },
-  policyLabel: {
-    fontSize: 11.5,
-    color: '#7A7A7A',
-    fontWeight: '600',
-  },
-  policyValue: {
-    fontSize: 14,
-    color: '#1A1A1A',
-    fontWeight: '700',
-    marginTop: 3,
-  },
-  lopValue: {
-    color: '#C62828',
-  },
-  lopHint: {
-    fontSize: 11,
-    color: '#C62828',
-    fontWeight: '600',
-  },
-  policyDivider: {
-    height: 1,
-    backgroundColor: '#F0F0F0',
-    marginVertical: 10,
-  },
-  policyHint: {
-    fontSize: 10.5,
-    color: '#9A9A9A',
-    marginTop: 10,
-    fontStyle: 'italic',
-  },
-
-  /* HISTORY */
-  histCard: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginBottom: 12,
-    padding: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#EBEDEB',
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  histTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  histDate: { fontSize: 14, fontWeight: '700', color: '#1A1A1A' },
-  badge: {
-    paddingHorizontal: 14,
-    paddingVertical: 5,
-    borderRadius: 14,
-  },
-  badgeText: { fontSize: 11, fontWeight: '700' },
-  histStatsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 14,
-    marginBottom: 12,
-  },
-  histStat: { flex: 1, alignItems: 'center' },
-  histStatValue: {
-    fontSize: 13,
-    color: '#2E7D32',
-    fontWeight: '700',
-  },
-  histStatLabel: {
-    fontSize: 11,
-    color: '#555',
-    marginTop: 2,
-  },
-  requestBtn: {
-    backgroundColor: GREEN,
-    borderRadius: 22,
-    alignItems: 'center',
-    paddingVertical: 10,
-    marginTop: 4,
-  },
-  requestBtnDisabled: {
-    backgroundColor: '#E0E0E0',
-  },
-  requestBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  requestBtnTextDisabled: {
-    color: '#9E9E9E',
-  },
-
-  emptyBox: {
-    marginHorizontal: 16,
-    padding: 20,
-    backgroundColor: '#F5F7F6',
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  emptyText: { color: '#777', fontSize: 13 },
-
-  /* MODAL */
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    padding: 20,
-    maxHeight: '70%',
-  },
-  modalTitle: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 8 },
-  modalSub: { fontSize: 12, color: '#666', marginBottom: 14 },
-  modalRow: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
-  },
-  modalRowText: { fontSize: 14, color: '#222' },
-
-  reasonInput: {
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-    borderRadius: 12,
-    padding: 12,
-    minHeight: 80,
-    textAlignVertical: 'top',
-    color: '#111',
-    marginBottom: 14,
-  },
-  submitBtn: {
-    backgroundColor: GREEN,
-    borderRadius: 22,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  submitBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-});
+  summary

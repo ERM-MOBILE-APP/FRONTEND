@@ -7,6 +7,50 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-nati
 // Must run at module load time, before any screen renders.
 import '../services/locationTask';
 
+// ─── GLOBAL CRASH GUARDS ────────────────────────────────────────────
+// Goal: prevent the "app comes out by itself" force-close that users
+// keep reporting. The React error boundary below catches render-tree
+// errors, but THREE other sources can still tear the app down:
+//
+//   1. Unhandled promise rejections (a fetch that throws and nobody
+//      awaits it). Hermes used to silently swallow these; on newer RN
+//      versions they crash the JS engine.
+//   2. Uncaught synchronous errors in setInterval/setTimeout callbacks.
+//      RN's default handler shows a red-box in dev and reloads in prod,
+//      which to the user looks identical to a crash.
+//   3. Native module errors that bubble through the JS bridge.
+//
+// We install handlers that LOG and swallow these so the JS root stays
+// alive. The error boundary still kicks in for render-tree issues to
+// give the user a recovery screen. Defensive depth.
+if (typeof globalThis !== 'undefined') {
+  // Promise rejections (#1)
+  // @ts-ignore — different RN versions expose this differently
+  const HermesPromise = (globalThis as any).HermesInternal?.setPromiseRejectionTracker;
+  if (typeof (globalThis as any).process?.on === 'function') {
+    (globalThis as any).process.on('unhandledRejection', (reason: any) => {
+      console.warn('[unhandledRejection]', reason?.message || String(reason));
+    });
+  }
+  // RN's ErrorUtils (#2 + #3) — preserve the existing handler, just
+  // make sure WE don't propagate to a crash. Native errors still log
+  // to logcat / Xcode console for debugging.
+  const ErrUtils = (globalThis as any).ErrorUtils;
+  if (ErrUtils && typeof ErrUtils.setGlobalHandler === 'function') {
+    const prevHandler = typeof ErrUtils.getGlobalHandler === 'function'
+      ? ErrUtils.getGlobalHandler()
+      : null;
+    ErrUtils.setGlobalHandler((err: any, isFatal: boolean) => {
+      console.warn('[ErrorUtils] caught', isFatal ? '(fatal)' : '(non-fatal)', err?.message || err);
+      // Still call the previous handler if it exists, but with isFatal
+      // forced to FALSE so React Native doesn't reload the bundle.
+      if (typeof prevHandler === 'function') {
+        try { prevHandler(err, false); } catch { /* don't crash the handler */ }
+      }
+    });
+  }
+}
+
 /**
  * Root-level error boundary.
  *
