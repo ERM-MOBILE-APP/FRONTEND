@@ -1317,4 +1317,24 @@ const styles = StyleSheet.create({
   locRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVer
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  locRowActive: {
+    backgroundColor: '#F0FDF4',
+    borderBottomColor: '#DCFCE7',
+  },
+  locRowText: {
+    fontSize: 14,
+    color: '#1A1A1A',
+  },
+  locEmpty: {
+    fontSize: 13,
+    color: '#94A3B8',
+    textAlign: 'center',
+    paddingVertical: 22,
+  },
+});
