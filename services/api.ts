@@ -2,7 +2,7 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 
-export const BASE_URL = 'https://backend-emqy.onrender.com/api';
+export const BASE_URL = 'https://backend-9rtc.onrender.com/api';
 
 /**
  * Session policy (Jun 2026):

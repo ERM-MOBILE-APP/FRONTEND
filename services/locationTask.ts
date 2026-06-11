@@ -33,7 +33,7 @@ export const BACKGROUND_LOCATION_TASK = 'tesco-erm-location-ping';
 // running against localhost during dev.
 const BASE_URL =
   (process.env.EXPO_PUBLIC_API_URL as string | undefined) ||
-  'https://backend-emqy.onrender.com';
+  'https://backend-9rtc.onrender.com';
 
 type LocationTaskBody = {
   locations: Location.LocationObject[];
