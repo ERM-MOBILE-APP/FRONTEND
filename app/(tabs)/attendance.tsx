@@ -234,26 +234,42 @@ export default function AttendanceScreen() {
     setCursor(d);
   };
 
-  // Build a 6x7 calendar grid (Mon-Sun rows)
+  // Build a Mon–Sun calendar grid that shows ONLY the selected month's
+  // dates (Jun 2026 — HR request).
+  //
+  // What used to happen: the grid filled out to a fixed 42-cell box
+  // with greyed-out trailing dates from the next month (e.g. July
+  // 1–12 below June 30). HR found this confusing — employees would
+  // tap on "Jul 3" while looking at June and wonder why nothing
+  // happened. Now:
+  //   • Leading offset cells (before day 1) are EMPTY placeholders
+  //     so the first day still falls in the correct weekday column.
+  //   • The grid STOPS at the last day of the current month — no
+  //     trailing next-month dates at all.
+  //   • Height varies between 4 and 6 rows depending on the month.
   const today = new Date();
   const isCurrentMonth =
     today.getFullYear() === year && today.getMonth() + 1 === month;
   const firstDow = new Date(year, month - 1, 1).getDay();
   const startOffset = firstDow === 0 ? 6 : firstDow - 1;
   const daysInMonth = new Date(year, month, 0).getDate();
-  const daysInPrev = new Date(year, month - 1, 0).getDate();
 
   const cells: { day: number; current: boolean; key: string }[] = [];
-  for (let i = startOffset - 1; i >= 0; i--) {
-    cells.push({ day: daysInPrev - i, current: false, key: `p-${daysInPrev - i}` });
+  // Leading empty placeholders — rendered blank (day=0, current=false).
+  // We give them unique keys so React can diff cleanly when month changes.
+  for (let i = 0; i < startOffset; i++) {
+    cells.push({ day: 0, current: false, key: `lead-${i}` });
   }
+  // Current month days.
   for (let d = 1; d <= daysInMonth; d++) {
     cells.push({ day: d, current: true, key: `c-${d}` });
   }
-  let next = 1;
-  while (cells.length < 42) {
-    cells.push({ day: next, current: false, key: `n-${next}` });
-    next++;
+  // Pad the final row with empty placeholders so the last row of cells
+  // is still 7-wide (otherwise the trailing cells stretch when flex
+  // distributes them). This is the ONLY trailing padding — it's empty
+  // (day=0), not greyed-out next-month dates.
+  while (cells.length % 7 !== 0) {
+    cells.push({ day: 0, current: false, key: `trail-${cells.length}` });
   }
 
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -407,21 +423,24 @@ export default function AttendanceScreen() {
 
           <View style={styles.grid}>
             {cells.map(({ day, current, key }) => {
-              const dateStr = current
-                ? `${year}-${pad(month)}-${pad(day)}`
-                : '';
-              const item = current ? calendar[dateStr] : undefined;
+              // Empty placeholder cell (leading offset or trailing
+              // padding to complete the final row). Render an empty
+              // <View> so the grid stays a perfect 7-column track.
+              if (!current || day === 0) {
+                return <View key={key} style={styles.cell} />;
+              }
+              const dateStr = `${year}-${pad(month)}-${pad(day)}`;
+              const item = calendar[dateStr];
               let status = item?.status;
               const isToday =
-                current && isCurrentMonth && day === today.getDate();
+                isCurrentMonth && day === today.getDate();
               // A future in-month day — dim it and suppress status dots
               // so the calendar reads as "this hasn't happened yet"
               // instead of "absent".
               const isFuture =
-                current &&
-                (year > today.getFullYear() ||
-                  (year === today.getFullYear() && month - 1 > today.getMonth()) ||
-                  (isCurrentMonth && day > today.getDate()));
+                year > today.getFullYear() ||
+                (year === today.getFullYear() && month - 1 > today.getMonth()) ||
+                (isCurrentMonth && day > today.getDate());
 
               // If a past weekday has no attendance record at all, the
               // backend's overnight cron hasn't run yet (or the record
@@ -429,12 +448,10 @@ export default function AttendanceScreen() {
               // is the calendar empty?" question goes away. We skip
               // Sundays (weekly off) and don't override anything the
               // backend already said.
-              const cellDate = current ? new Date(year, month - 1, day) : null;
+              const cellDate = new Date(year, month - 1, day);
               const isPastWeekday =
-                current &&
                 !isFuture &&
                 !isToday &&
-                cellDate !== null &&
                 cellDate.getDay() !== 0; // 0 = Sunday
               if (isPastWeekday && (!status || status === '')) {
                 status = 'absent';
@@ -451,7 +468,7 @@ export default function AttendanceScreen() {
                     <Text
                       style={[
                         styles.dayNum,
-                        (!current || isFuture) && styles.dayNumDim,
+                        isFuture && styles.dayNumDim,
                         isToday && styles.dayNumToday,
                       ]}
                     >
@@ -1062,35 +1079,50 @@ const styles = StyleSheet.create({
   summaryTitle: { fontSize: 16, fontWeight: '800', color: '#111' },
 
   /* STATS GRID */
+  // 2x2 grid of stats cards. The outer `statsGrid` stacks the two
+  // `statsRow`s vertically (column); each row arranges its two cards
+  // horizontally (row). Without `flexDirection: 'column'` on the
+  // outer container, the two rows competed for horizontal space and
+  // every card collapsed into a thin vertical bar — which is exactly
+  // the "tall stripes" bug HR reported on 10-Jun-26.
   statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: 'column',
     paddingHorizontal: 12,
-    marginTop: 4,
+    marginTop: 6,
   },
   statsRow: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
-    marginTop: 6,
   },
   statCard: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
-    margin: 4,
-    paddingVertical: 14,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E6EDE7',
+    backgroundColor: '#FFFFFF', // overridden inline by the bucket colour
+    margin: 6,
+    paddingVertical: 26,
+    paddingHorizontal: 12,
+    borderRadius: 16,
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 140,
     shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
-    elevation: 1,
+    shadowOpacity: 0.12,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 10,
+    elevation: 4,
   },
-  statCardValue: { fontSize: 18, fontWeight: '800', color: '#111' },
-  statCardLabel: { fontSize: 11, color: '#555', marginTop: 4, fontWeight: '600' },
+  statCardLabel: {
+    fontSize: 13,
+    color: '#FFFFFF',
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  statCardValue: {
+    fontSize: 44,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    marginTop: 10,
+    letterSpacing: 1,
+  },
 
   /* LOP / POLICY */
   policyCard: {
@@ -1185,6 +1217,76 @@ const styles = StyleSheet.create({
 
   emptyBox: {
     paddingVertical: 36,
+    alignItems: 'center',
+  },
+  emptyText: { fontSize: 13, color: '#999' },
+
+  /* MODAL */
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    paddingHorizontal: 22,
+    paddingTop: 22,
+    paddingBottom: 22,
+  },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: '#111' },
+  modalSub: { fontSize: 12, color: '#777', marginTop: 4, marginBottom: 14 },
+  modalRow: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  modalRowText: { fontSize: 15, color: '#111' },
+
+  reasonInput: {
+    borderWidth: 1,
+    borderColor: '#E6EDE7',
+    borderRadius: 10,
+    padding: 12,
+    minHeight: 90,
+    fontSize: 14,
+    color: '#111',
+    textAlignVertical: 'top',
+    marginBottom: 14,
+  },
+  submitBtn: {
+    backgroundColor: '#2E7D32',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  submitBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+});
+  modalRowText: { fontSize: 15, color: '#111' },
+
+  reasonInput: {
+    borderWidth: 1,
+    borderColor: '#E6EDE7',
+    borderRadius: 10,
+    padding: 12,
+    minHeight: 90,
+    fontSize: 14,
+    color: '#111',
+    textAlignVertical: 'top',
+    marginBottom: 14,
+  },
+  submitBtn: {
+    backgroundColor: '#2E7D32',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  submitBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+});
+ical: 36,
     alignItems: 'center',
   },
   emptyText: { fontSize: 13, color: '#999' },
