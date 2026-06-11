@@ -1263,30 +1263,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   submitBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
-});
-  modalRowText: { fontSize: 15, color: '#111' },
 
-  reasonInput: {
-    borderWidth: 1,
-    borderColor: '#E6EDE7',
-    borderRadius: 10,
-    padding: 12,
-    minHeight: 90,
-    fontSize: 14,
-    color: '#111',
-    textAlignVertical: 'top',
-    marginBottom: 14,
-  },
-  submitBtn: {
-    backgroundColor: '#2E7D32',
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  submitBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
-});
-ical: 36,
+  emptyBox: {
+    paddingVertical: 36,
     alignItems: 'center',
   },
   emptyText: { fontSize: 13, color: '#999' },
@@ -1325,12 +1304,4 @@ ical: 36,
     textAlignVertical: 'top',
     marginBottom: 14,
   },
-  submitBtn: {
-    backgroundColor: '#2E7D32',
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  submitBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
 });
