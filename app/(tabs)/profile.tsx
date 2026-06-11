@@ -12,7 +12,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
-import { profileAPI } from '../../services/api';
+import { profileAPI, attendanceAPI } from '../../services/api';
+import { stopBackgroundLocationUpdates } from '../../services/locationTask';
 
 type UserProfile = {
   _id?: string;
@@ -124,6 +125,13 @@ export default function ProfileScreen() {
         text: 'Log out',
         style: 'destructive',
         onPress: async () => {
+          // CRITICAL: stop the OS background location task BEFORE clearing
+          // the token. Otherwise the task keeps running with a now-invalid
+          // token, the foreground service notification stays up, and the
+          // battery keeps draining for nothing. Mark the user offline on
+          // the server too so HR sees the correct presence immediately.
+          try { await attendanceAPI.setPresence('offline'); } catch {}
+          try { await stopBackgroundLocationUpdates(); } catch {}
           await AsyncStorage.multiRemove(['token', 'user']);
           router.replace('/(auth)/login' as any);
         },

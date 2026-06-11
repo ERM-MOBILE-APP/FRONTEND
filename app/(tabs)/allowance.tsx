@@ -391,20 +391,30 @@ export default function AllowanceScreen() {
   };
 
   const rupee = (n: number) => '₹' + (n || 0).toLocaleString('en-IN');
-  // ERM production rollout is June 2026 — floor the year picker at 2026
-  // (data simply doesn't exist before then). The list goes up to the
-  // current year + 1 so the picker still works in early-January edge
-  // cases.
+  // ERM production rollout is June 2026 — floor the year picker at 2026.
+  // Year list is just [2026] today; when the calendar rolls to 2027 the
+  // dropdown grows to [2026, 2027]; and so on. No future years are
+  // surfaced because allowance records can't exist before the date.
   const years = (() => {
-    const top = Math.max(now.getFullYear() + 1, LAUNCH_YEAR);
+    const top = now.getFullYear();
     const out: number[] = [];
     for (let y = LAUNCH_YEAR; y <= top; y++) out.push(y);
     return out;
   })();
   // Helper used by both the month + year pickers to disable rows that
-  // would otherwise let an employee select a pre-launch month.
-  const _isMonthAllowed = (mIdx0: number) =>
-    histYear > LAUNCH_YEAR || (histYear === LAUNCH_YEAR && mIdx0 + 1 >= LAUNCH_MONTH);
+  // would otherwise let an employee select a pre-launch month or a
+  // month that hasn't started yet for the current calendar year.
+  const _curMon = now.getMonth() + 1;
+  const _curYr  = now.getFullYear();
+  const _isMonthAllowed = (mIdx0: number) => {
+    // Below the floor month for the launch year — disabled.
+    if (histYear === LAUNCH_YEAR && mIdx0 + 1 < LAUNCH_MONTH) return false;
+    // After the current month for the current year — disabled.
+    if (histYear === _curYr && mIdx0 + 1 > _curMon) return false;
+    // Future years — disabled (shouldn't be in the dropdown anyway).
+    if (histYear > _curYr) return false;
+    return true;
+  };
 
   const isPetrol = type === 'petrol';
 

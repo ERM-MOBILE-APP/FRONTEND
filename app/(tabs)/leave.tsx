@@ -65,16 +65,65 @@ const MONTHS_LONG = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-// Quick-pick hours for the time modal (08:00..20:00 every 30min)
-const TIME_OPTIONS: string[] = (() => {
+/**
+ * Quick-pick time options for the permission modal.
+ *
+ * Rules (Jun 2026 — HR request):
+ *   • If the permission date is TODAY → start from the live current
+ *     time rounded UP to the next 30-min slot. Past times are
+ *     hidden because you can't apply for a permission that's
+ *     already over.
+ *   • If the permission date is FUTURE (or end-time picker)
+ *     → standard office window 10:00 AM – 7:00 PM in 30-min steps.
+ *
+ * The end-time picker always uses the 10–19 window because end times
+ * still need to fall inside office hours regardless of when the user
+ * is filing the request.
+ */
+function generateTimeOptions(
+  dateIso: string,
+  picker: 'start' | 'end',
+): string[] {
+  const fmt = (h: number, m: number) =>
+    `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+
+  // Always cap at 19:00 (7 PM end of standard office day).
+  const DAY_END_HOUR = 19;
+
+  // Detect "today" in local time. Compare YYYY-MM-DD strings to avoid
+  // timezone drift on the device clock.
+  const today = new Date();
+  const todayIso =
+    `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const isToday = dateIso === todayIso;
+
+  // Start-of-day floor:
+  //   • today + start picker  → live time rounded UP to next half-hour
+  //   • otherwise              → 10:00 AM
+  let startHour: number;
+  let startMin: number;
+  if (isToday && picker === 'start') {
+    let h = today.getHours();
+    let m = today.getMinutes();
+    // Round up to next 30-min slot.
+    if (m === 0)      m = 0;
+    else if (m <= 30) m = 30;
+    else { m = 0; h += 1; }
+    startHour = h;
+    startMin  = m;
+  } else {
+    startHour = 10;
+    startMin  = 0;
+  }
+
   const out: string[] = [];
-  for (let h = 8; h <= 20; h++) {
-    for (const m of [0, 30]) {
-      out.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
-    }
+  for (let h = startHour, m = startMin; h < DAY_END_HOUR || (h === DAY_END_HOUR && m === 0); ) {
+    out.push(fmt(h, m));
+    m += 30;
+    if (m >= 60) { m = 0; h += 1; }
   }
   return out;
-})();
+}
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -328,10 +377,12 @@ export default function LeaveScreen() {
   };
 
   // ERM rolled out in June 2026 — floor the year picker so employees
-  // can't browse to a time before the production launch.
+  // can't browse to a time before the production launch. Cap at the
+  // current calendar year so future years are never surfaced.
+  // During 2026 → [2026]; from Jan 2027 → [2026, 2027]; etc.
   const years = (() => {
     const FLOOR = LAUNCH_YEAR;
-    const top   = Math.max(now.getFullYear() + 1, FLOOR);
+    const top   = now.getFullYear();
     const out: number[] = [];
     for (let y = FLOOR; y <= top; y++) out.push(y);
     return out;
@@ -481,7 +532,7 @@ export default function LeaveScreen() {
                   activeOpacity={0.7}
                 >
                   <Text style={[styles.inputText, !startTime && styles.placeholder]}>
-                    {startTime ? formatTimeAmPm(startTime) : 'HH:mm'}
+                    {startTime ? formatTimeAmPm(startTime) : 'HH:MM'}
                   </Text>
                   <Ionicons name="time-outline" size={16} color="#888" />
                 </TouchableOpacity>
@@ -494,7 +545,7 @@ export default function LeaveScreen() {
                   activeOpacity={0.7}
                 >
                   <Text style={[styles.inputText, !endTime && styles.placeholder]}>
-                    {endTime ? formatTimeAmPm(endTime) : 'HH:mm'}
+                    {endTime ? formatTimeAmPm(endTime) : 'HH:MM'}
                   </Text>
                   <Ionicons name="time-outline" size={16} color="#888" />
                 </TouchableOpacity>
@@ -665,7 +716,7 @@ export default function LeaveScreen() {
               Select {timePickerFor === 'start' ? 'Start Time' : 'End Time'}
             </Text>
             <ScrollView style={{ maxHeight: 350 }}>
-              {TIME_OPTIONS.map((t) => (
+              {generateTimeOptions(permDate, timePickerFor === 'start' ? 'start' : 'end').map((t) => (
                 <TouchableOpacity
                   key={t}
                   style={styles.modalRow}
@@ -688,9 +739,15 @@ export default function LeaveScreen() {
                 // Pre-launch months are dimmed and inert. Without this
                 // the employee could tap "January" with LAUNCH_YEAR
                 // selected and get an empty result with no explanation.
-                const allowed =
-                  histYear > LAUNCH_YEAR ||
-                  (histYear === LAUNCH_YEAR && i + 1 >= LAUNCH_MONTH);
+                // Future months are also dimmed — if they haven't happened
+                // yet there's no history to show.
+                const _curM2 = new Date().getMonth() + 1;
+                const _curY2 = new Date().getFullYear();
+                const belowFloor =
+                  histYear === LAUNCH_YEAR && i + 1 < LAUNCH_MONTH;
+                const aboveCap =
+                  histYear === _curY2 && i + 1 > _curM2;
+                const allowed = !belowFloor && !aboveCap && histYear <= _curY2;
                 return (
                 <TouchableOpacity
                   key={m}

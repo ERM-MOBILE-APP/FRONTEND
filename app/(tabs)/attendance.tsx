@@ -709,7 +709,7 @@ export default function AttendanceScreen() {
                 if (isApproved)        label = 'Approved';
                 else if (isRejected)   label = 'Rejected — tap to re-file';
                 else if (isPending)    label = 'Requested';
-                else if (requestClosed) label = 'Request window closed';
+                else if (requestClosed) label = 'Window Closed';
                 else                    label = 'Request';
                 // Tint the button to match status. Approved = green
                 // (same as primary), Rejected = red, Pending/disabled
