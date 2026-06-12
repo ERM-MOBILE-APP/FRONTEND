@@ -131,7 +131,7 @@ export default function ProfileScreen() {
           // battery keeps draining for nothing. Mark the user offline on
           // the server too so HR sees the correct presence immediately.
           try { await attendanceAPI.setPresence('offline'); } catch {}
-          try { await stopBackgroundLocationUpdates(); } catch {}
+          try { await stopBackgroundLocationUpdates('user logout'); } catch {}
           await AsyncStorage.multiRemove(['token', 'user']);
           router.replace('/(auth)/login' as any);
         },

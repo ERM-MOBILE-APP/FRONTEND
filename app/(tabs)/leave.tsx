@@ -247,6 +247,18 @@ export default function LeaveScreen() {
       Alert.alert('Required', 'Please fill leave type, start, end and reason.');
       return;
     }
+    // Hard guard against end < start (#280). The calendar's minDate
+    // already prevents this from the End picker, and setSelectedDate
+    // auto-bumps end-when-start-moves, but we still validate here as
+    // the last line of defence — the backend would 400 with a less
+    // helpful message.
+    if (endDate < startDate) {
+      Alert.alert(
+        'Invalid date range',
+        'End Date cannot be before Start Date. Please pick an End Date on or after the Start Date.',
+      );
+      return;
+    }
     // Block duplicates — the backend may also enforce this, but catching
     // it client-side is faster and the error message is much clearer.
     const dup = findOverlappingRequest(startDate, endDate);
@@ -364,9 +376,29 @@ export default function LeaveScreen() {
   };
 
   const setSelectedDate = (date: string) => {
-    if (datePickerFor === 'start') setStartDate(date);
-    else if (datePickerFor === 'end') setEndDate(date);
-    else if (datePickerFor === 'perm') setPermDate(date);
+    if (datePickerFor === 'start') {
+      setStartDate(date);
+      // If the existing End Date is before the new Start Date, snap End
+      // Date forward to match Start. Without this guard the user could
+      // end up with End < Start (the screenshot bug — start 18-06,
+      // end 16-06). We always preserve the user's intent to file a
+      // multi-day leave by NEVER clearing endDate silently.
+      if (endDate && endDate < date) {
+        setEndDate(date);
+      }
+    } else if (datePickerFor === 'end') {
+      // Defensive: if Start Date isn't picked yet, accept whatever the
+      // user taps; otherwise clamp to >= startDate (the calendar's
+      // minDate already prevents this, but a future refactor could
+      // bypass the picker, so we double-guard).
+      if (startDate && date < startDate) {
+        setEndDate(startDate);
+      } else {
+        setEndDate(date);
+      }
+    } else if (datePickerFor === 'perm') {
+      setPermDate(date);
+    }
     setDatePickerFor(null);
   };
 
@@ -552,11 +584,11 @@ export default function LeaveScreen() {
               </View>
             </View>
 
-            <Text style={styles.label}>Reason for leave</Text>
+            <Text style={styles.label}>Reason for permission</Text>
             <TextInput
               value={permReason}
               onChangeText={setPermReason}
-              placeholder="Enter reason for leave..."
+              placeholder="Enter reason for permission"
               placeholderTextColor="#aaa"
               multiline
               style={styles.textArea}
@@ -679,12 +711,22 @@ export default function LeaveScreen() {
             </Text>
             <Calendar
               onDayPress={(day: { dateString: string }) => setSelectedDate(day.dateString)}
-              // Past dates are read-only. Employees can only file leave or
-              // permission for TODAY or future days — backdated requests
-              // would require an HR-side adjustment instead. `minDate` is
-              // today's ISO date in local time; react-native-calendars greys
-              // out and ignores taps on anything before it.
-              minDate={new Date().toISOString().split('T')[0]}
+              // minDate logic (#280 — Jun 2026 prod fix):
+              //   • Start/Perm pickers → today. Employees can only file
+              //     leave for today or future days; backdated requests
+              //     require an HR-side adjustment.
+              //   • End picker → max(today, startDate). The end date can
+              //     never be earlier than the start date. Without this
+              //     gate the user could set start=18-06 and end=16-06,
+              //     producing a request the backend would reject — or
+              //     worse, silently misinterpret.
+              minDate={(() => {
+                const today = new Date().toISOString().split('T')[0];
+                if (datePickerFor === 'end' && startDate) {
+                  return startDate > today ? startDate : today;
+                }
+                return today;
+              })()}
               disableAllTouchEventsForDisabledDays={true}
               markedDates={{
                 ...(startDate && datePickerFor === 'start'

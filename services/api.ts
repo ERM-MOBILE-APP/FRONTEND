@@ -51,25 +51,32 @@ api.interceptors.response.use(
   async (err) => {
     const cfg: any = err.config || {};
 
-    // Auto-retry ONCE on network error / cold-start timeout.
-    if ((!err.response || err.code === 'ECONNABORTED') && !cfg.__retried) {
-      cfg.__retried = true;
-      cfg.timeout = WAKEUP_TIMEOUT_MS;
-      console.log('[API RETRY] cold-start retry →', cfg.url);
-      try {
-        return await api.request(cfg);
-      } catch (e) {
-        // fall through to the network-error handler below
+    // Multi-retry with backoff on cold-start / network errors.
+    // Render free-tier cold start can take 30-60s; a single retry is not
+    // enough. We try up to 3 times with increasing timeout + small delay
+    // so the user never sees a cold-start error in practice.
+    const MAX_RETRIES = 3;
+    if (!err.response || err.code === 'ECONNABORTED') {
+      cfg.__retryCount = (cfg.__retryCount || 0) + 1;
+      if (cfg.__retryCount <= MAX_RETRIES) {
+        cfg.timeout = WAKEUP_TIMEOUT_MS;
+        // Backoff: 1s, 2s, 4s between attempts (lets Render finish booting)
+        const wait = Math.min(4000, 1000 * Math.pow(2, cfg.__retryCount - 1));
+        console.log(`[API RETRY ${cfg.__retryCount}/${MAX_RETRIES}] in ${wait}ms →`, cfg.url);
+        await new Promise(r => setTimeout(r, wait));
+        try {
+          return await api.request(cfg);
+        } catch (e) {
+          // fall through — if final retry also failed, show short msg
+        }
       }
     }
 
     if (!err.response) {
-      const networkMsg = `Server is taking too long to wake up.
-
-This usually happens on the first request after the backend has been idle.
-Please wait 30 seconds and try again — it warms up automatically.
-
-(Code: ${err.code || 'NETWORK'})`;
+      // Friendly short message — no more 5-paragraph scare text.
+      // After 3 silent retries (~6+ minutes of attempts) the server is
+      // genuinely unreachable; user needs to just tap again.
+      const networkMsg = 'Connection lost. Please check your internet and try again.';
       console.log('[API NETWORK ERROR]', err.message, err.code);
       err.response = { data: { message: networkMsg } };
       return Promise.reject(err);
@@ -183,9 +190,11 @@ export const attendanceAPI = {
   /** Auto-checkout fired when GPS turns off mid-day. */
   autoCheckOut: (reason?: string) =>
     api.post('/attendance/auto-checkout', { reason: reason || 'gps-off' }),
-  /** Every 2 min while checked in, send the live location. */
-  locationPing: (lat: number, lng: number, accuracy?: number, speed?: number) =>
-    api.post('/attendance/location-ping', { lat, lng, accuracy, speed }),
+  /** Every 2 min while checked in, send the live location.
+   *  isStationary: true → marker stays anchored, polyline isn't extended.
+   *  isStationary: false → confirmed movement; new point added to polyline. */
+  locationPing: (lat: number, lng: number, accuracy?: number, speed?: number, isStationary?: boolean) =>
+    api.post('/attendance/location-ping', { lat, lng, accuracy, speed, isStationary }),
   /** Presence state: 'active' | 'idle' | 'offline'. */
   setPresence: (state: 'active' | 'idle' | 'offline') =>
     api.post('/attendance/presence', { state }),

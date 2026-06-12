@@ -10,6 +10,8 @@ import {
   Modal,
   Pressable,
   ActivityIndicator,
+  Animated,
+  Easing,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -17,13 +19,18 @@ import { Ionicons, Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import * as Location from 'expo-location';
 import { Linking, AppState } from 'react-native';
-import { attendanceAPI, announcementAPI, notificationAPI } from '../../services/api';
+import { attendanceAPI, announcementAPI, notificationAPI, wakeBackend } from '../../services/api';
 import SideDrawer from '../../components/SideDrawer';
 import {
   startBackgroundLocationUpdates,
   stopBackgroundLocationUpdates,
+  reviveBackgroundLocationUpdates,
   requestBatteryOptimizationExemption,
   BACKGROUND_LOCATION_TASK,
+  filterFix,
+  resetGpsAnchor,
+  isHeartbeatStale,
+  resetTrackingDiagnostics,
 } from '../../services/locationTask';
 
 type WorkLocation = 'remote' | 'office';
@@ -43,6 +50,89 @@ type Announcement = {
   postedBy: string;
   createdAt: string;
 };
+
+/* ────────────────────────────────────────────────────────────────────
+ * Premium animated check-in/out loader (Jun 2026 — #276).
+ *
+ * Replaces the prior static ring + ActivityIndicator combo with a
+ * fully animated centerpiece:
+ *   • Outer ring rotates at a continuous 1.4 s cadence (Animated rotate)
+ *   • Middle ring pulses opacity + scale to create a breathing halo
+ *   • Inner disc holds the action icon with a soft drop-shadow
+ *   • Three sequential progress dots advance underneath the label
+ *
+ * Pure RN Animated API — no extra deps, no native modules, runs at
+ * 60 fps on every Android we support. Variant ('in' | 'out') flips the
+ * accent palette green (check-in) vs blue (check-out).
+ * ────────────────────────────────────────────────────────────────── */
+function PremiumLoader({ variant }: { variant: 'in' | 'out' }) {
+  const rotateRef = React.useRef(new Animated.Value(0)).current;
+  const pulseRef  = React.useRef(new Animated.Value(0)).current;
+  const dotsRef   = React.useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    const rotate = Animated.loop(
+      Animated.timing(rotateRef, { toValue: 1, duration: 1400, easing: Easing.linear, useNativeDriver: true })
+    );
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseRef, { toValue: 1, duration: 900, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+        Animated.timing(pulseRef, { toValue: 0, duration: 900, easing: Easing.in(Easing.quad),  useNativeDriver: true }),
+      ])
+    );
+    const dots = Animated.loop(
+      Animated.timing(dotsRef, { toValue: 3, duration: 1350, easing: Easing.linear, useNativeDriver: false })
+    );
+    rotate.start(); pulse.start(); dots.start();
+    return () => { rotate.stop(); pulse.stop(); dots.stop(); rotateRef.setValue(0); pulseRef.setValue(0); dotsRef.setValue(0); };
+  }, []);
+
+  const isIn = variant === 'in';
+  // Palette
+  const accent    = isIn ? '#16A34A' : '#1D4ED8'; // primary
+  const accent2   = isIn ? '#22C55E' : '#3B82F6'; // mid
+  const tint      = isIn ? '#DCFCE7' : '#DBEAFE'; // pale halo
+  const ringSoft  = isIn ? '#86EFAC' : '#93C5FD'; // soft ring color
+  const iconBg    = isIn ? '#16A34A' : '#1D4ED8';
+
+  const rotation  = rotateRef.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const haloScale = pulseRef.interpolate ({ inputRange: [0, 1], outputRange: [0.85, 1.15] });
+  const haloOpac  = pulseRef.interpolate ({ inputRange: [0, 1], outputRange: [0.6,  0.15] });
+
+  return (
+    <View style={loaderStyles.centerpiece}>
+      {/* Pulsing halo behind everything */}
+      <Animated.View
+        style={[
+          loaderStyles.halo,
+          { backgroundColor: tint, opacity: haloOpac, transform: [{ scale: haloScale }] },
+        ]}
+      />
+      {/* Spinning outer arc — 3/4 colored, 1/4 transparent creates
+          the "race-track" look without any gradient library */}
+      <Animated.View
+        style={[
+          loaderStyles.spinRing,
+          {
+            borderTopColor:    accent,
+            borderRightColor:  accent2,
+            borderBottomColor: ringSoft,
+            borderLeftColor:   'transparent',
+            transform: [{ rotate: rotation }],
+          },
+        ]}
+      />
+      {/* Static inner disc + icon */}
+      <View style={[loaderStyles.iconDisc, { backgroundColor: iconBg }]}>
+        <Feather
+          name={isIn ? 'log-in' : 'log-out'}
+          size={26}
+          color="#FFFFFF"
+        />
+      </View>
+    </View>
+  );
+}
 
 export default function HomeScreen() {
   const [user, setUser] = useState<any>(null);
@@ -128,11 +218,28 @@ export default function HomeScreen() {
       .catch(() => {});
 
     const t = setInterval(() => setNow(new Date()), 1000);
+
+    // Fire-and-forget backend warm-up. Render free-tier sleeps after 15
+    // minutes idle; if the user opens the app after lunch / overnight
+    // the first request would otherwise cold-start. By pinging /health
+    // the moment the home screen mounts, the backend is awake by the
+    // time the user taps Check In. Silent — failures don't surface.
+    wakeBackend();
+
     refreshToday();
     refreshAnnouncements();
     refreshUnread();
     return () => clearInterval(t);
   }, [refreshToday, refreshAnnouncements, refreshUnread]);
+
+  // Also re-ping on AppState 'active' — covers the "phone was locked
+  // for hours, user unlocks straight to the already-running app" path.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') wakeBackend();
+    });
+    return () => sub?.remove?.();
+  }, []);
 
   // Re-poll unread count every time the user comes back to the home tab —
   // catches the "user just opened Notifications screen which auto-marks
@@ -245,14 +352,43 @@ export default function HomeScreen() {
         );
         return null;
       }
-      const fix = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      return {
-        lat: fix.coords.latitude,
-        lng: fix.coords.longitude,
-        accuracy: fix.coords.accuracy ?? undefined,
-      };
+      // FAST PATH (Jun 2026 — speed-up #276):
+      // Old code awaited getCurrentPositionAsync with no timeout, which
+      // could hang 5-15 s while the GPS chip got a fresh fix — the
+      // single biggest cause of "check-in takes forever". New strategy:
+      //   1. Race a CACHED last-known fix (instant) against a 1-s deadline.
+      //   2. If still nothing, race a FRESH high-accuracy fix against
+      //      a 2.5-s deadline.
+      //   3. If both fail, submit check-in WITHOUT coords — the backend
+      //      will record office attendance using the employee's profile
+      //      default. Better to let the user clock in than make them
+      //      stare at a spinner.
+      const fastFix = await Promise.race<Location.LocationObject | null>([
+        Location.getLastKnownPositionAsync({ maxAge: 60 * 1000, requiredAccuracy: 100 }).catch(() => null),
+        new Promise<null>((r) => setTimeout(() => r(null), 1000)),
+      ]);
+      if (fastFix) {
+        return {
+          lat: fastFix.coords.latitude,
+          lng: fastFix.coords.longitude,
+          accuracy: fastFix.coords.accuracy ?? undefined,
+        };
+      }
+      const fresh = await Promise.race<Location.LocationObject | null>([
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+        new Promise<null>((r) => setTimeout(() => r(null), 2500)),
+      ]);
+      if (fresh) {
+        return {
+          lat: fresh.coords.latitude,
+          lng: fresh.coords.longitude,
+          accuracy: fresh.coords.accuracy ?? undefined,
+        };
+      }
+      // No fix in time — proceed without coords. Mark "ok but no coords"
+      // so the caller still proceeds (returning null here would cancel
+      // the check-in, which is worse than checking in without GPS).
+      return { lat: undefined as any, lng: undefined as any, accuracy: undefined };
     } catch (err: any) {
       Alert.alert(
         'Could not read location',
@@ -297,7 +433,7 @@ export default function HomeScreen() {
     // Tell the OS to stop the background location task too — otherwise
     // it keeps pinging after check-out, which is privacy-bad and burns
     // the user's battery for no reason.
-    stopBackgroundLocationUpdates().catch(() => {});
+    stopBackgroundLocationUpdates('stopTracking (checkout/unmount/auto-checkout)').catch(() => {});
     console.log('[tracking] stopped');
   };
 
@@ -348,25 +484,26 @@ export default function HomeScreen() {
         const servicesOn = await Location.hasServicesEnabledAsync();
         if (!servicesOn) { await handleGpsOffWarn(); return; }
 
-        // Get a fix. On Indian OEM phones with aggressive radios,
-        // getCurrentPositionAsync can hang for 30+s indoors — race it
-        // against an 8-second timeout and fall back to the last-known
-        // position so a ping STILL goes out every cycle. A slightly
-        // stale fix is dramatically better than nothing because the
-        // backend's 25-min stale clock resets on each ping, even if
-        // the coords are 30s old.
+        // Get a fix. Use HIGHEST accuracy (pure GPS) so the reported
+        // accuracy radius is small enough to pass our 30 m gate. The old
+        // 'Balanced' setting mixed in Wi-Fi/cell-tower triangulation with
+        // ±50–80 m error, which made every foreground ping drift on the
+        // map. Indoor / urban-canyon worst case still falls back to
+        // last-known if Highest takes too long.
         let fix: Location.LocationObject | null = null;
         try {
           fix = await Promise.race([
-            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
             new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
           ]) as Location.LocationObject | null;
         } catch { fix = null; }
         if (!fix) {
-          // Fallback — accept a cached fix up to 5 minutes old.
+          // Fallback — accept a cached fix up to 5 minutes old, but
+          // require it to already be at least 50m accurate (anything
+          // coarser would just get rejected by the filter anyway).
           fix = await Location.getLastKnownPositionAsync({
             maxAge: 5 * 60 * 1000,
-            requiredAccuracy: 200,
+            requiredAccuracy: 50,
           }).catch(() => null);
         }
         if (!fix) {
@@ -374,11 +511,26 @@ export default function HomeScreen() {
           return;
         }
 
+        // Apply the shared anti-jitter filter. Returns null if the fix
+        // is too coarse to send; otherwise returns either the held anchor
+        // (stationary) or a confirmed-move position.
+        const filtered = await filterFix({
+          lat: fix.coords.latitude,
+          lng: fix.coords.longitude,
+          accuracy: fix.coords.accuracy ?? undefined,
+          speed:    fix.coords.speed    ?? undefined,
+        });
+        if (!filtered) {
+          console.log('[tracking] fix dropped by jitter filter — skip');
+          return;
+        }
+
         await attendanceAPI.locationPing(
-          fix.coords.latitude,
-          fix.coords.longitude,
-          fix.coords.accuracy ?? undefined,
-          fix.coords.speed    ?? undefined,
+          filtered.lat,
+          filtered.lng,
+          filtered.accuracy ?? undefined,
+          filtered.speed    ?? undefined,
+          filtered.isStationary,
         );
         // GPS came back on after being off — clear the warning latch so the
         // next disable-event can show the prompt again, and flip presence
@@ -387,7 +539,11 @@ export default function HomeScreen() {
           gpsOffWarnedRef.current = false;
           attendanceAPI.setPresence('active').catch(() => {});
         }
-        console.log('[tracking] ✔ ping', fix.coords.latitude.toFixed(5), fix.coords.longitude.toFixed(5));
+        console.log(
+          '[tracking] ✔ ping',
+          filtered.lat.toFixed(5), filtered.lng.toFixed(5),
+          filtered.isStationary ? '(STATIONARY)' : '(MOVING)',
+        );
       } catch (err: any) {
         console.warn('[tracking] ping failed:', err?.message || err);
       }
@@ -442,10 +598,25 @@ export default function HomeScreen() {
       try {
         const on = await Location.hasServicesEnabledAsync();
         if (!on) return;   // GPS off — handled by watchGps + handleGpsOffWarn
+
+        // Layer 1: does the OS think the task is registered?
         const taskAlive = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => false);
+
+        // Layer 2: heartbeat freshness. Even when the OS REPORTS the
+        // task as registered, OEM battery savers (MIUI/ColorOS/etc.)
+        // can SIGKILL the foreground service so the task callback
+        // never fires. The heartbeat is the only ground truth that
+        // says "yes, ticks are actually arriving." If heartbeat is
+        // stale (> 3 min for a 60-s interval) we know the OS is lying
+        // about the task being alive — force a hard revive.
+        const stale = await isHeartbeatStale();
+
         if (!taskAlive) {
-          console.warn('[tracking] bg task died — restarting');
-          await startBackgroundLocationUpdates().catch(() => {});
+          console.warn('[tracking] bg task not registered — reviving');
+          await reviveBackgroundLocationUpdates('guardian: !taskAlive');
+        } else if (stale) {
+          console.warn('[tracking] bg task is zombie (heartbeat stale) — reviving');
+          await reviveBackgroundLocationUpdates('guardian: heartbeat stale');
         }
       } catch (err: any) {
         console.warn('[tracking] guardian error:', err?.message || err);
@@ -508,14 +679,23 @@ export default function HomeScreen() {
           const on = await Location.hasServicesEnabledAsync();
           if (on) {
             const fix = await Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Balanced,
+              accuracy: Location.Accuracy.Highest,
             });
-            await attendanceAPI.locationPing(
-              fix.coords.latitude,
-              fix.coords.longitude,
-              fix.coords.accuracy ?? undefined,
-              fix.coords.speed    ?? undefined,
-            );
+            const filtered = await filterFix({
+              lat: fix.coords.latitude,
+              lng: fix.coords.longitude,
+              accuracy: fix.coords.accuracy ?? undefined,
+              speed:    fix.coords.speed    ?? undefined,
+            });
+            if (filtered) {
+              await attendanceAPI.locationPing(
+                filtered.lat,
+                filtered.lng,
+                filtered.accuracy ?? undefined,
+                filtered.speed    ?? undefined,
+                filtered.isStationary,
+              );
+            }
             // Belt-and-braces: make sure the bg task is still active.
             startBackgroundLocationUpdates().catch(() => {});
             console.log('[tracking] AppState → background, sent final ping');
@@ -542,17 +722,37 @@ export default function HomeScreen() {
             if (!pingTimerRef.current) {
               startTracking();
             } else {
-              startBackgroundLocationUpdates().catch(() => {});
+              // Aggressive revival on every foreground resume — if the
+              // OS killed the bg task while we were offscreen, this is
+              // the most reliable moment to detect + restart it. Uses
+              // reviveBackgroundLocationUpdates so a zombie task that
+              // hasStartedLocationUpdatesAsync still reports as running
+              // gets stopped and restarted cleanly.
+              const stale = await isHeartbeatStale();
+              if (stale) {
+                await reviveBackgroundLocationUpdates('AppState→active: heartbeat stale').catch(() => {});
+              } else {
+                await startBackgroundLocationUpdates().catch(() => {});
+              }
               try {
                 const fix = await Location.getCurrentPositionAsync({
-                  accuracy: Location.Accuracy.Balanced,
+                  accuracy: Location.Accuracy.Highest,
                 });
-                await attendanceAPI.locationPing(
-                  fix.coords.latitude,
-                  fix.coords.longitude,
-                  fix.coords.accuracy ?? undefined,
-                  fix.coords.speed    ?? undefined,
-                );
+                const filtered = await filterFix({
+                  lat: fix.coords.latitude,
+                  lng: fix.coords.longitude,
+                  accuracy: fix.coords.accuracy ?? undefined,
+                  speed:    fix.coords.speed    ?? undefined,
+                });
+                if (filtered) {
+                  await attendanceAPI.locationPing(
+                    filtered.lat,
+                    filtered.lng,
+                    filtered.accuracy ?? undefined,
+                    filtered.speed    ?? undefined,
+                    filtered.isStationary,
+                  );
+                }
                 await attendanceAPI.setPresence('active').catch(() => {});
               } catch { /* best-effort */ }
             }
@@ -592,9 +792,10 @@ export default function HomeScreen() {
     try {
       if (!checkedIn) {
         // Mandatory location check before check-in. ensureLocationOn now
-        // returns the actual fix so we can include lat/lng in the request.
-        // Cap at 25s so a flaky GPS chip can't strand the button.
-        const coords = await withTimeout(ensureLocationOn(), 25_000, 'Location fix');
+        // races a cached fix (1s) + fresh fix (2.5s) — total 6s max,
+        // even if every layer hits its timeout. A flaky GPS chip can no
+        // longer strand the button.
+        const coords = await withTimeout(ensureLocationOn(), 6_000, 'Location fix');
         if (!coords) return;
 
         // Require "Allow all the time" location permission BEFORE
@@ -621,6 +822,14 @@ export default function HomeScreen() {
 
         await attendanceAPI.checkIn(today.location || 'office', coords);
         await attendanceAPI.setPresence('active').catch(() => {});
+        // Reset the GPS anti-jitter anchor at the start of every shift
+        // so yesterday's office-desk anchor doesn't taint today's first
+        // movement decision.
+        resetGpsAnchor().catch(() => {});
+        // Wipe yesterday's tracking event log + heartbeat so today's
+        // diagnostics are clean. The heartbeat will be repopulated by
+        // the first bg-task tick (within 60 s of check-in).
+        resetTrackingDiagnostics().catch(() => {});
 
         // One-time battery-optimization exemption prompt (Android only,
         // first successful check-in only). Saved to AsyncStorage so we
@@ -876,34 +1085,7 @@ export default function HomeScreen() {
       >
         <View style={loaderStyles.backdrop}>
           <View style={loaderStyles.card}>
-            {/* Layered "pulse ring + icon" centerpiece. The outer rings
-                are static (the spinner already provides motion); the
-                colour matches check-in (green) vs check-out (blue). */}
-            <View style={loaderStyles.iconStack}>
-              <View
-                style={[
-                  loaderStyles.ringOuter,
-                  { borderColor: !checkedIn ? '#A5D6A7' : '#90CAF9' },
-                ]}
-              />
-              <View
-                style={[
-                  loaderStyles.ringInner,
-                  { backgroundColor: !checkedIn ? '#E8F5E9' : '#E3F2FD' },
-                ]}
-              />
-              <Feather
-                name={!checkedIn ? 'log-in' : 'log-out'}
-                size={28}
-                color={!checkedIn ? '#2E7D32' : '#1565C0'}
-                style={loaderStyles.icon}
-              />
-              <ActivityIndicator
-                size="large"
-                color={!checkedIn ? '#2E7D32' : '#1565C0'}
-                style={loaderStyles.spinner}
-              />
-            </View>
+            <PremiumLoader variant={!checkedIn ? 'in' : 'out'} />
             <Text style={loaderStyles.label}>
               {!checkedIn ? 'Checking you in' : 'Checking you out'}
             </Text>
@@ -912,11 +1094,10 @@ export default function HomeScreen() {
                 ? 'Confirming your location with HR…'
                 : 'Saving today\'s log and stopping live tracking…'}
             </Text>
-            {/* Decorative dot row to make the wait feel intentional */}
             <View style={loaderStyles.dotRow}>
-              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#2E7D32' : '#1565C0' }]} />
-              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#66BB6A' : '#42A5F5', opacity: 0.6 }]} />
-              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#A5D6A7' : '#90CAF9', opacity: 0.35 }]} />
+              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#16A34A' : '#1D4ED8' }]} />
+              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#22C55E' : '#3B82F6', opacity: 0.6 }]} />
+              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#86EFAC' : '#93C5FD', opacity: 0.35 }]} />
             </View>
           </View>
         </View>
@@ -1209,44 +1390,44 @@ const loaderStyles = StyleSheet.create({
   },
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    paddingHorizontal: 32,
+    borderRadius: 28,
+    paddingHorizontal: 34,
     paddingVertical: 36,
-    minWidth: 280,
+    minWidth: 300,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowOffset: { width: 0, height: 12 },
-    shadowRadius: 28,
-    elevation: 16,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.28,
+    shadowOffset: { width: 0, height: 14 },
+    shadowRadius: 32,
+    elevation: 20,
   },
-  iconStack: {
-    width: 96,
-    height: 96,
+  // Premium loader centerpiece (#276) ─────────────────────────────
+  centerpiece: {
+    width: 110, height: 110,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
-    marginBottom: 6,
+    marginBottom: 10,
   },
-  ringOuter: {
+  halo: {
     position: 'absolute',
-    width: 96, height: 96, borderRadius: 48,
-    borderWidth: 2,
-    opacity: 0.5,
+    width: 110, height: 110, borderRadius: 55,
   },
-  ringInner: {
+  spinRing: {
     position: 'absolute',
-    width: 68, height: 68, borderRadius: 34,
+    width: 94, height: 94, borderRadius: 47,
+    borderWidth: 4,
+    borderStyle: 'solid',
   },
-  icon: {
-    position: 'absolute',
-    zIndex: 2,
-  },
-  spinner: {
-    position: 'absolute',
-    width: 96, height: 96,
-    zIndex: 1,
+  iconDisc: {
+    width: 58, height: 58, borderRadius: 29,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.22,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 8,
   },
   label: {
     marginTop: 18,

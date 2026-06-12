@@ -1,11 +1,28 @@
 import React from 'react';
 import { Stack } from 'expo-router';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Import-only side-effect: registers the background location ping task
 // with TaskManager so the OS can invoke it even when the app is killed.
 // Must run at module load time, before any screen renders.
 import '../services/locationTask';
+
+// Persist the last crash detail so when the user reopens the app we
+// can show them what blew up. Otherwise crashes look completely
+// silent — the user sees the app vanish with zero diagnostic value.
+const LAST_CRASH_KEY = 'erm-last-crash-v1';
+async function persistCrash(label: string, err: any) {
+  try {
+    const detail = {
+      ts: new Date().toISOString(),
+      label,
+      msg: err?.message || String(err),
+      stack: typeof err?.stack === 'string' ? err.stack.slice(0, 4000) : null,
+    };
+    await AsyncStorage.setItem(LAST_CRASH_KEY, JSON.stringify(detail));
+  } catch {/* persistence itself failed — nothing else to do */}
+}
 
 // ─── GLOBAL CRASH GUARDS ────────────────────────────────────────────
 // Goal: prevent the "app comes out by itself" force-close that users
@@ -24,17 +41,33 @@ import '../services/locationTask';
 // alive. The error boundary still kicks in for render-tree issues to
 // give the user a recovery screen. Defensive depth.
 if (typeof globalThis !== 'undefined') {
-  // Promise rejections (#1)
-  // @ts-ignore — different RN versions expose this differently
-  const HermesPromise = (globalThis as any).HermesInternal?.setPromiseRejectionTracker;
+  // Promise rejections (#1) — Hermes-specific tracker so we catch the
+  // entire async rejection space, not just process.on which often
+  // isn't even bound in RN. Without this, a single missed `.catch()`
+  // anywhere in the codebase tears down the JS engine. This was the
+  // single biggest cause of "app exits by itself".
+  const HermesInt = (globalThis as any).HermesInternal;
+  if (HermesInt && typeof HermesInt.enablePromiseRejectionTracker === 'function') {
+    try {
+      HermesInt.enablePromiseRejectionTracker({
+        allRejections: true,
+        onUnhandled: (id: any, reason: any) => {
+          console.warn('[HermesUnhandledRejection]', id, reason?.message || String(reason));
+          persistCrash('unhandledRejection', reason);
+        },
+      });
+    } catch {/* not all Hermes builds expose this — non-fatal */}
+  }
   if (typeof (globalThis as any).process?.on === 'function') {
     (globalThis as any).process.on('unhandledRejection', (reason: any) => {
       console.warn('[unhandledRejection]', reason?.message || String(reason));
+      persistCrash('unhandledRejection', reason);
     });
   }
   // RN's ErrorUtils (#2 + #3) — preserve the existing handler, just
   // make sure WE don't propagate to a crash. Native errors still log
-  // to logcat / Xcode console for debugging.
+  // to logcat / Xcode console for debugging. We FORCE isFatal=false
+  // when calling the previous handler so RN never reloads the bundle.
   const ErrUtils = (globalThis as any).ErrorUtils;
   if (ErrUtils && typeof ErrUtils.setGlobalHandler === 'function') {
     const prevHandler = typeof ErrUtils.getGlobalHandler === 'function'
@@ -42,8 +75,7 @@ if (typeof globalThis !== 'undefined') {
       : null;
     ErrUtils.setGlobalHandler((err: any, isFatal: boolean) => {
       console.warn('[ErrorUtils] caught', isFatal ? '(fatal)' : '(non-fatal)', err?.message || err);
-      // Still call the previous handler if it exists, but with isFatal
-      // forced to FALSE so React Native doesn't reload the bundle.
+      persistCrash(isFatal ? 'fatal' : 'non-fatal', err);
       if (typeof prevHandler === 'function') {
         try { prevHandler(err, false); } catch { /* don't crash the handler */ }
       }
@@ -84,6 +116,7 @@ class RootErrorBoundary extends React.Component<
     // logger would be cleaner but for go-live "print to Metro / Logcat"
     // is enough for the team to triage what crashed.
     console.warn('[RootErrorBoundary] caught render error:', error?.message, info?.componentStack);
+    persistCrash('render-tree', error);
   }
 
   handleReload = () => {
