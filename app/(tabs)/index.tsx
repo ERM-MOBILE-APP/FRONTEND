@@ -226,6 +226,19 @@ export default function HomeScreen() {
     // time the user taps Check In. Silent — failures don't surface.
     wakeBackend();
 
+    // Last-crash sniffer (#282). If the previous session terminated via
+    // the persistent crash log (ErrorUtils handler / Hermes rejection
+    // tracker / render-tree error), surface it ONCE to the console so
+    // a developer can read it via adb logcat, then clear the key. This
+    // is silent for the user — no scary modal — but turns "the app
+    // exited and we have no idea why" into "we have the stack trace."
+    AsyncStorage.getItem('erm-last-crash-v1').then((raw) => {
+      if (raw) {
+        console.warn('[last-session-crash]', raw);
+        AsyncStorage.removeItem('erm-last-crash-v1').catch(() => {});
+      }
+    }).catch(() => {});
+
     refreshToday();
     refreshAnnouncements();
     refreshUnread();
@@ -820,23 +833,51 @@ export default function HomeScreen() {
           return;
         }
 
-        await attendanceAPI.checkIn(today.location || 'office', coords);
-        await attendanceAPI.setPresence('active').catch(() => {});
-        // Reset the GPS anti-jitter anchor at the start of every shift
-        // so yesterday's office-desk anchor doesn't taint today's first
-        // movement decision.
-        resetGpsAnchor().catch(() => {});
-        // Wipe yesterday's tracking event log + heartbeat so today's
-        // diagnostics are clean. The heartbeat will be repopulated by
-        // the first bg-task tick (within 60 s of check-in).
-        resetTrackingDiagnostics().catch(() => {});
+        // ═══════════════════════════════════════════════════════════════
+        // CHECK-IN ATOMIC CORE (#282 prod fix — Jun 2026)
+        //
+        // The ONLY thing that must succeed inside the inner try is the
+        // checkIn API call itself. Everything after — presence flag,
+        // anchor reset, diagnostics reset, battery prompt, tracking
+        // start — was previously chained linearly, so a single failure
+        // anywhere in the chain (e.g. expo-intent-launcher native crash
+        // during the battery prompt) tore down the app BEFORE the
+        // success modal rendered. The user saw their check-in saved on
+        // HRMS but their app vanished.
+        //
+        // New shape: API call only inside this critical block. The
+        // moment it succeeds we (a) flip local UI state optimistically
+        // so the button shows "Check Out" immediately — no waiting on
+        // refreshToday() — and (b) queue the success modal. Then every
+        // follow-up side-effect is wrapped in its OWN try/catch so any
+        // single failure logs and moves on instead of cascading.
+        // ═══════════════════════════════════════════════════════════════
+        const checkInResp = await attendanceAPI.checkIn(today.location || 'office', coords);
+
+        // ── (a) OPTIMISTIC LOCAL STATE — fixes the "button doesn't flip
+        //         immediately" complaint. The button label is derived
+        //         from `today.checkIn`; setting it locally NOW makes
+        //         the UI flip the instant the API returns, instead of
+        //         waiting for the round-trip refreshToday() call.
+        const nowIso = new Date().toISOString();
+        const serverCheckIn = checkInResp?.data?.checkIn || nowIso;
+        setToday(prev => ({ ...prev, checkIn: serverCheckIn }));
+
+        // ── (b) SUCCESS MODAL — queued BEFORE the side-effects so the
+        //         user sees the confirmation even if a follow-up step
+        //         throws or the OS decides to terminate the process.
+        setCheckResult({ kind: 'in', time: formatLiveTime(new Date()) });
+
+        // ── (c) SIDE-EFFECTS — each in its own guard. None of these
+        //         can prevent the success modal from showing or stop
+        //         the user from interacting with the app.
+        try { await attendanceAPI.setPresence('active'); } catch {}
+        try { await resetGpsAnchor(); } catch {}
+        try { await resetTrackingDiagnostics(); } catch {}
 
         // One-time battery-optimization exemption prompt (Android only,
         // first successful check-in only). Saved to AsyncStorage so we
-        // don't pester the user every day. The exemption is what stops
-        // Xiaomi / Oppo / Vivo / Realme / OnePlus battery savers from
-        // killing the foreground location service mid-shift — which is
-        // the single biggest cause of "Location on but showing Offline".
+        // don't pester the user every day.
         try {
           const alreadyAsked = await AsyncStorage.getItem('battery_exempt_asked');
           if (!alreadyAsked) {
@@ -855,10 +896,17 @@ export default function HomeScreen() {
               ]
             );
           }
-        } catch {/* best-effort */}
+        } catch {/* best-effort — must not crash check-in */}
 
-        setCheckResult({ kind: 'in', time: formatLiveTime(new Date()) });
-        startTracking();
+        // Start the foreground tracking timers + ensure bg task is armed.
+        // Wrapped because startTracking() touches expo-location and
+        // refs synchronously; a thrown JS error here used to abort the
+        // whole handler. Now it logs and lets the user continue —
+        // tracking will revive on the next AppState.active or guardian
+        // tick anyway.
+        try { startTracking(); } catch (e: any) {
+          console.warn('[handleCheckPress] startTracking failed:', e?.message || e);
+        }
       } else if (!checkedOut) {
         // Manual check-out doesn't require GPS, but if it's currently on
         // we capture the spot too so the Attendance row has both
@@ -881,10 +929,16 @@ export default function HomeScreen() {
             }
           }
         } catch {/* best-effort, ignore */}
-        await attendanceAPI.checkOut(outCoords);
-        await attendanceAPI.setPresence('offline').catch(() => {});
-        stopTracking();
+        const checkOutResp = await attendanceAPI.checkOut(outCoords);
+        // Optimistic local state — flip "Check Out" → "Done" instantly.
+        const nowIsoOut = new Date().toISOString();
+        const serverCheckOut = checkOutResp?.data?.checkOut || nowIsoOut;
+        setToday(prev => ({ ...prev, checkOut: serverCheckOut }));
         setCheckResult({ kind: 'out', time: formatLiveTime(new Date()) });
+        try { await attendanceAPI.setPresence('offline'); } catch {}
+        try { stopTracking(); } catch (e: any) {
+          console.warn('[handleCheckPress] stopTracking failed:', e?.message || e);
+        }
       } else {
         setCheckResult({ kind: 'done', time: formatLiveTime(new Date()) });
       }

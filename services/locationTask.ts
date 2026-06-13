@@ -107,10 +107,19 @@ export async function getLastHeartbeat(): Promise<Date | null> {
   } catch { return null; }
 }
 
-/** True if no bg-task tick has been recorded in the last 3 minutes. */
+/** True if no bg-task tick has been recorded in the last 3 minutes.
+ *  IMPORTANT (#282 prod fix): a NULL heartbeat is NOT considered stale.
+ *  Right after check-in we wipe diagnostics; the first bg-task tick is
+ *  60-90s away. If we treated null as stale, the 30-s guardian would
+ *  stop-and-restart the bg task on its first run, then again every
+ *  30s until the first heartbeat landed — causing visible "tracking
+ *  is starting/stopping" flicker and (on aggressive OEMs) actual
+ *  foreground-service teardown crashes. We now return false on null
+ *  so the OS gets a clean 3-minute grace period to deliver its first
+ *  location. After that, normal staleness rules apply. */
 export async function isHeartbeatStale(): Promise<boolean> {
   const last = await getLastHeartbeat();
-  if (!last) return true;
+  if (!last) return false;
   return (Date.now() - last.getTime()) > HEARTBEAT_STALE_MS;
 }
 
