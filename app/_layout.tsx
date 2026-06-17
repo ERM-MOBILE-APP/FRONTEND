@@ -2,6 +2,7 @@ import React from 'react';
 import { Stack } from 'expo-router';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { markNavReady } from '../services/api';
 
 // Import-only side-effect: registers the background location ping task
 // with TaskManager so the OS can invoke it even when the app is killed.
@@ -147,6 +148,14 @@ class RootErrorBoundary extends React.Component<
 }
 
 export default function RootLayout() {
+  // Signal to the API layer that expo-router's navigator is mounted and
+  // router.replace() can now be called safely. Without this, a background
+  // 401 during cold start tried to navigate before the Stack existed,
+  // crashing with "cannot update a component while rendering".
+  React.useEffect(() => {
+    markNavReady();
+  }, []);
+
   return (
     <RootErrorBoundary>
       <Stack screenOptions={{ headerShown: false }}>

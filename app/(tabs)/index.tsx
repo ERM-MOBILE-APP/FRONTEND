@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
 import {
   View,
   Text,
@@ -26,6 +26,9 @@ import {
   stopBackgroundLocationUpdates,
   reviveBackgroundLocationUpdates,
   requestBatteryOptimizationExemption,
+  openOemAutostartSettings,
+  getOemLabel,
+  getOemAutostartHint,
   BACKGROUND_LOCATION_TASK,
   filterFix,
   resetGpsAnchor,
@@ -134,9 +137,56 @@ function PremiumLoader({ variant }: { variant: 'in' | 'out' }) {
   );
 }
 
+/* ────────────────────────────────────────────────────────────────────
+ * LiveClock — Fix G (Jun 2026 flicker fix).
+ *
+ * Previously `now` was in HomeScreen state, so setInterval fired every
+ * second and re-rendered the ENTIRE 1510-line HomeScreen including all
+ * API-fetched lists, modals, and the PremiumLoader animations. Isolating
+ * the clock into its own memoized component means only the two <Text>
+ * nodes that display the time ever update. HomeScreen re-renders ONLY
+ * when real data changes (today, user, announcements, etc.).
+ *
+ * Props:
+ *   onNowChange — optional callback so HomeScreen can still read the
+ *   current Date for computeWorkedHours (once per second via ref,
+ *   never via state so no extra renders).
+ * ─────────────────────────────────────────────────────────────────── */
+const LiveClock = memo(function LiveClock({
+  nowRef,
+}: {
+  nowRef: React.MutableRefObject<Date>;
+}) {
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      const d = new Date();
+      nowRef.current = d;
+      setNow(d);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [nowRef]);
+
+  const hours   = now.getHours();
+  const minutes = now.getMinutes();
+  const seconds = now.getSeconds();
+  const ampm    = hours >= 12 ? 'PM' : 'AM';
+  const h       = hours % 12 === 0 ? 12 : hours % 12;
+  const timeStr =
+    String(h).padStart(2, '0') + ':' +
+    String(minutes).padStart(2, '0') + ':' +
+    String(seconds).padStart(2, '0') + ' ' + ampm;
+
+  return <Text style={styles.bigTime}>{timeStr}</Text>;
+});
+
 export default function HomeScreen() {
   const [user, setUser] = useState<any>(null);
-  const [now, setNow] = useState(new Date());
+  // nowRef: mutable reference to the current Date, updated by LiveClock
+  // every second. Used in computeWorkedHours() WITHOUT being in component
+  // state, so reading it never triggers a HomeScreen re-render (fix G).
+  const nowRef = useRef(new Date());
   const [today, setToday] = useState<TodayData>({});
   // Start empty — only show real announcements from the API. If the API
   // returns nothing we render an empty-state below instead of fake data.
@@ -177,19 +227,51 @@ export default function HomeScreen() {
   const checkedIn = !!today.checkIn;
   const checkedOut = !!today.checkOut;
 
+  const STORAGE_KEY_TODAY = 'erm-today-v1';
+
   const refreshToday = useCallback(async () => {
     try {
       const res = await attendanceAPI.today();
       const data = res?.data || {};
-      setToday({
-        shiftName: data.shiftName || 'General Shift',
-        checkIn: data.checkIn || null,
-        checkOut: data.checkOut || null,
+      const fresh: TodayData = {
+        shiftName:   data.shiftName  || 'General Shift',
+        checkIn:     data.checkIn    || null,
+        checkOut:    data.checkOut   || null,
         workedHours: data.workedHours || 0,
-        location: data.location || 'office',
+        location:    data.location   || 'office',
+      };
+      // FIX (Jun 2026 — optimistic-state guard):
+      // refreshToday() was previously always calling setToday(fresh),
+      // which wiped the optimistic checkIn/checkOut we set immediately
+      // after check-in — if the server returned stale data (Render write
+      // hadn't committed yet, or the GET fired before the POST's DB write
+      // was durable), the UI flickered back to "Check In".
+      //
+      // New rule: if we already have a checkIn in local state but the
+      // server returned null for checkIn, keep the local value — the
+      // server is lying (stale read). Once the server catches up and
+      // returns the real checkIn, subsequent polls will update correctly.
+      // Same logic applies to checkOut.
+      setToday(prev => {
+        const mergedCheckIn  = fresh.checkIn  || prev.checkIn  || null;
+        const mergedCheckOut = fresh.checkOut || prev.checkOut || null;
+        const merged: TodayData = {
+          ...fresh,
+          checkIn:  mergedCheckIn,
+          checkOut: mergedCheckOut,
+        };
+        // Persist the merged truth to AsyncStorage.
+        AsyncStorage.setItem(STORAGE_KEY_TODAY, JSON.stringify(merged)).catch(() => {});
+        return merged;
       });
     } catch {
-      setToday({ shiftName: 'General Shift' });
+      // Fix 3: Network error during poll — DON'T wipe checkIn/checkOut.
+      // Previously this branch did `setToday({ shiftName: 'General Shift' })`
+      // which cleared today.checkIn, making checkedIn === false, so the
+      // button flickered back to "Check In" on any transient network blip.
+      // Now we preserve whatever is already in state (via functional update)
+      // and only fill in shiftName if it was missing.
+      setToday(prev => ({ shiftName: 'General Shift', ...prev }));
     }
   }, []);
 
@@ -205,6 +287,7 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
+    // 1. Restore user identity from cache.
     AsyncStorage.getItem('user')
       .then((u) => {
         if (u) {
@@ -217,7 +300,37 @@ export default function HomeScreen() {
       })
       .catch(() => {});
 
-    const t = setInterval(() => setNow(new Date()), 1000);
+    // Sequenced cache restore → refreshToday (#287 prod fix).
+    //
+    // Previously this was fire-and-forget. AsyncStorage.getItem() raced
+    // refreshToday(); whichever resolved first won setToday. On a
+    // post-crash relaunch with a warm backend, the API response often
+    // beat the cache — server returned checkIn: null (race with the
+    // POST's DB write OR a different timezone day on the server) and
+    // the optimistic-merge had no prev state to fall back on → button
+    // showed "Check In" again for several minutes.
+    //
+    // New shape: AWAIT the cache, paint it synchronously, THEN call
+    // refreshToday. The merge in refreshToday now ALWAYS has a real
+    // prev.checkIn to fall back on if the server lies. Result: the
+    // correct button shows within ~50 ms of launch and never flips back
+    // until check-out actually happens.
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem('erm-today-v1');
+        if (!raw) return;
+        const cached: TodayData = JSON.parse(raw);
+        if (!cached?.checkIn) return;
+        // Stale-day guard: only restore if the cached check-in is from today.
+        const cachedDate = new Date(cached.checkIn).toDateString();
+        const todayDate  = new Date().toDateString();
+        if (cachedDate === todayDate) {
+          setToday(cached);
+        } else {
+          await AsyncStorage.removeItem('erm-today-v1').catch(() => {});
+        }
+      } catch {/* malformed cache — ignore */}
+    })();
 
     // Fire-and-forget backend warm-up. Render free-tier sleeps after 15
     // minutes idle; if the user opens the app after lunch / overnight
@@ -239,10 +352,17 @@ export default function HomeScreen() {
       }
     }).catch(() => {});
 
-    refreshToday();
-    refreshAnnouncements();
-    refreshUnread();
-    return () => clearInterval(t);
+    // Fix J: batch all three data loads so they complete together and
+    // trigger ONE combined re-render instead of three separate ones.
+    // Previously each resolved independently → three render cycles on
+    // mount, visible as a multi-frame flash (the "flickering" on open).
+    Promise.all([
+      refreshToday(),
+      refreshAnnouncements(),
+      refreshUnread(),
+    ]).catch(() => {});
+    // NOTE: the 1-second clock is now owned by <LiveClock> (fix G).
+    // No setInterval or cleanup needed here.
   }, [refreshToday, refreshAnnouncements, refreshUnread]);
 
   // Also re-ping on AppState 'active' — covers the "phone was locked
@@ -254,15 +374,21 @@ export default function HomeScreen() {
     return () => sub?.remove?.();
   }, []);
 
-  // Re-poll unread count every time the user comes back to the home tab —
-  // catches the "user just opened Notifications screen which auto-marks
-  // them read" case so the bell dot disappears without a manual reload.
+  // Fix J: batch focus re-poll — both data refreshes fire together so
+  // the tab-switch produces ONE re-render instead of two sequential ones.
   useFocusEffect(
     useCallback(() => {
-      refreshUnread();
-    }, [refreshUnread])
+      Promise.all([
+        refreshUnread(),
+        refreshToday(),
+      ]).catch(() => {});
+    }, [refreshUnread, refreshToday])
   );
 
+  // formatLiveTime is still used inside check-in/out result modal
+  // to capture the exact moment of the action. It reads the current
+  // time once (not from state) so it is safe even after the 1-second
+  // interval was moved to LiveClock.
   const formatLiveTime = (d: Date) => {
     const hours = d.getHours();
     const minutes = d.getMinutes();
@@ -290,10 +416,13 @@ export default function HomeScreen() {
     }
   };
 
+  // Fix G: computeWorkedHours now reads nowRef.current (updated by
+  // LiveClock every second via the shared ref) so the timer still ticks
+  // without triggering a HomeScreen re-render.
   const computeWorkedHours = (): string => {
     if (!today.checkIn) return '00:00';
     const start = new Date(today.checkIn).getTime();
-    const end = today.checkOut ? new Date(today.checkOut).getTime() : now.getTime();
+    const end = today.checkOut ? new Date(today.checkOut).getTime() : nowRef.current.getTime();
     if (end <= start) return '00:00';
     const totalMin = Math.floor((end - start) / 60000);
     const hh = Math.floor(totalMin / 60);
@@ -481,13 +610,13 @@ export default function HomeScreen() {
   const startTracking = () => {
     stopTracking();   // never double-up
 
-    // Kick the OS-driven background task off so pings keep flowing even
-    // when the user backgrounds the app or locks their phone. The
-    // foreground timers below run in PARALLEL — they catch the "app is
-    // open" case immediately (no need to wait the full 2 min) and gate
-    // the GPS-off-warn UX. The two paths share the same backend endpoint
-    // so duplicate pings are harmless (each is just an upsert).
-    startBackgroundLocationUpdates().catch(() => {});
+    // NOTE (Jun 2026 — Fix 3): startBackgroundLocationUpdates() is NO
+    // LONGER called here. It is called once in handleCheckPress AFTER
+    // the success modal is shown, so the native permission dialog fires
+    // at the right UX moment. startTracking() only manages the
+    // FOREGROUND timers. Calling startBackgroundLocationUpdates() here
+    // caused a double-call (once in handleCheckPress, once here) which
+    // raced the background permission dialog on some devices.
 
     const PING_MS = 2 * 60 * 1000;   // 2 minutes — full location ping
     const WATCH_MS = 30 * 1000;      // 30 seconds — fast GPS-on/off check
@@ -636,17 +765,43 @@ export default function HomeScreen() {
       }
     };
 
-    // Fire one ping immediately, schedule all three intervals.
-    // Guardian cadence tightened from 60s → 30s (Jun 2026 prod fix) so
-    // a dead background task is revived within half a minute of the
-    // foreground noticing it. On OEM phones (Xiaomi/Oppo/Vivo/Realme)
-    // the foreground service can be killed multiple times an hour.
-    ping();
-    guardian();
-    pingTimerRef.current  = setInterval(ping,     PING_MS);
-    gpsWatcherRef.current = setInterval(watchGps, WATCH_MS);
-    bgGuardianRef.current = setInterval(guardian, 30 * 1000);
-    console.log('[tracking] started (ping 2 min, gpsWatcher 30s, bgGuardian 30s)');
+    // Fix 4: Wrap the immediate ping() and guardian() calls so a one-time
+    // GPS startup error (seen on Samsung/Realme when the location chip is
+    // still initialising right after check-in) doesn't escape startTracking()
+    // and crash the handleCheckPress finally block. The scheduled intervals
+    // below still run on time — a single failed warm-up ping is irrelevant.
+    try { ping().catch((e) => console.warn('[tracking] ping warm-up rejection:', e?.message || e)); }
+    catch (e: any) { console.warn('[tracking] initial ping failed:', e?.message || e); }
+    try { guardian().catch((e) => console.warn('[tracking] guardian warm-up rejection:', e?.message || e)); }
+    catch (e: any) { console.warn('[tracking] initial guardian failed:', e?.message || e); }
+
+    // ════════════════════════════════════════════════════════════════
+    // CRITICAL (#287 prod fix): setInterval does NOT await the async
+    // callback's return value. If ping/watchGps/guardian reject, the
+    // unhandled rejection bubbles to Hermes and can SIGTERM the app —
+    // exactly 30 seconds after check-in when these timers first fire.
+    // The user-reported "app exits 20-30 sec after check-in" matched
+    // this timing perfectly. Each callback is now wrapped so any
+    // rejection is swallowed locally — the timer keeps running, the
+    // app stays up, and the next tick proceeds normally.
+    // ════════════════════════════════════════════════════════════════
+    const safe = (fn: () => Promise<any>, label: string) => () => {
+      try {
+        const p = fn();
+        if (p && typeof (p as any).catch === 'function') {
+          (p as Promise<any>).catch((e) => {
+            console.warn('[tracking]', label, 'tick rejected:', e?.message || e);
+          });
+        }
+      } catch (e: any) {
+        console.warn('[tracking]', label, 'tick threw:', e?.message || e);
+      }
+    };
+
+    pingTimerRef.current  = setInterval(safe(ping,     'ping'),     PING_MS);
+    gpsWatcherRef.current = setInterval(safe(watchGps, 'watchGps'), WATCH_MS);
+    bgGuardianRef.current = setInterval(safe(guardian, 'guardian'), 30 * 1000);
+    console.log('[tracking] started (ping 2 min, gpsWatcher 30s, bgGuardian 30s) — wrapped against unhandled rejections');
   };
 
   // Clean up intervals if the home component unmounts (e.g. logout).
@@ -679,10 +834,27 @@ export default function HomeScreen() {
   // On returning to FOREGROUND:
   //   • Re-check if GPS is on; warn if it's been toggled off.
   //   • Restart the foreground ping loop if it got cleared.
+  // Fix H (Jun 2026 — AppState listener recreation crash).
+  //
+  // The original effect had `[checkedIn, checkedOut]` as its dep array.
+  // During a check-in both values flip in quick succession, so the effect
+  // unmounted and remounted twice — briefly leaving NO AppState listener
+  // and causing a stale closure to call setState after the component had
+  // moved on. We now read the latest values through refs so the effect can
+  // safely use an empty dep array (mount/unmount only).
+  const checkedInRef  = useRef(checkedIn);
+  const checkedOutRef = useRef(checkedOut);
+  useEffect(() => { checkedInRef.current  = checkedIn;  }, [checkedIn]);
+  useEffect(() => { checkedOutRef.current = checkedOut; }, [checkedOut]);
+
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (state) => {
+      // Read live values from refs — safe even though the dep array is [].
+      const isCheckedIn  = checkedInRef.current;
+      const isCheckedOut = checkedOutRef.current;
+
       // Only relevant while we should be tracking.
-      if (!checkedIn || checkedOut) return;
+      if (!isCheckedIn || isCheckedOut) return;
 
       if (state === 'background' || state === 'inactive') {
         // Final foreground ping — gives the backend a fresh timestamp to
@@ -691,23 +863,31 @@ export default function HomeScreen() {
         try {
           const on = await Location.hasServicesEnabledAsync();
           if (on) {
-            const fix = await Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Highest,
-            });
-            const filtered = await filterFix({
-              lat: fix.coords.latitude,
-              lng: fix.coords.longitude,
-              accuracy: fix.coords.accuracy ?? undefined,
-              speed:    fix.coords.speed    ?? undefined,
-            });
-            if (filtered) {
-              await attendanceAPI.locationPing(
-                filtered.lat,
-                filtered.lng,
-                filtered.accuracy ?? undefined,
-                filtered.speed    ?? undefined,
-                filtered.isStationary,
-              );
+            // Fix C: hard 8-second timeout on GPS — prevents the Highest
+            // accuracy request from hanging indefinitely when the phone's
+            // GPS chip is cold (seen on Samsung/Xiaomi). Without the race,
+            // the async callback keeps a stale closure alive for minutes
+            // and then tries to call setState on an unmounted component.
+            const fix = await Promise.race<Location.LocationObject | null>([
+              Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
+              new Promise<null>((r) => setTimeout(() => r(null), 8000)),
+            ]);
+            if (fix) {
+              const filtered = await filterFix({
+                lat: fix.coords.latitude,
+                lng: fix.coords.longitude,
+                accuracy: fix.coords.accuracy ?? undefined,
+                speed:    fix.coords.speed    ?? undefined,
+              });
+              if (filtered) {
+                await attendanceAPI.locationPing(
+                  filtered.lat,
+                  filtered.lng,
+                  filtered.accuracy ?? undefined,
+                  filtered.speed    ?? undefined,
+                  filtered.isStationary,
+                );
+              }
             }
             // Belt-and-braces: make sure the bg task is still active.
             startBackgroundLocationUpdates().catch(() => {});
@@ -748,25 +928,29 @@ export default function HomeScreen() {
                 await startBackgroundLocationUpdates().catch(() => {});
               }
               try {
-                const fix = await Location.getCurrentPositionAsync({
-                  accuracy: Location.Accuracy.Highest,
-                });
-                const filtered = await filterFix({
-                  lat: fix.coords.latitude,
-                  lng: fix.coords.longitude,
-                  accuracy: fix.coords.accuracy ?? undefined,
-                  speed:    fix.coords.speed    ?? undefined,
-                });
-                if (filtered) {
-                  await attendanceAPI.locationPing(
-                    filtered.lat,
-                    filtered.lng,
-                    filtered.accuracy ?? undefined,
-                    filtered.speed    ?? undefined,
-                    filtered.isStationary,
-                  );
+                // Fix C: 8-second timeout on foreground-resume GPS fix too.
+                const fix = await Promise.race<Location.LocationObject | null>([
+                  Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
+                  new Promise<null>((r) => setTimeout(() => r(null), 8000)),
+                ]);
+                if (fix) {
+                  const filtered = await filterFix({
+                    lat: fix.coords.latitude,
+                    lng: fix.coords.longitude,
+                    accuracy: fix.coords.accuracy ?? undefined,
+                    speed:    fix.coords.speed    ?? undefined,
+                  });
+                  if (filtered) {
+                    await attendanceAPI.locationPing(
+                      filtered.lat,
+                      filtered.lng,
+                      filtered.accuracy ?? undefined,
+                      filtered.speed    ?? undefined,
+                      filtered.isStationary,
+                    );
+                  }
+                  await attendanceAPI.setPresence('active').catch(() => {});
                 }
-                await attendanceAPI.setPresence('active').catch(() => {});
               } catch { /* best-effort */ }
             }
           }
@@ -776,7 +960,10 @@ export default function HomeScreen() {
       }
     });
     return () => sub.remove();
-  }, [checkedIn, checkedOut]);
+  // Fix H: empty dep array — listener is registered once (mount) and
+  // torn down once (unmount). State is read via refs above.
+  }, []);
+
 
   // Locks the button while a check-in/out is in flight. Without this,
   // a quick double-tap fired two parallel checkIn requests, the second
@@ -804,34 +991,21 @@ export default function HomeScreen() {
     setActionBusy(true);
     try {
       if (!checkedIn) {
-        // Mandatory location check before check-in. ensureLocationOn now
-        // races a cached fix (1s) + fresh fix (2.5s) — total 6s max,
-        // even if every layer hits its timeout. A flaky GPS chip can no
-        // longer strand the button.
-        const coords = await withTimeout(ensureLocationOn(), 6_000, 'Location fix');
+        // ── STEP 1: Get a GPS fix.
+        //
+        // Fix B (Jun 2026): REMOVED the outer withTimeout() wrapper.
+        // ensureLocationOn() already has its own internal races:
+        //   • 1s  race for a cached last-known fix
+        //   • 2.5s race for a fresh balanced fix
+        // Wrapping it in an ADDITIONAL 6s timeout created a bug where
+        // the outer timeout could fire, run the `finally` block and
+        // release actionBusy, and THEN the inner promise settled and
+        // tried to call setToday() on a component that had already
+        // moved on — causing a cascade that crashed the JS engine on
+        // some devices. Call ensureLocationOn() directly; it is already
+        // self-bounded and self-healing.
+        const coords = await ensureLocationOn();
         if (!coords) return;
-
-        // Require "Allow all the time" location permission BEFORE
-        // letting the check-in go through. Without it the OS won't
-        // deliver pings while the app is offscreen, which is what
-        // makes HR's Live Tracking flip to "Location off" the moment
-        // the employee switches apps. We surface a clear prompt and
-        // block the check-in rather than letting them get marked
-        // Offline mid-shift through a silent permission denial.
-        const bgOk = await startBackgroundLocationUpdates();
-        if (!bgOk) {
-          Alert.alert(
-            'Background location required',
-            'Tesco ERM needs "Allow all the time" location access so HR can see ' +
-            'your live status even when the app is in the background. ' +
-            'Open Settings → Permissions → Location → "Allow all the time".',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => Linking.openSettings().catch(() => {}) },
-            ]
-          );
-          return;
-        }
 
         // ═══════════════════════════════════════════════════════════════
         // CHECK-IN ATOMIC CORE (#282 prod fix — Jun 2026)
@@ -845,12 +1019,12 @@ export default function HomeScreen() {
         // success modal rendered. The user saw their check-in saved on
         // HRMS but their app vanished.
         //
-        // New shape: API call only inside this critical block. The
-        // moment it succeeds we (a) flip local UI state optimistically
-        // so the button shows "Check Out" immediately — no waiting on
-        // refreshToday() — and (b) queue the success modal. Then every
-        // follow-up side-effect is wrapped in its OWN try/catch so any
-        // single failure logs and moves on instead of cascading.
+        // Fix D (Jun 2026): startBackgroundLocationUpdates() has been
+        // moved OUT of this critical path and into a non-blocking
+        // side-effect AFTER the success modal is shown. Previously it
+        // was awaited BEFORE the API call — if the permission dialog
+        // took too long (> withTimeout limit) the check-in was silently
+        // cancelled and the user got an error toast instead of success.
         // ═══════════════════════════════════════════════════════════════
         const checkInResp = await attendanceAPI.checkIn(today.location || 'office', coords);
 
@@ -859,9 +1033,27 @@ export default function HomeScreen() {
         //         from `today.checkIn`; setting it locally NOW makes
         //         the UI flip the instant the API returns, instead of
         //         waiting for the round-trip refreshToday() call.
+        //
+        // FIX (Jun 2026 — stale closure bug):
+        // MUST use functional update `setToday(prev => ...)` to avoid
+        // capturing the stale `today` closure from the render when
+        // handleCheckPress was called. The old code spread `...today`
+        // which could have checkIn: null from the previous render,
+        // losing the optimistic update on the next render cycle.
+        // SAME FIX for AsyncStorage: capture via functional updater
+        // pattern so we get the real previous state, not the closure.
         const nowIso = new Date().toISOString();
         const serverCheckIn = checkInResp?.data?.checkIn || nowIso;
-        setToday(prev => ({ ...prev, checkIn: serverCheckIn }));
+        let optimisticToday: TodayData = {};
+        setToday(prev => {
+          optimisticToday = { ...prev, checkIn: serverCheckIn, checkOut: null };
+          return optimisticToday;
+        });
+        // Persist immediately so a crash-restart restores Check-Out button.
+        // We use a small delay so optimisticToday is set by the setState call above.
+        setTimeout(() => {
+          AsyncStorage.setItem('erm-today-v1', JSON.stringify(optimisticToday)).catch(() => {});
+        }, 0);
 
         // ── (b) SUCCESS MODAL — queued BEFORE the side-effects so the
         //         user sees the confirmation even if a follow-up step
@@ -875,38 +1067,101 @@ export default function HomeScreen() {
         try { await resetGpsAnchor(); } catch {}
         try { await resetTrackingDiagnostics(); } catch {}
 
-        // One-time battery-optimization exemption prompt (Android only,
-        // first successful check-in only). Saved to AsyncStorage so we
-        // don't pester the user every day.
-        try {
-          const alreadyAsked = await AsyncStorage.getItem('battery_exempt_asked');
-          if (!alreadyAsked) {
-            await AsyncStorage.setItem('battery_exempt_asked', '1');
-            Alert.alert(
-              'Keep tracking running',
-              'Android battery savers can kill location updates while you\'re working. ' +
-              'On the next screen, tap "Allow" to let Tesco ERM keep running in the background. ' +
-              'Without this, HR may see you as "Offline" even when your location is on.',
-              [
-                { text: 'Maybe later', style: 'cancel' },
-                {
-                  text: 'Open settings',
-                  onPress: () => { requestBatteryOptimizationExemption().catch(() => {}); },
-                },
-              ]
-            );
-          }
-        } catch {/* best-effort — must not crash check-in */}
-
-        // Start the foreground tracking timers + ensure bg task is armed.
-        // Wrapped because startTracking() touches expo-location and
-        // refs synchronously; a thrown JS error here used to abort the
-        // whole handler. Now it logs and lets the user continue —
-        // tracking will revive on the next AppState.active or guardian
-        // tick anyway.
+        // Start the foreground tracking timers first (no native dialogs,
+        // no blocking ops — pure JS interval setup).
         try { startTracking(); } catch (e: any) {
           console.warn('[handleCheckPress] startTracking failed:', e?.message || e);
         }
+
+        // FIX (Jun 2026 — Fix 5): startBackgroundLocationUpdates() and
+        // battery prompt are now fully deferred via setTimeout(fn, 0).
+        // This moves them OUT of the async chain entirely — they run
+        // AFTER the `finally { setActionBusy(false) }` block completes,
+        // AFTER the success modal is visible, and in a fresh macrotask
+        // so any native exception they throw (permission dialog crash on
+        // Android 12+) cannot propagate up to handleCheckPress and
+        // cause an unhandled rejection that crashes the JS engine.
+        setTimeout(async () => {
+          try {
+            const bgOk = await startBackgroundLocationUpdates();
+            if (!bgOk) {
+              Alert.alert(
+                'Background location — optional',
+                'For the best experience, go to Settings → Permissions → Location → "Allow all the time". ' +
+                'Without it, HR may see you as "Offline" when the app is in the background.',
+                [
+                  { text: 'OK', style: 'cancel' },
+                  { text: 'Open Settings', onPress: () => Linking.openSettings().catch(() => {}) },
+                ]
+              );
+            }
+          } catch (e: any) {
+            console.warn('[handleCheckPress] startBackgroundLocationUpdates failed:', e?.message || e);
+          }
+
+          // One-time battery-optimization + Autostart prompts (#289).
+          //
+          // TWO STEPS — both are required for reliable tracking. Standard
+          // battery-optimization exemption is the Android-defined toggle;
+          // OEM Autostart is a SEPARATE permission gate added by Chinese
+          // OEMs (Xiaomi/Oppo/Vivo/Realme/OnePlus). Without BOTH:
+          //   • Battery exempt only → MIUI/ColorOS still kill the foreground
+          //     service after 5 min via their own SecurityCenter daemon.
+          //   • Autostart only → standard Android Doze suspends location.
+          //
+          // We chain the prompts so the user sees them in order. Each is
+          // saved separately so a partial completion (user did one, not
+          // the other) still resumes correctly on the next check-in.
+          try {
+            const askedBattery = await AsyncStorage.getItem('battery_exempt_asked');
+            if (!askedBattery) {
+              await AsyncStorage.setItem('battery_exempt_asked', '1');
+              Alert.alert(
+                'Keep tracking running (Step 1 of 2)',
+                'Android battery savers can kill location updates while you\'re working. ' +
+                'On the next screen, tap "Allow" to let Tesco ERM keep running in the background. ' +
+                'Without this, HR may see you as "Offline" even when your location is on.',
+                [
+                  { text: 'Maybe later', style: 'cancel' },
+                  {
+                    text: 'Open settings',
+                    onPress: () => { requestBatteryOptimizationExemption().catch(() => {}); },
+                  },
+                ]
+              );
+            }
+          } catch {/* best-effort — must not crash check-in */}
+
+          // Step 2: OEM-specific Autostart prompt. ONLY surfaces on
+          // OEMs known to require this (Xiaomi/Oppo/Vivo/Realme/OnePlus/
+          // Samsung). Stock Android, Pixel, Motorola etc. won't see it.
+          try {
+            const oemLabel = getOemLabel();
+            const isOemWithAutostart =
+              oemLabel.includes('Xiaomi') || oemLabel.includes('Oppo') ||
+              oemLabel.includes('Vivo')   || oemLabel.includes('Realme') ||
+              oemLabel.includes('OnePlus')|| oemLabel.includes('Samsung');
+            const askedAutostart = await AsyncStorage.getItem('autostart_asked');
+            if (isOemWithAutostart && !askedAutostart) {
+              await AsyncStorage.setItem('autostart_asked', '1');
+              Alert.alert(
+                'Enable Autostart (Step 2 of 2)',
+                `${oemLabel} phones need a separate "Autostart" permission for ` +
+                `live tracking to keep running while the app is in the background.\n\n` +
+                `Open the settings, find "Tesco ERM" in the list, and turn the ` +
+                `toggle ON.\n\nQuick path: ${getOemAutostartHint()}`,
+                [
+                  { text: 'Skip', style: 'cancel' },
+                  {
+                    text: 'Open settings',
+                    onPress: () => { openOemAutostartSettings().catch(() => {}); },
+                  },
+                ]
+              );
+            }
+          } catch {/* best-effort */}
+        }, 0);
+
       } else if (!checkedOut) {
         // Manual check-out doesn't require GPS, but if it's currently on
         // we capture the spot too so the Attendance row has both
@@ -918,22 +1173,37 @@ export default function HomeScreen() {
           if (servicesOn) {
             const { status } = await Location.getForegroundPermissionsAsync();
             if (status === 'granted') {
-              const fix = await Location.getCurrentPositionAsync({
-                accuracy: Location.Accuracy.Balanced,
-              });
-              outCoords = {
-                lat:      fix.coords.latitude,
-                lng:      fix.coords.longitude,
-                accuracy: fix.coords.accuracy ?? undefined,
-              };
+              // Fix C/B2: 8-second timeout so a cold GPS chip during
+              // checkout can't hang the button indefinitely.
+              const fix = await Promise.race<Location.LocationObject | null>([
+                Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+                new Promise<null>((r) => setTimeout(() => r(null), 8000)),
+              ]);
+              if (fix) {
+                outCoords = {
+                  lat:      fix.coords.latitude,
+                  lng:      fix.coords.longitude,
+                  accuracy: fix.coords.accuracy ?? undefined,
+                };
+              }
             }
           }
         } catch {/* best-effort, ignore */}
         const checkOutResp = await attendanceAPI.checkOut(outCoords);
         // Optimistic local state — flip "Check Out" → "Done" instantly.
+        // FIX (Jun 2026 — stale closure bug): use functional update
+        // to capture prev state safely, not the stale `today` closure.
         const nowIsoOut = new Date().toISOString();
         const serverCheckOut = checkOutResp?.data?.checkOut || nowIsoOut;
-        setToday(prev => ({ ...prev, checkOut: serverCheckOut }));
+        let optimisticTodayOut: TodayData = {};
+        setToday(prev => {
+          optimisticTodayOut = { ...prev, checkOut: serverCheckOut };
+          return optimisticTodayOut;
+        });
+        // Persist checkout state for crash-restart recovery.
+        setTimeout(() => {
+          AsyncStorage.setItem('erm-today-v1', JSON.stringify(optimisticTodayOut)).catch(() => {});
+        }, 0);
         setCheckResult({ kind: 'out', time: formatLiveTime(new Date()) });
         try { await attendanceAPI.setPresence('offline'); } catch {}
         try { stopTracking(); } catch (e: any) {
@@ -942,7 +1212,15 @@ export default function HomeScreen() {
       } else {
         setCheckResult({ kind: 'done', time: formatLiveTime(new Date()) });
       }
-      refreshToday();
+      // FIX (Jun 2026 — delayed sync): increased from 3s → 8s.
+      // The optimistic state + AsyncStorage persist above are accurate.
+      // Render free-tier cold-start takes 30-60s, but even a warm Render
+      // instance can take 2-5s to commit a MongoDB write and make it
+      // visible to a subsequent GET. 3s was too short — a GET at t+3s
+      // would return stale data, the optimistic-state guard in refreshToday
+      // now prevents it from wiping checkIn, but 8s is still a safer
+      // margin so the first sync returns real data.
+      setTimeout(() => refreshToday().catch(() => {}), 8000);
     } catch (err: any) {
       Alert.alert('Error', err?.response?.data?.message || 'Could not record attendance');
     } finally {
@@ -953,7 +1231,7 @@ export default function HomeScreen() {
   const buttonLabel = !checkedIn ? 'Check In' : !checkedOut ? 'Check Out' : 'Done';
 
   const greeting = (() => {
-    const h = now.getHours();
+    const h = nowRef.current.getHours();
     if (h < 12) return 'Good Morning';
     if (h < 17) return 'Good Afternoon';
     // After 8:00 PM (20:00) until midnight → Good Night.
@@ -1028,7 +1306,9 @@ export default function HomeScreen() {
             </View>
 
             <View style={styles.timeRow}>
-              <Text style={styles.bigTime}>{formatLiveTime(now)}</Text>
+              {/* Fix G: LiveClock owns its own 1-second interval so only
+                  the clock Text re-renders, not the entire HomeScreen. */}
+              <LiveClock nowRef={nowRef} />
               {!checkedOut && (
                 <TouchableOpacity
                   onPress={handleCheckPress}

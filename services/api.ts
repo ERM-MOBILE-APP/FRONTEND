@@ -12,15 +12,33 @@ export const BASE_URL = 'https://backend-9rtc.onrender.com/api';
  *
  * forceLogout is debounced so multiple parallel 401s don't fight each
  * other for the navigation stack.
+ *
+ * FIX (Jun 2026 — bug A+F):
+ *   router.replace() is now deferred into a setTimeout(0) so it NEVER
+ *   fires synchronously inside an Axios response interceptor — doing so
+ *   caused "cannot update a component while rendering a different
+ *   component" crashes on RN 0.81 / React 19.  The _navReady flag keeps
+ *   us from navigating before expo-router has mounted its navigator
+ *   (cold-start race that was silently crashing on background 401s).
  */
 let _logoutInFlight = false;
+let _navReady = false;
+/** Call once from RootLayout after the navigator has mounted. */
+export function markNavReady() { _navReady = true; }
+
 async function forceLogout(reason: string) {
   if (_logoutInFlight) return;
   _logoutInFlight = true;
   try {
     console.warn('[API] forcing logout —', reason);
     await AsyncStorage.multiRemove(['token', 'user', 'userId']).catch(() => {});
-    try { router.replace('/(auth)/login'); } catch { /* not mounted yet */ }
+    // Defer navigation so we never call router.replace() inside a
+    // render cycle or response-interceptor callback.
+    setTimeout(() => {
+      if (_navReady) {
+        try { router.replace('/(auth)/login' as any); } catch { /* ignore */ }
+      }
+    }, 0);
   } finally {
     setTimeout(() => { _logoutInFlight = false; }, 2000);
   }

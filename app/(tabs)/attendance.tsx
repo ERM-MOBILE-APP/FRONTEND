@@ -453,7 +453,7 @@ export default function AttendanceScreen() {
                 !isFuture &&
                 !isToday &&
                 cellDate.getDay() !== 0; // 0 = Sunday
-              if (isPastWeekday && (!status || status === '')) {
+              if (isPastWeekday && !status) {
                 status = 'absent';
               }
 
@@ -1263,45 +1263,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   submitBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
-
-  emptyBox: {
-    paddingVertical: 36,
-    alignItems: 'center',
-  },
-  emptyText: { fontSize: 13, color: '#999' },
-
-  /* MODAL */
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    paddingHorizontal: 22,
-    paddingTop: 22,
-    paddingBottom: 22,
-  },
-  modalTitle: { fontSize: 17, fontWeight: '800', color: '#111' },
-  modalSub: { fontSize: 12, color: '#777', marginTop: 4, marginBottom: 14 },
-  modalRow: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  modalRowText: { fontSize: 15, color: '#111' },
-
-  reasonInput: {
-    borderWidth: 1,
-    borderColor: '#E6EDE7',
-    borderRadius: 10,
-    padding: 12,
-    minHeight: 90,
-    fontSize: 14,
-    color: '#111',
-    textAlignVertical: 'top',
-    marginBottom: 14,
-  },
 });

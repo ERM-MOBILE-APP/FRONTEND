@@ -646,6 +646,149 @@ export async function requestBatteryOptimizationExemption(): Promise<void> {
   }
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * OEM AUTOSTART HELPER (#289 — Jun 2026 prod fix)
+ *
+ * Chinese OEMs (Xiaomi, Oppo, Vivo, Realme, OnePlus) layer a SECOND
+ * permission on top of Android's standard battery optimization: an
+ * "Autostart" / "Background Auto-launch" / "Background Activity"
+ * toggle. Without it ENABLED, no app — even with foreground service +
+ * battery-exempt — survives more than ~5 minutes in the background.
+ *
+ * Each OEM hides this toggle behind its own SecurityCenter activity.
+ * The intents below are the canonical entry points; we try them in
+ * order until one resolves. If none works (newer MIUI versions hide
+ * activity names), we fall back to opening the app's standard
+ * settings page so the user can navigate from there.
+ *
+ * Detection uses Application.android.brand which is set on every
+ * modern device. The brand string lower-cased makes "Xiaomi", "POCO",
+ * and "Redmi" all map to the same Xiaomi path.
+ * ──────────────────────────────────────────────────────────────────── */
+function detectOem(): 'xiaomi' | 'oppo' | 'vivo' | 'realme' | 'oneplus' | 'samsung' | 'other' {
+  if (Platform.OS !== 'android') return 'other';
+  // Platform.constants.Brand is populated on Android 7+
+  // @ts-ignore — type def doesn't include Brand
+  const brand = String((Platform.constants as any)?.Brand || (Platform.constants as any)?.Manufacturer || '').toLowerCase();
+  if (brand.includes('xiaomi') || brand.includes('redmi') || brand.includes('poco')) return 'xiaomi';
+  if (brand.includes('oppo')) return 'oppo';
+  if (brand.includes('vivo') || brand.includes('iqoo')) return 'vivo';
+  if (brand.includes('realme')) return 'realme';
+  if (brand.includes('oneplus')) return 'oneplus';
+  if (brand.includes('samsung')) return 'samsung';
+  return 'other';
+}
+
+/**
+ * Try to open the OEM's Autostart / Background Activity page. Returns
+ * true if an intent fired (settings page opened), false if we fell back
+ * to generic app settings. UI should follow up with on-screen
+ * instructions in case the intent landed on the wrong page.
+ */
+export async function openOemAutostartSettings(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  const IntentLauncher = await import('expo-intent-launcher').catch(() => null);
+  if (!IntentLauncher) return false;
+
+  const oem = detectOem();
+  const PKG = 'com.tescodigitals26.tescoerm';
+
+  // Each OEM's autostart manager activity. Try each candidate in order;
+  // the first one that resolves wins.
+  const candidates: Array<{ action?: string; component?: { packageName: string; className: string } }> = [];
+
+  switch (oem) {
+    case 'xiaomi':
+      candidates.push({ component: { packageName: 'com.miui.securitycenter', className: 'com.miui.permcenter.autostart.AutoStartManagementActivity' } });
+      candidates.push({ component: { packageName: 'com.miui.securitycenter', className: 'com.miui.appmanager.ApplicationsDetailsActivity' } });
+      break;
+    case 'oppo':
+      candidates.push({ component: { packageName: 'com.coloros.safecenter', className: 'com.coloros.safecenter.permission.startup.StartupAppListActivity' } });
+      candidates.push({ component: { packageName: 'com.coloros.safecenter', className: 'com.coloros.safecenter.startupapp.StartupAppListActivity' } });
+      candidates.push({ component: { packageName: 'com.oppo.safe',          className: 'com.oppo.safe.permission.startup.StartupAppListActivity' } });
+      break;
+    case 'vivo':
+      candidates.push({ component: { packageName: 'com.iqoo.secure',  className: 'com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity' } });
+      candidates.push({ component: { packageName: 'com.iqoo.secure',  className: 'com.iqoo.secure.ui.phoneoptimize.BgStartUpManager' } });
+      candidates.push({ component: { packageName: 'com.vivo.permissionmanager', className: 'com.vivo.permissionmanager.activity.BgStartUpManagerActivity' } });
+      break;
+    case 'realme':
+      candidates.push({ component: { packageName: 'com.coloros.safecenter', className: 'com.coloros.safecenter.permission.startup.StartupAppListActivity' } });
+      candidates.push({ component: { packageName: 'com.coloros.safecenter', className: 'com.coloros.safecenter.startupapp.StartupAppListActivity' } });
+      break;
+    case 'oneplus':
+      candidates.push({ component: { packageName: 'com.oneplus.security', className: 'com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity' } });
+      break;
+    case 'samsung':
+      // Samsung uses a generic battery-usage page; opening it lets the user
+      // toggle "Allow background activity" + "Unrestricted battery usage".
+      candidates.push({ component: { packageName: 'com.samsung.android.lool', className: 'com.samsung.android.sm.ui.battery.BatteryActivity' } });
+      break;
+  }
+
+  // Fallback for all OEMs — generic app-info page where the user can
+  // dig into Battery / Permissions themselves.
+  candidates.push({ action: 'android.settings.APPLICATION_DETAILS_SETTINGS' });
+
+  for (const c of candidates) {
+    try {
+      if (c.component) {
+        await IntentLauncher.startActivityAsync(c.action || 'android.intent.action.MAIN', {
+          // @ts-ignore — extra is supported
+          extra: undefined,
+          // @ts-ignore — component is supported but not in type defs
+          packageName: c.component.packageName,
+          // @ts-ignore
+          className:   c.component.className,
+        });
+        return true;
+      }
+      if (c.action) {
+        await IntentLauncher.startActivityAsync(c.action, { data: 'package:' + PKG });
+        return true;
+      }
+    } catch {
+      // Intent didn't resolve on this device — try next candidate.
+      continue;
+    }
+  }
+  return false;
+}
+
+/** Returns the human-readable name for the OEM, for use in alert text. */
+export function getOemLabel(): string {
+  const m: Record<ReturnType<typeof detectOem>, string> = {
+    xiaomi: 'Xiaomi / Redmi / POCO',
+    oppo:    'Oppo',
+    vivo:    'Vivo / iQOO',
+    realme:  'Realme',
+    oneplus: 'OnePlus',
+    samsung: 'Samsung',
+    other:   'your phone',
+  };
+  return m[detectOem()];
+}
+
+/** Returns a short OEM-specific instruction the user can follow. */
+export function getOemAutostartHint(): string {
+  switch (detectOem()) {
+    case 'xiaomi':
+      return 'Security app → Permissions → Autostart → enable Tesco ERM. Also: Settings → Apps → Tesco ERM → Battery saver → No restrictions.';
+    case 'oppo':
+      return 'Settings → Battery → App Battery Management → Tesco ERM → enable "Allow background activity" + disable "Sleep" + "Deep sleep".';
+    case 'vivo':
+      return 'Settings → Battery → Background power consumption management → Tesco ERM → Allow. Also: i-Manager → App Manager → Autostart → enable Tesco ERM.';
+    case 'realme':
+      return 'Settings → Battery → App Battery Management → Tesco ERM → enable "Allow background activity" + disable "Deep sleep".';
+    case 'oneplus':
+      return 'Settings → Battery → Battery optimization → Tesco ERM → Don\'t optimize. Also: Advanced → Recent apps management → Normal.';
+    case 'samsung':
+      return 'Settings → Battery → Battery usage → Tesco ERM → enable "Allow background activity" and choose "Unrestricted".';
+    default:
+      return 'Open phone Settings → Apps → Tesco ERM → enable Autostart / Background Activity / Battery: Unrestricted.';
+  }
+}
+
 /** Stop the background task. Call on check-out / logout. Idempotent. */
 export async function stopBackgroundLocationUpdates(reason: string = 'manual'): Promise<void> {
   try {
