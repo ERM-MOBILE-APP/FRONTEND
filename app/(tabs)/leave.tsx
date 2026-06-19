@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
 import { leaveAPI } from '../../services/api';
 import SuccessModal from '../../components/SuccessModal';
+import SubmitLoader from '../../components/SubmitLoader';
 
 
 // confirmAsync — promise-based wrapper around Alert.alert so we can
@@ -83,6 +84,13 @@ const MONTHS_LONG = [
 function generateTimeOptions(
   dateIso: string,
   picker: 'start' | 'end',
+  // #317 — When the user opens the END time picker, we need to floor the
+  // options at the already-chosen START time + 30 min. Without this the
+  // list showed the same 10:00 AM – 7:00 PM slots for both pickers, so
+  // an employee could pick Start = 12:30 PM, End = 10:00 AM and end up
+  // stuck on a perpetually-disabled Submit button with no explanation
+  // for why.
+  startTime?: string,
 ): string[] {
   const fmt = (h: number, m: number) =>
     `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
@@ -99,6 +107,7 @@ function generateTimeOptions(
 
   // Start-of-day floor:
   //   • today + start picker  → live time rounded UP to next half-hour
+  //   • end picker + start chosen → start + 30 min (strictly later)
   //   • otherwise              → 10:00 AM
   let startHour: number;
   let startMin: number;
@@ -109,6 +118,17 @@ function generateTimeOptions(
     if (m === 0)      m = 0;
     else if (m <= 30) m = 30;
     else { m = 0; h += 1; }
+    startHour = h;
+    startMin  = m;
+  } else if (picker === 'end' && startTime && /^\d{2}:\d{2}$/.test(startTime)) {
+    // End must be strictly after start. Add 30 minutes to the start so
+    // the minimum permission duration is 30 minutes — anything shorter
+    // is unrealistic for office permission and was the source of the
+    // bug in the screenshot.
+    const [sh, sm] = startTime.split(':').map(Number);
+    let h = sh;
+    let m = sm + 30;
+    if (m >= 60) { m -= 60; h += 1; }
     startHour = h;
     startMin  = m;
   } else {
@@ -143,6 +163,27 @@ export default function LeaveScreen() {
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
   const [permReason, setPermReason] = useState('');
+
+  // #305 — derived form-valid flags. Submit button stays disabled (grey)
+  // until every mandatory field is filled with sensible content; the
+  // instant the last field becomes valid the button flips to active
+  // green. Clearing any field flips straight back to grey/disabled.
+  const isLeaveFormValid = !!(
+    leaveType &&
+    startDate &&
+    endDate &&
+    reason.trim().length >= 3 &&
+    endDate >= startDate
+  );
+  const isPermissionFormValid = !!(
+    permissionType &&
+    permDate &&
+    startTime &&
+    endTime &&
+    permReason.trim().length >= 3 &&
+    endTime > startTime
+  );
+
 
   // UI state
   const [submitting, setSubmitting] = useState(false);
@@ -403,8 +444,23 @@ export default function LeaveScreen() {
   };
 
   const setSelectedTime = (t: string) => {
-    if (timePickerFor === 'start') setStartTime(t);
-    else if (timePickerFor === 'end') setEndTime(t);
+    if (timePickerFor === 'start') {
+      setStartTime(t);
+      // #317 — If a previously-chosen end time is now <= new start time,
+      // clear it. Otherwise the form would silently sit in an invalid
+      // state with Submit greyed out forever and no hint to the user
+      // that the end time is the problem.
+      if (endTime && endTime <= t) {
+        setEndTime('');
+      }
+    } else if (timePickerFor === 'end') {
+      // Belt-and-braces: if for any reason the end picker emitted a slot
+      // <= start (shouldn't happen now that the generator filters them),
+      // ignore the click rather than store an invalid pair.
+      if (!startTime || t > startTime) {
+        setEndTime(t);
+      }
+    }
     setTimePickerFor(null);
   };
 
@@ -513,9 +569,13 @@ export default function LeaveScreen() {
             />
 
             <TouchableOpacity
-              style={[styles.submitBtn, submitting && { opacity: 0.85 }]}
+              style={[
+                styles.submitBtn,
+                { backgroundColor: (submitting || !isLeaveFormValid) ? '#94A3B8' : '#16A34A' },
+                (submitting || !isLeaveFormValid) && { opacity: 0.7 },
+              ]}
               onPress={submitLeave}
-              disabled={submitting}
+              disabled={submitting || !isLeaveFormValid}
               activeOpacity={0.85}
             >
               {submitting ? (
@@ -595,9 +655,13 @@ export default function LeaveScreen() {
             />
 
             <TouchableOpacity
-              style={[styles.submitBtn, submitting && { opacity: 0.85 }]}
+              style={[
+                styles.submitBtn,
+                { backgroundColor: (submitting || !isPermissionFormValid) ? '#94A3B8' : '#16A34A' },
+                (submitting || !isPermissionFormValid) && { opacity: 0.7 },
+              ]}
               onPress={submitPermission}
-              disabled={submitting}
+              disabled={submitting || !isPermissionFormValid}
               activeOpacity={0.85}
             >
               {submitting ? (
@@ -758,7 +822,13 @@ export default function LeaveScreen() {
               Select {timePickerFor === 'start' ? 'Start Time' : 'End Time'}
             </Text>
             <ScrollView style={{ maxHeight: 350 }}>
-              {generateTimeOptions(permDate, timePickerFor === 'start' ? 'start' : 'end').map((t) => (
+              {generateTimeOptions(
+                permDate,
+                timePickerFor === 'start' ? 'start' : 'end',
+                // #317 — When the END picker is open, pass the chosen
+                // start time so the generated slots floor at start+30m.
+                timePickerFor === 'end' ? startTime : undefined,
+              ).map((t) => (
                 <TouchableOpacity
                   key={t}
                   style={styles.modalRow}
@@ -850,6 +920,16 @@ export default function LeaveScreen() {
         body={success?.body || ''}
         ctaLabel="Done"
         onClose={() => setSuccess(null)}
+      />
+
+      {/* Premium center-screen loader during request submission (#298).
+          Driven by the same `submitting` boolean that already disables
+          the submit button. Stays visible from tap → server response so
+          users on a slow connection never wonder if their tap landed. */}
+      <SubmitLoader
+        visible={submitting}
+        label={tab === 'permission' ? 'Submitting permission' : 'Submitting leave request'}
+        sub="Hang tight — confirming with your manager and HR…"
       />
     </SafeAreaView>
   );

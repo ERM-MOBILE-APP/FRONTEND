@@ -44,12 +44,27 @@ type Announcement = {
   _id: string;
   title: string;
   body: string;
+  // Some HRMS-posted rows have only `description` (the HRMS UI's field
+  // name). We accept it as an alias so older announcements still show
+  // their content on mobile. See bodyOf() below.
+  description?: string;
+  content?: string;
   category?: Category;
   postedBy?: string;
   createdAt?: string;
   isRead?: boolean;
   attachments?: Attachment[];
 };
+
+/** Read the body text from whichever field the server populated. */
+function bodyOf(a: Announcement): string {
+  // Prefer `body` (the canonical mobile field) but accept `description`
+  // / `content` because HRMS posts have historically used either name.
+  // Without this fallback, an announcement created by HRMS before the
+  // backend mirrored its `description` into `body` showed a blank card
+  // body on mobile — the user saw the title but no content.
+  return String(a?.body ?? a?.description ?? a?.content ?? '').trim();
+}
 
 const CATEGORY_EDGE: Record<Category, string> = {
   holiday: '#FF8A65',
@@ -190,8 +205,15 @@ export default function AnnouncementScreen() {
                   },
                 ]}
               >
-                <Text style={styles.cardTitle} numberOfLines={1}>{a.title}</Text>
-                <Text style={styles.cardBody} numberOfLines={2}>{a.body}</Text>
+                {/* Title: allow up to 3 lines so HR can read long subjects
+                    fully. Previously fixed at numberOfLines={1} which cut
+                    "ERM is live from today. Please make use of it. If y…"
+                    mid-sentence. Body still truncates at 2 lines, with
+                    the full text available on tap (planned). */}
+                <Text style={styles.cardTitle} numberOfLines={3}>{a.title}</Text>
+                {!!bodyOf(a) && (
+                  <Text style={styles.cardBody} numberOfLines={3}>{bodyOf(a)}</Text>
+                )}
 
                 {/* Attachments — images preview inline plus a "View
                     document" chip. Non-image files surface as a row
@@ -242,7 +264,10 @@ export default function AnnouncementScreen() {
 
                 <View style={styles.metaRow}>
                   <Text style={styles.metaText}>
-                    Posted by {a.postedBy || 'HR'}
+                    {/* #316 — Hardcoded "HR" regardless of postedBy.
+                        HR's account is named "tescostructures" in the
+                        DB and we don't want that leaking into the UI. */}
+                    Posted by HR
                   </Text>
                   <View style={styles.metaDot} />
                   <Text style={styles.metaText}>

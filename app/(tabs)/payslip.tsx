@@ -16,6 +16,7 @@ import { Ionicons, Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect } from 'expo-router';
 import { payslipAPI, profileAPI } from '../../services/api';
+import SubmitLoader from '../../components/SubmitLoader';
 
 
 // confirmAsync — promise-based wrapper around Alert.alert so we can
@@ -155,10 +156,20 @@ export default function PayslipScreen() {
     isAlreadyRequested(reqMonth, reqYear);
 
   useEffect(() => {
+    // #299 — cancelled flag. Without this, if the user navigates AWAY
+    // from Payslip before profileAPI.getProfile() resolves (a 30 s cold-
+    // start on Render), the .then() block still calls setUser on an
+    // unmounted component. React logs a warning; on Android 9/10 we've
+    // also seen this race with the next mount's state set and crash the
+    // bridge. The cancelled flag short-circuits the resolution path.
+    let cancelled = false;
+
     // Seed from cache so the month picker has SOMETHING immediately.
     AsyncStorage.getItem('user').then((u) => {
+      if (cancelled) return;
       if (u) { try { setUser(JSON.parse(u)); } catch {} }
-    });
+    }).catch(() => {});
+
     // Then refresh from the server. The login response used to omit
     // joiningDate, so users who logged in before the Jun 2026 fix have
     // a cached `user` object with no joiningDate — which made the
@@ -167,6 +178,7 @@ export default function PayslipScreen() {
     // the fresh profile here corrects that on the next app open.
     profileAPI.getProfile()
       .then((res) => {
+        if (cancelled) return;
         const fresh = res?.data;
         if (!fresh) return;
         setUser(fresh);
@@ -174,6 +186,8 @@ export default function PayslipScreen() {
         AsyncStorage.setItem('user', JSON.stringify(fresh)).catch(() => {});
       })
       .catch(() => { /* keep the cached value on network error */ });
+
+    return () => { cancelled = true; };
   }, []);
 
   const fetchHistory = useCallback(async (year = selectedYear) => {
@@ -476,8 +490,16 @@ export default function PayslipScreen() {
               </Text>
             )}
 
+            {/* #305 — payslip button stays grey until ALL the
+                existing validity guards pass (not requesting, month
+                not future, month not before joining, not already
+                requested). Flips to active green the instant they do. */}
             <TouchableOpacity
-              style={[styles.submitReqBtn, submitDisabled && { opacity: 0.6 }]}
+              style={[
+                styles.submitReqBtn,
+                { backgroundColor: submitDisabled ? '#94A3B8' : '#16A34A' },
+                submitDisabled && { opacity: 0.7 },
+              ]}
               onPress={submitRequest}
               disabled={submitDisabled}
             >
@@ -527,6 +549,17 @@ export default function PayslipScreen() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* Premium center-screen loader during payslip request (#298).
+          Same `requesting` boolean already disables the Request button
+          in the modal — adding this overlay so the action is visible
+          across the whole screen, not just inside the (already-covered)
+          modal. Stays on until the API call resolves. */}
+      <SubmitLoader
+        visible={requesting}
+        label="Submitting payslip request"
+        sub="Asking HR to generate your slip…"
+      />
     </View>
   );
 }
@@ -689,22 +722,66 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 
-  /* ─── Submit / Request button (request modal) ─────────────────────
-     Was missing earlier — JSX referenced these style names but the
-     StyleSheet didn't declare them, so the button rendered with no
-     background/padding and HR reported "no Request button visible". */
+  /* ─── Submit / Request button (request modal) ──────────────────── */
   submitReqBtn: {
-    marginTop: 18,
     backgroundColor: GREEN,
-    borderRadius: 10,
+    borderRadius: 26,
     paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 10,
   },
   submitReqBtnText: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  /* ─── Year picker (header chip) ─────────────────────────────────── */
+  yearPicker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: '#F5F5F5',
+  },
+  yearPickerText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1A1A1A',
+    marginRight: 4,
+  },
+  /* ─── Year picker modal ────────────────────────────────────────── */
+  yearModal: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    paddingTop: 20,
+    paddingHorizontal: 22,
+    paddingBottom: 28,
+    width: '100%',
+    position: 'absolute',
+    bottom: 0,
+  },
+  yearModalTitle: {
+    fontSize: 16,
     fontWeight: '800',
-    letterSpacing: 0.3,
+    color: '#1A1A1A',
+    marginBottom: 14,
+  },
+  yearOption: {
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    backgroundColor: '#FAFAFA',
+    marginBottom: 8,
+  },
+  yearOptionActive: {
+    backgroundColor: '#E8F5E9',
+  },
+  yearOptionText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1A1A1A',
   },
 });

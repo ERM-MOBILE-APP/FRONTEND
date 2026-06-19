@@ -87,7 +87,20 @@ function PremiumLoader({ variant }: { variant: 'in' | 'out' }) {
       Animated.timing(dotsRef, { toValue: 3, duration: 1350, easing: Easing.linear, useNativeDriver: false })
     );
     rotate.start(); pulse.start(); dots.start();
-    return () => { rotate.stop(); pulse.stop(); dots.stop(); rotateRef.setValue(0); pulseRef.setValue(0); dotsRef.setValue(0); };
+    return () => {
+      // #311 — Guard cleanup. On Android 9/10 the native Animated view
+      // can be torn down before this cleanup runs (rapid mount/unmount
+      // during the check-in modal swap). Calls to .stop() or
+      // .setValue(0) on a gone view throw a no-such-tag error that
+      // propagates to ErrorUtils and SIGTERMs the app. Each call now
+      // self-catches so the crash chain stops here.
+      try { rotate.stop();  } catch { /* native view gone — non-fatal */ }
+      try { pulse.stop();   } catch { /* same */ }
+      try { dots.stop();    } catch { /* same */ }
+      try { rotateRef.setValue(0); } catch { /* same */ }
+      try { pulseRef.setValue(0);  } catch { /* same */ }
+      try { dotsRef.setValue(0);   } catch { /* same */ }
+    };
   }, []);
 
   const isIn = variant === 'in';
@@ -179,6 +192,59 @@ const LiveClock = memo(function LiveClock({
     String(seconds).padStart(2, '0') + ' ' + ampm;
 
   return <Text style={styles.bigTime}>{timeStr}</Text>;
+});
+
+/* ───────────────────────────────────────────────────────────────────────
+ * LiveWorkedHours — Fix #316.
+ *
+ * Sibling of <LiveClock>. Owns its own 1-second tick so the "Working HR's"
+ * counter advances in real time. Before this fix the value was computed
+ * inside HomeScreen.render() via computeWorkedHours(), but Fix G isolated
+ * the clock into <LiveClock> so HomeScreen no longer re-renders every
+ * second — meaning the worked-hours value froze at whatever it was on
+ * the last data-driven re-render (a poll cycle, an announcement refresh,
+ * etc.). Vivek's screenshot showed 00:07 at 5:44 PM with a 5:25 PM
+ * check-in — a 12-minute drift.
+ *
+ * This component re-renders ONLY itself every second, mirroring the
+ * LiveClock pattern. No HomeScreen-wide re-renders, no flicker.
+ * ─────────────────────────────────────────────────────────────────── */
+const LiveWorkedHours = memo(function LiveWorkedHours({
+  checkIn,
+  checkOut,
+}: {
+  checkIn?: string | null;
+  checkOut?: string | null;
+}) {
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    // If the employee hasn't checked in yet or has already checked out,
+    // the value is static — no need to burn a 1Hz interval.
+    if (!checkIn || checkOut) return;
+    const t = setInterval(() => setTick((x) => (x + 1) % 1_000_000), 1000);
+    return () => clearInterval(t);
+  }, [checkIn, checkOut]);
+
+  const value = (() => {
+    if (!checkIn) return '00:00';
+    const start = new Date(checkIn).getTime();
+    const end = checkOut ? new Date(checkOut).getTime() : Date.now();
+    if (!Number.isFinite(start) || end <= start) return '00:00';
+    const totalMin = Math.floor((end - start) / 60000);
+    const hh = Math.floor(totalMin / 60);
+    const mm = totalMin % 60;
+    return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  })();
+
+  return (
+    <StatItem
+      icon={<Feather name="activity" size={20} color="#6A1B9A" />}
+      value={value}
+      label="Working HR's"
+      color="#6A1B9A"
+    />
+  );
 });
 
 export default function HomeScreen() {
@@ -374,15 +440,20 @@ export default function HomeScreen() {
     return () => sub?.remove?.();
   }, []);
 
-  // Fix J: batch focus re-poll — both data refreshes fire together so
-  // the tab-switch produces ONE re-render instead of two sequential ones.
+  // Fix J: batch focus re-poll — all data refreshes fire together so
+  // the tab-switch produces ONE re-render instead of three sequential ones.
+  // #296: announcements were NOT being refreshed on focus, so a new HRMS
+  // post wouldn't appear on the home until the user fully restarted the
+  // app. Adding refreshAnnouncements() here makes the dashboard widget
+  // pick up new HR posts as soon as the user returns to the Home tab.
   useFocusEffect(
     useCallback(() => {
       Promise.all([
         refreshUnread(),
         refreshToday(),
+        refreshAnnouncements(),
       ]).catch(() => {});
-    }, [refreshUnread, refreshToday])
+    }, [refreshUnread, refreshToday, refreshAnnouncements])
   );
 
   // formatLiveTime is still used inside check-in/out result modal
@@ -408,7 +479,10 @@ export default function HomeScreen() {
       const d = new Date(iso);
       const hours = d.getHours();
       const minutes = d.getMinutes();
-      const ampm = hours >= 12 ? 'Pm' : 'Am';
+      // #306 — uppercase AM/PM to match the rest of the app (the live
+      // clock above already uses uppercase, so the check-in / check-out
+      // times next to it shouldn't read "08:30 Pm" / "09:15 Am").
+      const ampm = hours >= 12 ? 'PM' : 'AM';
       const h = hours % 12 === 0 ? 12 : hours % 12;
       return String(h).padStart(2, '0') + ':' + String(minutes).padStart(2, '0') + ' ' + ampm;
     } catch {
@@ -494,22 +568,28 @@ export default function HomeScreen() {
         );
         return null;
       }
-      // FAST PATH (Jun 2026 — speed-up #276):
-      // Old code awaited getCurrentPositionAsync with no timeout, which
-      // could hang 5-15 s while the GPS chip got a fresh fix — the
-      // single biggest cause of "check-in takes forever". New strategy:
-      //   1. Race a CACHED last-known fix (instant) against a 1-s deadline.
-      //   2. If still nothing, race a FRESH high-accuracy fix against
-      //      a 2.5-s deadline.
+      // FAST PATH (Jun 2026 — speed-up #276, tightened #310 for accuracy).
+      // Strategy: prefer a HIGH-quality fresh GPS fix; only fall back to
+      // a cached fix if it's both very recent AND already at GPS-grade
+      // accuracy. The previous version accepted a 60-second-old fix at
+      // 100-metre accuracy — that's why HR saw check-in markers up to
+      // 100 m away from the employee's actual location.
+      //
+      // New ordering:
+      //   1. CACHED fix — only if ≤ 20 s old AND ≤ 30 m accuracy.
+      //   2. FRESH fix — Location.Accuracy.Highest (pure GPS), 4-s deadline.
+      //      Highest gives ~5-15 m accuracy outdoors vs Balanced's
+      //      ~50-100 m. The slight extra latency (1.5 s) is well worth
+      //      the precision for the office-radius geofence to work.
       //   3. If both fail, submit check-in WITHOUT coords — the backend
       //      will record office attendance using the employee's profile
       //      default. Better to let the user clock in than make them
       //      stare at a spinner.
       const fastFix = await Promise.race<Location.LocationObject | null>([
-        Location.getLastKnownPositionAsync({ maxAge: 60 * 1000, requiredAccuracy: 100 }).catch(() => null),
-        new Promise<null>((r) => setTimeout(() => r(null), 1000)),
+        Location.getLastKnownPositionAsync({ maxAge: 20 * 1000, requiredAccuracy: 30 }).catch(() => null),
+        new Promise<null>((r) => setTimeout(() => r(null), 600)),
       ]);
-      if (fastFix) {
+      if (fastFix && typeof fastFix.coords.accuracy === 'number' && fastFix.coords.accuracy <= 30) {
         return {
           lat: fastFix.coords.latitude,
           lng: fastFix.coords.longitude,
@@ -517,8 +597,8 @@ export default function HomeScreen() {
         };
       }
       const fresh = await Promise.race<Location.LocationObject | null>([
-        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-        new Promise<null>((r) => setTimeout(() => r(null), 2500)),
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
+        new Promise<null>((r) => setTimeout(() => r(null), 4000)),
       ]);
       if (fresh) {
         return {
@@ -800,7 +880,14 @@ export default function HomeScreen() {
 
     pingTimerRef.current  = setInterval(safe(ping,     'ping'),     PING_MS);
     gpsWatcherRef.current = setInterval(safe(watchGps, 'watchGps'), WATCH_MS);
-    bgGuardianRef.current = setInterval(safe(guardian, 'guardian'), 30 * 1000);
+    // #315 — Cadence tightened 30 → 15 s. The guardian's only job is to
+    // detect "bg task died" and re-arm it. With Android OEM battery
+    // savers (MIUI/ColorOS/RealmeUI/etc.) able to SIGKILL the
+    // foreground service at any moment, halving the detection window
+    // halves the worst-case "tracking off" gap a user can experience
+    // — 30 s instead of 60 s — at a negligible battery cost since the
+    // body is mostly a 1-call hasStartedLocationUpdatesAsync().
+    bgGuardianRef.current = setInterval(safe(guardian, 'guardian'), 15 * 1000);
     console.log('[tracking] started (ping 2 min, gpsWatcher 30s, bgGuardian 30s) — wrapped against unhandled rejections');
   };
 
@@ -847,8 +934,25 @@ export default function HomeScreen() {
   useEffect(() => { checkedInRef.current  = checkedIn;  }, [checkedIn]);
   useEffect(() => { checkedOutRef.current = checkedOut; }, [checkedOut]);
 
+  // #299 — mounted ref. The AppState callback below is async and can
+  // resolve LONG after the HomeScreen has unmounted (e.g. user logged
+  // out while a Location.getCurrentPositionAsync race was still pending
+  // its 8 s timeout). Without this gate the callback's final setState /
+  // attendanceAPI.setPresence calls happen against a torn-down component,
+  // and Hermes on Android 9/10 has been observed to SIGTERM the bridge.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (state) => {
+      // #299 — bail immediately if the component has been unmounted in
+      // the interval between the AppState event firing and this async
+      // callback being scheduled by the JS runtime.
+      if (!mountedRef.current) return;
+
       // Read live values from refs — safe even though the dep array is [].
       const isCheckedIn  = checkedInRef.current;
       const isCheckedOut = checkedOutRef.current;
@@ -915,18 +1019,20 @@ export default function HomeScreen() {
             if (!pingTimerRef.current) {
               startTracking();
             } else {
-              // Aggressive revival on every foreground resume — if the
-              // OS killed the bg task while we were offscreen, this is
-              // the most reliable moment to detect + restart it. Uses
-              // reviveBackgroundLocationUpdates so a zombie task that
-              // hasStartedLocationUpdatesAsync still reports as running
-              // gets stopped and restarted cleanly.
-              const stale = await isHeartbeatStale();
-              if (stale) {
-                await reviveBackgroundLocationUpdates('AppState→active: heartbeat stale').catch(() => {});
-              } else {
-                await startBackgroundLocationUpdates().catch(() => {});
-              }
+              // #315 — ALWAYS revive on foreground resume, don't gate on
+              // heartbeat staleness. Previously we'd only fully tear-down
+              // and restart when isHeartbeatStale() returned true, which
+              // missed the case where the OS killed the foreground
+              // service silently but Location.hasStartedLocationUpdatesAsync
+              // still reported it as running (the "zombie task" pattern).
+              // reviveBackgroundLocationUpdates() is idempotent — if the
+              // task is genuinely alive, the stop is a no-op and the start
+              // is also a no-op (expo-location's internal check). If it's
+              // a zombie, this clean stops + restarts it. Net cost: one
+              // extra round-trip to the native module on each foreground
+              // resume — negligible vs. the cost of a user discovering
+              // mid-shift that tracking died hours ago.
+              await reviveBackgroundLocationUpdates('AppState→active: unconditional re-arm').catch(() => {});
               try {
                 // Fix C: 8-second timeout on foreground-resume GPS fix too.
                 const fix = await Promise.race<Location.LocationObject | null>([
@@ -1055,10 +1161,23 @@ export default function HomeScreen() {
           AsyncStorage.setItem('erm-today-v1', JSON.stringify(optimisticToday)).catch(() => {});
         }, 0);
 
-        // ── (b) SUCCESS MODAL — queued BEFORE the side-effects so the
-        //         user sees the confirmation even if a follow-up step
-        //         throws or the OS decides to terminate the process.
-        setCheckResult({ kind: 'in', time: formatLiveTime(new Date()) });
+        // ── (b) SUCCESS MODAL — fired AFTER the loader has had a frame
+        //         to fade out (#299). Two transparent <Modal> components
+        //         with animationType="fade" visible in the SAME render
+        //         tick trigger an Android WindowManager z-order race on
+        //         Android 9/10 that can SIGTERM the native bridge; the
+        //         user sees the app vanish 200-400 ms after a successful
+        //         check-in. Deferring this until the next macrotask lets
+        //         the PremiumLoader's fade-out complete first.
+        //
+        //         Capture the time NOW (not inside the setTimeout) so the
+        //         displayed time is the actual moment the user tapped,
+        //         not 60 ms later.
+        const checkInTime = formatLiveTime(new Date());
+        setTimeout(() => {
+          try { setCheckResult({ kind: 'in', time: checkInTime }); }
+          catch (e: any) { console.warn('[handleCheckPress] setCheckResult failed:', e?.message || e); }
+        }, 60);
 
         // ── (c) SIDE-EFFECTS — each in its own guard. None of these
         //         can prevent the success modal from showing or stop
@@ -1081,7 +1200,15 @@ export default function HomeScreen() {
         // so any native exception they throw (permission dialog crash on
         // Android 12+) cannot propagate up to handleCheckPress and
         // cause an unhandled rejection that crashes the JS engine.
-        setTimeout(async () => {
+        // #299 — Belt-and-braces outer guard. setTimeout(async () => …)
+        // returns a Promise that nothing awaits. If ANY uncaught rejection
+        // escapes the inner try blocks (e.g. AsyncStorage I/O failure, an
+        // Alert.alert callback throw, an OEM intent crash from
+        // expo-intent-launcher on Android 13+), Hermes treats it as an
+        // unhandled rejection on a SIGTERMable macrotask. We wrap the
+        // whole function body in an IIFE-style try and attach an explicit
+        // `.catch()` so the JS engine never sees a stray rejection.
+        const deferredPostCheckin = async () => {
           try {
             const bgOk = await startBackgroundLocationUpdates();
             if (!bgOk) {
@@ -1160,6 +1287,17 @@ export default function HomeScreen() {
               );
             }
           } catch {/* best-effort */}
+        };
+        setTimeout(() => {
+          // #299: bare setTimeout cannot await, so we must attach a
+          // .catch() on the returned promise. Without this an inner
+          // throw escapes the function and lands on the Hermes
+          // unhandled-rejection tracker — which on a non-tracked build
+          // SIGTERMs the app a few hundred ms later. The user sees an
+          // unexpected exit immediately after a successful check-in.
+          deferredPostCheckin().catch((e) => {
+            console.warn('[handleCheckPress] deferred post-checkin rejected:', (e as any)?.message || e);
+          });
         }, 0);
 
       } else if (!checkedOut) {
@@ -1173,10 +1311,13 @@ export default function HomeScreen() {
           if (servicesOn) {
             const { status } = await Location.getForegroundPermissionsAsync();
             if (status === 'granted') {
-              // Fix C/B2: 8-second timeout so a cold GPS chip during
-              // checkout can't hang the button indefinitely.
+              // #310 — checkout coords now use Location.Accuracy.Highest
+              // for the same reason as check-in: HR sees a marker that
+              // matches the employee's actual exit point instead of a
+              // Wi-Fi-triangulated approximation. 8-s deadline kept so
+              // a cold GPS chip can't hang the button indefinitely.
               const fix = await Promise.race<Location.LocationObject | null>([
-                Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+                Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
                 new Promise<null>((r) => setTimeout(() => r(null), 8000)),
               ]);
               if (fix) {
@@ -1204,13 +1345,23 @@ export default function HomeScreen() {
         setTimeout(() => {
           AsyncStorage.setItem('erm-today-v1', JSON.stringify(optimisticTodayOut)).catch(() => {});
         }, 0);
-        setCheckResult({ kind: 'out', time: formatLiveTime(new Date()) });
+        // Defer success modal one macrotask (#299) — see check-in branch
+        // above for the full Android-modal-overlap rationale.
+        const checkOutTime = formatLiveTime(new Date());
+        setTimeout(() => {
+          try { setCheckResult({ kind: 'out', time: checkOutTime }); }
+          catch (e: any) { console.warn('[handleCheckPress] setCheckResult(out) failed:', e?.message || e); }
+        }, 60);
         try { await attendanceAPI.setPresence('offline'); } catch {}
         try { stopTracking(); } catch (e: any) {
           console.warn('[handleCheckPress] stopTracking failed:', e?.message || e);
         }
       } else {
-        setCheckResult({ kind: 'done', time: formatLiveTime(new Date()) });
+        const doneTime = formatLiveTime(new Date());
+        setTimeout(() => {
+          try { setCheckResult({ kind: 'done', time: doneTime }); }
+          catch (e: any) { console.warn('[handleCheckPress] setCheckResult(done) failed:', e?.message || e); }
+        }, 60);
       }
       // FIX (Jun 2026 — delayed sync): increased from 3s → 8s.
       // The optimistic state + AsyncStorage persist above are accurate.
@@ -1342,20 +1493,25 @@ export default function HomeScreen() {
                 color="#1565C0"
               />
               <View style={styles.vDivider} />
-              <StatItem
-                icon={<Feather name="activity" size={20} color="#6A1B9A" />}
-                value={computeWorkedHours()}
-                label="Working HR's"
-                color="#6A1B9A"
+              {/* #316 — LiveWorkedHours owns its own 1-second ticker, so
+                  the counter advances every second without re-rendering
+                  the whole HomeScreen (which Fix G prevents to kill the
+                  flicker). computeWorkedHours() is left in place above
+                  in case any other code path still needs the snapshot
+                  value. */}
+              <LiveWorkedHours
+                checkIn={today.checkIn}
+                checkOut={today.checkOut}
               />
             </View>
           </View>
 
-          {/* ANNOUNCEMENT */}
+          {/* ANNOUNCEMENTS (#296 — renamed to plural to match the dedicated
+              screen and the Figma) */}
           <View style={styles.annSection}>
             <View style={styles.annHeaderRow}>
               <View style={styles.annTitleRow}>
-                <Text style={styles.annTitle}>Announcement</Text>
+                <Text style={styles.annTitle}>Announcements</Text>
                 <Ionicons
                   name="megaphone-outline"
                   size={16}
@@ -1377,22 +1533,58 @@ export default function HomeScreen() {
                 </Text>
               </View>
             ) : (
-              announcements.slice(0, 4).map((a) => (
-                <TouchableOpacity
-                  key={a._id}
-                  style={styles.annCard}
-                  activeOpacity={0.85}
-                  onPress={() => router.push('/announcement' as any)}
-                >
-                  <Text style={styles.annCardTitle}>{a.title}</Text>
-                  <Text style={styles.annCardBody} numberOfLines={2}>
-                    {a.body}
-                  </Text>
-                  <Text style={styles.annCardMeta}>
-                    Posted by {a.postedBy}  •  {formatRelative(a.createdAt)}
-                  </Text>
-                </TouchableOpacity>
-              ))
+              // Sort by createdAt DESC defensively — the backend already
+              // returns newest-first but a stale cache or a race during
+              // poll could leave the list out of order. Then take the top 4.
+              [...announcements]
+                .sort((a, b) => {
+                  const ta = new Date(a?.createdAt || 0).getTime();
+                  const tb = new Date(b?.createdAt || 0).getTime();
+                  return tb - ta;
+                })
+                .slice(0, 4)
+                .map((a) => {
+                  // Mirror the announcement.tsx fallback: prefer body,
+                  // then description, then content. Without this, an
+                  // HRMS post whose `body` field wasn't persisted (pre-
+                  // #295 schema fix) shows a blank card body here too.
+                  const bodyTxt = String(
+                    (a as any).body ?? (a as any).description ?? (a as any).content ?? ''
+                  ).trim();
+                  const poster = (a as any).postedBy
+                    || (a as any).createdByName
+                    || 'HR';
+                  return (
+                    <TouchableOpacity
+                      key={a._id}
+                      style={styles.annCard}
+                      activeOpacity={0.85}
+                      onPress={() => router.push('/announcement' as any)}
+                    >
+                      {/* Title: wrap to 3 lines so long subjects ("ERM is
+                          live from today. Please make use of it. …") are
+                          fully readable instead of being cut to 1 line. */}
+                      <Text style={styles.annCardTitle} numberOfLines={3}>
+                        {a.title}
+                      </Text>
+                      {!!bodyTxt && (
+                        <Text style={styles.annCardBody} numberOfLines={3}>
+                          {bodyTxt}
+                        </Text>
+                      )}
+                      <Text style={styles.annCardMeta}>
+                        {/* #316 — Always show "HR" instead of the raw
+                            postedBy/createdByName value. HR's user
+                            account is named "tescostructures" in the
+                            DB, which read as the company name in the
+                            UI. From the employee's perspective every
+                            announcement is from HR — that's the only
+                            label that matters. */}
+                        Posted by HR  •  {formatRelative(a.createdAt)}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
             )}
           </View>
         </ScrollView>

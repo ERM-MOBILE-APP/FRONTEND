@@ -145,7 +145,7 @@ export default function SideDrawer({ visible, onClose, user }: Props) {
       route: '/complaint',
     },
     {
-      label: 'Announcement',
+      label: 'Announcements',
       icon: <Ionicons name="megaphone-outline" size={20} color="#1A1A1A" />,
       route: '/announcement',
     },

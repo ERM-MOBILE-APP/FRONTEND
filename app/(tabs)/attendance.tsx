@@ -1,4 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
+// #318 — useFocusEffect from expo-router. Without this, the Attendance
+// tab only fetched history on mount + on month/year change, so any
+// check-in done on the Home tab AFTER the Attendance tab had already
+// been mounted never showed up until the user manually swiped the
+// month picker forward and back (which forced a re-fetch).
+import { useFocusEffect } from 'expo-router';
 import {
   View,
   Text,
@@ -15,6 +21,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons';
 import { attendanceAPI } from '../../services/api';
 import SuccessModal from '../../components/SuccessModal';
+import SubmitLoader from '../../components/SubmitLoader';
 
 type Status = 'present' | 'absent' | 'permission' | 'late' | 'halfday' | 'leave' | '';
 
@@ -142,6 +149,11 @@ export default function AttendanceScreen() {
   const [reqModalDate, setReqModalDate] = useState<string | null>(null);
   const [reqReason, setReqReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // #305 — derived form-valid flag. Submit stays grey/disabled until
+  // the user enters at least 3 chars of reason; flips to active green
+  // the moment the reason is meaningful; reverts to grey if cleared.
+  const isAttendanceReqValid = (reqReason || '').trim().length >= 3;
   const [success, setSuccess] = useState<{ title: string; body: string } | null>(null);
   // Dates the employee has already filed an attendance request for —
   // stored as a Map<YYYY-MM-DD, 'pending'|'approved'|'rejected'>. Drives
@@ -210,6 +222,20 @@ export default function AttendanceScreen() {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // #318 — Refetch every time the Attendance tab regains focus, so a
+  // check-in performed on the Home tab shows up immediately when the
+  // employee swipes back to Attendance. Without this the screen only
+  // refreshed on mount / month change, so today's freshly-created
+  // record stayed invisible until the user manually picked a different
+  // month and came back. Also re-syncs the regularisation request map
+  // so a request filed elsewhere reflects here without a manual reload.
+  useFocusEffect(
+    useCallback(() => {
+      loadAll();
+      refreshRequestedDates();
+    }, [loadAll, refreshRequestedDates])
+  );
 
   const changeMonth = (dir: number) => {
     // Block forward navigation past the current calendar month AND
@@ -886,9 +912,13 @@ export default function AttendanceScreen() {
               style={styles.reasonInput}
             />
             <TouchableOpacity
-              style={[styles.submitBtn, submitting && { opacity: 0.85 }]}
+              style={[
+                styles.submitBtn,
+                { backgroundColor: (submitting || !isAttendanceReqValid) ? '#94A3B8' : '#16A34A' },
+                (submitting || !isAttendanceReqValid) && { opacity: 0.7 },
+              ]}
               onPress={submitRequest}
-              disabled={submitting}
+              disabled={submitting || !isAttendanceReqValid}
             >
               {submitting ? (
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
@@ -909,6 +939,15 @@ export default function AttendanceScreen() {
         body={success?.body || ''}
         ctaLabel="Done"
         onClose={() => setSuccess(null)}
+      />
+
+      {/* Premium center-screen loader during attendance-request submission
+          (#298). Driven by the same `submitting` boolean that disables
+          the Request button so the form is fully locked while in flight. */}
+      <SubmitLoader
+        visible={submitting}
+        label="Submitting attendance request"
+        sub="Sending the request to your manager for review…"
       />
     </SafeAreaView>
   );
@@ -1206,7 +1245,12 @@ const styles = StyleSheet.create({
   histStatLabel: { fontSize: 11, color: '#777', marginTop: 2 },
   requestBtn: {
     marginTop: 12,
-    backgroundColor: '#2E7D32',
+    // #306 — match the brand green (#4CAF50) used by every other
+    // submit button in the app (Leave, Permission, Allowance, Payslip)
+    // so the per-row Request pill on the Attendance history looks
+    // visually consistent. Previously this was the darker shade
+    // #2E7D32 which stood out from the rest of the design.
+    backgroundColor: '#4CAF50',
     paddingVertical: 11,
     borderRadius: 10,
     alignItems: 'center',
@@ -1256,7 +1300,10 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   submitBtn: {
-    backgroundColor: '#2E7D32',
+    // #306 — same brand green (#4CAF50) used by the Leave / Allowance /
+    // Payslip submit buttons. Was #2E7D32 (darker) which read as a
+    // different shade against the other request forms.
+    backgroundColor: '#4CAF50',
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center',

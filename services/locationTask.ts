@@ -85,7 +85,15 @@ const PING_QUEUE_MAX = 200;
 const HEARTBEAT_KEY  = 'erm-bg-task-last-heartbeat';
 const EVENT_LOG_KEY  = 'erm-bg-task-events-v1';
 const EVENT_LOG_MAX  = 200;
-const HEARTBEAT_STALE_MS = 3 * 60 * 1000; // 3 min = 3 missed 60s ticks
+// #315 — Tightened from 3 min → 2 min. With the bg task's 60-s
+// timeInterval, a single missed tick is normal (OS batching, brief
+// CPU contention). Two missed ticks (120 s of silence) is the earliest
+// reliable signal that the foreground service has actually died — so
+// 2 min is the sweet spot between "false-positive revives that
+// briefly toggle the GPS chip" and "user loses 5 minutes of tracking
+// before we notice". Pair this with the 15-s guardian cadence (#315)
+// and worst-case detection is now ~135 s instead of 210 s.
+const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
 
 type TrackingEvent = {
   ts: string;
@@ -181,10 +189,34 @@ export async function resetTrackingDiagnostics(): Promise<void> {
  *   • Moving      → adopt new anchor, send new coords
  *   • null        → drop (accuracy too poor)
  * ──────────────────────────────────────────────────────────────────── */
-const ACCURACY_GATE_M           = 30;   // Drop fixes worse than this radius.
-const MOVEMENT_THRESHOLD_M      = 20;   // Min displacement to count as moving.
+// #314 — Tuned for "marker doesn't twitch when sitting at a desk".
+// HR feedback: stationary employees were appearing as "moving" on the
+// map because GPS chips routinely drift 15-25 m even when the device
+// is physically still (urban-canyon multipath, satellite constellation
+// rotation, cold-start re-acquisition). Old thresholds (20 m / 2 fixes)
+// were just under that natural drift band, so genuine stillness kept
+// nudging the anchor by 20+ m every few minutes.
+//
+// New thresholds:
+//   • ACCURACY_GATE_M unchanged — backend now matches at 35 m (#310).
+//   • MOVEMENT_THRESHOLD_M    20 → 45 m. Must drift 45 m before counting
+//                             as motion. Covers normal urban GPS noise.
+//   • CONSECUTIVE_MOVES_REQUIRED 2 → 3. Three consecutive 45 m fixes
+//                             before adopting a new anchor. With a 60 s
+//                             ping cadence that's a 3-min commit window
+//                             — still imperceptible for a walking user,
+//                             but immune to "one bad sample drove the
+//                             pin halfway down the street" jitter.
+//   • STATIONARY_HOLD_BUDGET_M (new) 80 m. Even if the pendingMoves
+//                             counter never reaches 3, if the new fix
+//                             is within 80 m of the anchor we treat it
+//                             as definitely-still and RESET the counter
+//                             so a slow drift series can't accumulate.
+const ACCURACY_GATE_M           = 30;
+const MOVEMENT_THRESHOLD_M      = 45;
 const STATIONARY_SPEED_MPS      = 0.5;  // ~1.8 km/h. Anything below = still.
-const CONSECUTIVE_MOVES_REQUIRED = 2;   // Need N "moved" fixes to confirm.
+const CONSECUTIVE_MOVES_REQUIRED = 3;
+const STATIONARY_HOLD_BUDGET_M   = 80;
 const ANCHOR_STATE_KEY          = 'erm-gps-anchor-v1';
 
 type AnchorState = {
@@ -290,9 +322,33 @@ export async function filterFix(opts: {
     };
   }
 
-  // 5) Saw motion — but we need N consecutive such fixes before
-  //    committing. A single outlier (one bad sample) is held back
-  //    so the map doesn't teleport.
+  // 5) Saw motion — but FIRST check the stationary-hold budget. If
+  //    the new fix is still within 80 m of the anchor, treat it as
+  //    drift regardless of how it compared to MOVEMENT_THRESHOLD_M.
+  //    Without this guard a series of 45-55 m drift samples could
+  //    quietly accumulate three "moves" in a row and adopt a new
+  //    anchor 50 m away even though the employee never left the
+  //    building. With it, an employee sitting at their desk produces
+  //    a stable anchor for the entire shift unless they truly walk
+  //    out of an 80 m radius — which means the dist would be ≥ 80 m,
+  //    not just ≥ 45 m.
+  if (dist < STATIONARY_HOLD_BUDGET_M && !movingBySpeed) {
+    if (anchor.pendingMoves !== 0) {
+      await saveAnchor({ ...anchor, pendingMoves: 0 });
+    }
+    console.log('[gps-filter] within hold budget', dist.toFixed(0), '<', STATIONARY_HOLD_BUDGET_M, '— anchor held');
+    return {
+      lat: anchor.lat,
+      lng: anchor.lng,
+      accuracy: anchor.accuracy,
+      speed: 0,
+      isStationary: true,
+    };
+  }
+
+  // 6) Saw motion outside the hold budget — but we need N consecutive
+  //    such fixes before committing. A single outlier (one bad sample)
+  //    is held back so the map doesn't teleport.
   const newPending = anchor.pendingMoves + 1;
   if (newPending < CONSECUTIVE_MOVES_REQUIRED) {
     await saveAnchor({ ...anchor, pendingMoves: newPending });

@@ -16,6 +16,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
 import { allowanceAPI } from '../../services/api';
 import SuccessModal from '../../components/SuccessModal';
+import SubmitLoader from '../../components/SubmitLoader';
 
 
 // confirmAsync — promise-based wrapper around Alert.alert so we can
@@ -217,6 +218,21 @@ export default function AllowanceScreen() {
   const [amount, setAmount] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // #305 — derived form-valid flag. Submit stays disabled (grey) until
+  // the user has selected a type, filled From/To/Date, AND for petrol
+  // the distance, AND set an amount > 0. Active green once everything
+  // is valid; reverts to grey/disabled the moment any field clears.
+  const _amtNum    = Number(amount);
+  const _distNum   = Number(distance);
+  const isAllowanceFormValid = !!(
+    type &&
+    fromLoc.trim().length >= 2 &&
+    toLoc.trim().length   >= 2 &&
+    date &&
+    Number.isFinite(_amtNum) && _amtNum > 0 &&
+    (type !== 'petrol' || (Number.isFinite(_distNum) && _distNum > 0))
+  );
   const [success, setSuccess] = useState<{ title: string; body: string } | null>(null);
   const [showDate, setShowDate] = useState(false);
   const [calculating, setCalculating] = useState(false);
@@ -272,6 +288,20 @@ export default function AllowanceScreen() {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // #319 — When the user switches between Travel ↔ Petrol tabs, clear
+  // the shared history + summary state IMMEDIATELY (before the new
+  // fetch lands). Without this, the previous tab's rows render under
+  // the new tab's UI until the API responds — which on a cold-start
+  // Render dyno can be 30-60 seconds. The visible symptom: a Travel
+  // allowance the employee just submitted briefly appears in the
+  // Petrol section as a 0-km ₹X row before disappearing. The data
+  // was never miscategorised on the server; it was just stale local
+  // state being rendered through the wrong section's template.
+  useEffect(() => {
+    setHistory([]);
+    setSummary({ approved: 0, rejected: 0, pending: 0, totalDistance: 0 });
+  }, [type]);
 
   // For PETROL only — auto-recalculate distance + amount the moment both
   // From and To are set (debounced ~600 ms so we don't geocode on every
@@ -562,9 +592,13 @@ export default function AllowanceScreen() {
           />
 
           <TouchableOpacity
-            style={[styles.submitBtn, submitting && { opacity: 0.85 }]}
+            style={[
+              styles.submitBtn,
+              { backgroundColor: (submitting || !isAllowanceFormValid) ? '#94A3B8' : '#16A34A' },
+              (submitting || !isAllowanceFormValid) && { opacity: 0.7 },
+            ]}
             onPress={submit}
-            disabled={submitting}
+            disabled={submitting || !isAllowanceFormValid}
             activeOpacity={0.85}
           >
             {submitting ? (
@@ -876,6 +910,16 @@ export default function AllowanceScreen() {
         body={success?.body || ''}
         ctaLabel="Done"
         onClose={() => setSuccess(null)}
+      />
+
+      {/* Premium center-screen loader during allowance submission (#298).
+          Same `submitting` boolean drives both the button-disable and
+          this overlay so the user gets unmistakable feedback that their
+          petrol/travel claim is on its way to manager + HR. */}
+      <SubmitLoader
+        visible={submitting}
+        label="Submitting your allowance"
+        sub="Sending the claim to your manager for review…"
       />
     </SafeAreaView>
   );
