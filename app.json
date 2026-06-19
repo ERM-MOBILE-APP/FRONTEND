@@ -26,6 +26,7 @@
     },
     "android": {
       "package": "com.tescodigitals26.tescoerm",
+      "versionCode": 2,
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
