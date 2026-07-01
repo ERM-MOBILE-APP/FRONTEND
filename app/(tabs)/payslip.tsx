@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,12 +11,18 @@ import {
   Alert,
   Pressable,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect } from 'expo-router';
 import { payslipAPI, profileAPI } from '../../services/api';
 import SubmitLoader from '../../components/SubmitLoader';
+// #322 — Per-screen error boundary. If anything inside Payslip throws
+// during render, this catches it locally and shows a 'Try again' card.
+// The rest of the app (other tabs, GPS task, session) stays alive
+// instead of the whole app reloading.
+import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
+
 
 
 // confirmAsync — promise-based wrapper around Alert.alert so we can
@@ -71,6 +77,13 @@ interface Payslip {
 }
 
 export default function PayslipScreen() {
+  // #323 — Read the device's bottom safe-area inset so the Request
+  // payslip bottom sheet (and any future bottom sheet on this screen)
+  // can clear the Android gesture pill / 3-button nav bar. Without
+  // this the "Request {month} {year}" submit button got clipped on
+  // gesture-navigation phones (the user-reported screenshot).
+  const insets = useSafeAreaInsets();
+
   const [user, setUser]                   = useState<any>(null);
   const [history, setHistory]             = useState<Payslip[]>([]);
   const [loading, setLoading]             = useState(true);
@@ -190,9 +203,20 @@ export default function PayslipScreen() {
     return () => { cancelled = true; };
   }, []);
 
+  // #321 — mountedRef pattern. payslipAPI.getHistory() is the slowest
+  // call in this tab (it joins payroll + user data on the backend, then
+  // signs S3 URLs), so the await window where the tab can unmount is the
+  // widest. Without this guard, setHistory fired on an unmounted Payslip
+  // tab after every focus change.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const fetchHistory = useCallback(async (year = selectedYear) => {
     try {
-      setError('');
+      if (mountedRef.current) setError('');
       const res = await payslipAPI.getHistory(year);
       const all = Array.isArray(res.data) ? res.data : [];
       // Drop the stub payslip row the backend creates on "Request" —
@@ -203,8 +227,11 @@ export default function PayslipScreen() {
       const ready = all.filter(
         (p) => p.status === 'processed' || !!p.downloadUrl
       );
+      if (!mountedRef.current) return;
       setHistory(ready);
     } catch (e: any) {
+      console.warn('[payslip.fetchHistory] failed:', e?.message || e);
+      if (!mountedRef.current) return;
       setError(e?.response?.data?.message || 'Could not load payslip history.');
       setHistory([]);
     }
@@ -212,13 +239,15 @@ export default function PayslipScreen() {
 
   useEffect(() => {
     setLoading(true);
-    fetchHistory(selectedYear).finally(() => setLoading(false));
+    fetchHistory(selectedYear).finally(() => {
+      if (mountedRef.current) setLoading(false);
+    });
   }, [selectedYear, fetchHistory]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchHistory(selectedYear);
-    setRefreshing(false);
+    if (mountedRef.current) setRefreshing(false);
   }, [selectedYear, fetchHistory]);
 
   // Refresh on tab focus so an HR upload (status → processed) shows up
@@ -266,7 +295,9 @@ export default function PayslipScreen() {
   };
 
   return (
+    <ScreenErrorBoundary name="Payslip">
     <View style={styles.root}>
+
       <SafeAreaView edges={['top']} style={{ flex: 1 }}>
 
         {/* ───── HEADER ─────────────────────────────────────────────────── */}
@@ -415,7 +446,15 @@ export default function PayslipScreen() {
           style={styles.modalOverlay}
           onPress={() => setRequestVisible(false)}
         >
-          <Pressable style={styles.requestSheet} onPress={() => {}}>
+          <Pressable
+            // #323 — Add the system gesture-bar inset to the bottom
+            // padding so the Submit button is never clipped.
+            style={[
+              styles.requestSheet,
+              { paddingBottom: 22 + Math.max(insets.bottom, 8) },
+            ]}
+            onPress={() => {}}
+          >
             <Text style={styles.yearModalTitle}>Request a payslip</Text>
             <Text style={styles.requestSub}>
               Pick the month and year. HR will be notified and upload your
@@ -561,7 +600,8 @@ export default function PayslipScreen() {
         sub="Asking HR to generate your slip…"
       />
     </View>
-  );
+    </ScreenErrorBoundary>
+  );;
 }
 
 const styles = StyleSheet.create({
@@ -751,37 +791,4 @@ const styles = StyleSheet.create({
     color: '#1A1A1A',
     marginRight: 4,
   },
-  /* ─── Year picker modal ────────────────────────────────────────── */
-  yearModal: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    paddingTop: 20,
-    paddingHorizontal: 22,
-    paddingBottom: 28,
-    width: '100%',
-    position: 'absolute',
-    bottom: 0,
-  },
-  yearModalTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#1A1A1A',
-    marginBottom: 14,
-  },
-  yearOption: {
-    paddingVertical: 14,
-    paddingHorizontal: 18,
-    borderRadius: 12,
-    backgroundColor: '#FAFAFA',
-    marginBottom: 8,
-  },
-  yearOptionActive: {
-    backgroundColor: '#E8F5E9',
-  },
-  yearOptionText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1A1A1A',
-  },
-});
+  /* ─── Year picker modal ────────────── */

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 // #318 — useFocusEffect from expo-router. Without this, the Attendance
 // tab only fetched history on mount + on month/year change, so any
 // check-in done on the Home tab AFTER the Attendance tab had already
@@ -22,6 +22,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { attendanceAPI } from '../../services/api';
 import SuccessModal from '../../components/SuccessModal';
 import SubmitLoader from '../../components/SubmitLoader';
+// #322 — Per-screen error boundary. If anything inside Attendance
+// throws during render, this catches it locally and shows a "Try
+// again" card. The rest of the app (other tabs, GPS task, session)
+// stays alive instead of the whole app reloading.
+import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 
 type Status = 'present' | 'absent' | 'permission' | 'late' | 'halfday' | 'leave' | '';
 
@@ -187,6 +192,20 @@ export default function AttendanceScreen() {
   }, []);
   useEffect(() => { refreshRequestedDates(); }, [refreshRequestedDates]);
 
+  // #321 — mountedRef pattern. The tab can be torn down (e.g. user
+  // swipes to Home) while a Render-cold-start API call is still in
+  // flight 30-60 s later. Without this guard the setState calls in
+  // loadAll() fire on an unmounted component, which on Android 9-10
+  // mid-tier devices (Redmi 7-9, Realme C, Vivo Y) has historically
+  // escalated the resulting React warning into a hard exit because
+  // the reconciler can't recover from a null parent fiber. Mirrors
+  // the protection already in place on app/(tabs)/index.tsx.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const month = cursor.getMonth() + 1;
   const year = cursor.getFullYear();
 
@@ -197,6 +216,10 @@ export default function AttendanceScreen() {
         attendanceAPI.getSummary(month, year),
         attendanceAPI.getHistory(month, year),
       ]);
+      // Bail BEFORE any setState if the user has navigated away
+      // during the await. Otherwise every setState below would fire
+      // on an unmounted component.
+      if (!mountedRef.current) return;
       const map: Record<string, CalendarItem> = {};
       (calRes.data || []).forEach((r: CalendarItem) => {
         map[r.date] = r;
@@ -212,7 +235,12 @@ export default function AttendanceScreen() {
       });
       setLeavePolicy(sumRes.data?.leavePolicy || null);
       setHistory(Array.isArray(histRes.data) ? histRes.data : []);
-    } catch {
+    } catch (err: any) {
+      // #321 — Surface cold-start rejections to logcat instead of
+      // silently swallowing them. Production diagnostics; the user
+      // still sees an empty state.
+      console.warn('[attendance.loadAll] failed:', err?.message || err);
+      if (!mountedRef.current) return;
       setCalendar({});
       setHistory([]);
       setLeavePolicy(null);
@@ -410,7 +438,9 @@ export default function AttendanceScreen() {
   );
 
   return (
+    <ScreenErrorBoundary name="Attendance">
     <SafeAreaView edges={['top']} style={styles.safe}>
+
       <ScrollView
         contentContainerStyle={{ paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
@@ -950,7 +980,8 @@ export default function AttendanceScreen() {
         sub="Sending the request to your manager for review…"
       />
     </SafeAreaView>
-  );
+    </ScreenErrorBoundary>
+  );;
 }
 
 /* ============ helpers ============ */
@@ -1255,59 +1286,13 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
   },
-  requestBtnDisabled: { backgroundColor: '#E5E7EB' },
-  requestBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
-  requestBtnTextDisabled: { color: '#6B7280' },
-
-  emptyBox: {
-    paddingVertical: 36,
-    alignItems: 'center',
+  requestBtnDisabled: {
+    backgroundColor: '#C7CDD6',
   },
-  emptyText: { fontSize: 13, color: '#999' },
-
-  /* MODAL */
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    paddingHorizontal: 22,
-    paddingTop: 22,
-    paddingBottom: 22,
-  },
-  modalTitle: { fontSize: 17, fontWeight: '800', color: '#111' },
-  modalSub: { fontSize: 12, color: '#777', marginTop: 4, marginBottom: 14 },
-  modalRow: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  modalRowText: { fontSize: 15, color: '#111' },
-
-  reasonInput: {
-    borderWidth: 1,
-    borderColor: '#E6EDE7',
-    borderRadius: 10,
-    padding: 12,
-    minHeight: 90,
+  requestBtnText: {
+    color: '#FFFFFF',
     fontSize: 14,
-    color: '#111',
-    textAlignVertical: 'top',
-    marginBottom: 14,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
-  submitBtn: {
-    // #306 — same brand green (#4CAF50) used by the Leave / Allowance /
-    // Payslip submit buttons. Was #2E7D32 (darker) which read as a
-    // different shade against the other request forms.
-    backgroundColor: '#4CAF50',
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  submitBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
 });

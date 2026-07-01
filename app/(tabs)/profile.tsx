@@ -14,6 +14,12 @@ import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { profileAPI, attendanceAPI } from '../../services/api';
 import { stopBackgroundLocationUpdates } from '../../services/locationTask';
+// #322 — Per-screen error boundary. If anything inside Profile throws
+// during render, this catches it locally and shows a 'Try again' card.
+// The rest of the app (other tabs, GPS task, session) stays alive
+// instead of the whole app reloading.
+import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
+
 
 type UserProfile = {
   _id?: string;
@@ -143,7 +149,9 @@ export default function ProfileScreen() {
   const initial = (user.name && user.name.trim()[0]?.toUpperCase()) || '?';
 
   return (
+    <ScreenErrorBoundary name="Profile">
     <SafeAreaView edges={['top']} style={styles.safe}>
+
       <ScrollView
         contentContainerStyle={{ paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
@@ -210,7 +218,8 @@ export default function ProfileScreen() {
         </View>
       </ScrollView>
     </SafeAreaView>
-  );
+    </ScreenErrorBoundary>
+  );;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {

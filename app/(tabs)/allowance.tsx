@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,12 @@ import { Calendar } from 'react-native-calendars';
 import { allowanceAPI } from '../../services/api';
 import SuccessModal from '../../components/SuccessModal';
 import SubmitLoader from '../../components/SubmitLoader';
+// #322 — Per-screen error boundary. If anything inside Allowance throws
+// during render, this catches it locally and shows a 'Try again' card.
+// The rest of the app (other tabs, GPS task, session) stays alive
+// instead of the whole app reloading.
+import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
+
 
 
 // confirmAsync — promise-based wrapper around Alert.alert so we can
@@ -259,6 +265,16 @@ export default function AllowanceScreen() {
     approved: 0, rejected: 0, pending: 0, totalDistance: 0,
   });
 
+  // #321 — mountedRef pattern. Without it the Promise.all below could
+  // setState on an unmounted Allowance tab when the user switches away
+  // mid-flight (Render cold-start is 30-60 s on first morning launch).
+  // Mirrors the protection on attendance.tsx / leave.tsx / index.tsx.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const loadAll = useCallback(async () => {
     try {
       // Each tab now strictly fetches its own type. Previously the petrol
@@ -272,6 +288,7 @@ export default function AllowanceScreen() {
         allowanceAPI.getMyAllowances({ month: histMonth, year: histYear, type }),
         allowanceAPI.getSummary    ({ month: histMonth, year: histYear, type }),
       ]);
+      if (!mountedRef.current) return;
       setHistory(Array.isArray(hRes.data) ? hRes.data : []);
       setSummary({
         approved:     sRes.data?.approved      || 0,
@@ -279,7 +296,9 @@ export default function AllowanceScreen() {
         pending:      sRes.data?.pending       || 0,
         totalDistance: sRes.data?.totalDistance || 0,
       });
-    } catch {
+    } catch (err: any) {
+      console.warn('[allowance.loadAll] failed:', err?.message || err);
+      if (!mountedRef.current) return;
       setHistory([]);
       setSummary({ approved: 0, rejected: 0, pending: 0, totalDistance: 0 });
     }
@@ -449,7 +468,9 @@ export default function AllowanceScreen() {
   const isPetrol = type === 'petrol';
 
   return (
+    <ScreenErrorBoundary name="Allowance">
     <SafeAreaView edges={['top']} style={styles.safe}>
+
       <ScrollView
         contentContainerStyle={{ paddingBottom: 120 }}
         showsVerticalScrollIndicator={false}
@@ -922,7 +943,8 @@ export default function AllowanceScreen() {
         sub="Sending the claim to your manager for review…"
       />
     </SafeAreaView>
-  );
+    </ScreenErrorBoundary>
+  );;
 }
 
 /* ============ helpers ============ */
@@ -1358,37 +1380,4 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderWidth: 1,
     borderColor: '#E5E7EB',
-    borderRadius: 10,
-    marginBottom: 10,
-  },
-  locSearchInput: {
-    flex: 1,
-    fontSize: 13,
-    color: '#111',
-    padding: 0,
-  },
-
-  locRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  locRowActive: {
-    backgroundColor: '#F0FDF4',
-    borderBottomColor: '#DCFCE7',
-  },
-  locRowText: {
-    fontSize: 14,
-    color: '#1A1A1A',
-  },
-  locEmpty: {
-    fontSize: 13,
-    color: '#94A3B8',
-    textAlign: 'center',
-    paddingVertical: 22,
-  },
-});
+  

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,12 +12,18 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
 import { leaveAPI } from '../../services/api';
 import SuccessModal from '../../components/SuccessModal';
 import SubmitLoader from '../../components/SubmitLoader';
+// #322 — Per-screen error boundary. If anything inside Leave throws
+// during render, this catches it locally and shows a 'Try again' card.
+// The rest of the app (other tabs, GPS task, session) stays alive
+// instead of the whole app reloading.
+import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
+
 
 
 // confirmAsync — promise-based wrapper around Alert.alert so we can
@@ -148,6 +154,13 @@ function generateTimeOptions(
 const pad = (n: number) => String(n).padStart(2, '0');
 
 export default function LeaveScreen() {
+  // #323 — Read the device's bottom safe-area inset so the bottom-sheet
+  // pickers (Leave Type, Permission Type) clear the Android gesture
+  // pill / 3-button nav. Without this padding the last option ("Other"
+  // / "Earned Leave") is clipped by the system overlay — visible in
+  // the user-reported screenshot.
+  const insets = useSafeAreaInsets();
+
   const [tab, setTab] = useState<Tab>('leave');
 
   // Apply Leave fields
@@ -214,6 +227,17 @@ export default function LeaveScreen() {
   const [showHistMonth, setShowHistMonth] = useState(false);
   const [showHistYear, setShowHistYear] = useState(false);
 
+  // #321 — mountedRef pattern. Stops setState-after-unmount when the
+  // user swipes away mid-fetch. See app/(tabs)/attendance.tsx for the
+  // full rationale; the same Android 9-10 reconciler crash can fire
+  // here because the Render-cold-start delay is 30-60 s on first
+  // morning launch.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const loadHistory = useCallback(async () => {
     try {
       const res = await leaveAPI.getMyLeaves({
@@ -221,8 +245,11 @@ export default function LeaveScreen() {
         year: histYear,
         type: tab, // <— filter by current tab
       });
+      if (!mountedRef.current) return;
       setHistory(Array.isArray(res.data) ? res.data : []);
-    } catch {
+    } catch (err: any) {
+      console.warn('[leave.loadHistory] failed:', err?.message || err);
+      if (!mountedRef.current) return;
       setHistory([]);
     }
   }, [histMonth, histYear, tab]);
@@ -477,7 +504,9 @@ export default function LeaveScreen() {
   })();
 
   return (
+    <ScreenErrorBoundary name="Leave">
     <SafeAreaView edges={['top']} style={styles.safe}>
+
       <ScrollView
         contentContainerStyle={{ paddingBottom: 120 }}
         showsVerticalScrollIndicator={false}
@@ -710,7 +739,10 @@ export default function LeaveScreen() {
 
       <Modal visible={showTypeModal} transparent animationType="fade">
         <Pressable style={styles.modalBackdrop} onPress={() => setShowTypeModal(false)}>
-          <View style={styles.modalSheet}>
+          {/* #323 — Inject gesture-bar inset as bottom padding so the
+              last row ("Unpaid Leave" / "Other") isn't clipped by the
+              Android system overlay on gesture-nav phones. */}
+          <View style={[styles.modalSheet, { paddingBottom: 16 + Math.max(insets.bottom, 8) }]}>
             <Text style={styles.modalTitle}>Select Leave Type</Text>
             {LEAVE_TYPES.map((t) => (
               <TouchableOpacity
@@ -737,7 +769,10 @@ export default function LeaveScreen() {
 
       <Modal visible={showPermTypeModal} transparent animationType="fade">
         <Pressable style={styles.modalBackdrop} onPress={() => setShowPermTypeModal(false)}>
-          <View style={styles.modalSheet}>
+          {/* #323 — Same inset fix for the Permission Type sheet — the
+              user-reported screenshot shows "Other" being clipped on
+              gesture-nav phones. */}
+          <View style={[styles.modalSheet, { paddingBottom: 16 + Math.max(insets.bottom, 8) }]}>
             <Text style={styles.modalTitle}>Select Permission Type</Text>
             {PERMISSION_TYPES.map((t) => (
               <TouchableOpacity
@@ -932,7 +967,8 @@ export default function LeaveScreen() {
         sub="Hang tight — confirming with your manager and HR…"
       />
     </SafeAreaView>
-  );
+    </ScreenErrorBoundary>
+  );;
 
   function HistoryCard({ item }: { item: LeaveItem }) {
     const statusConf: Record<LeaveStatus, { badge: string; edge: string; text: string }> = {
@@ -1237,36 +1273,4 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     textAlign: 'center',
-  },
-
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 24,
-    maxHeight: '70%',
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#111',
-    marginBottom: 10,
-  },
-  modalRow: {
-    paddingVertical: 14,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
-  },
-  modalRowText: {
-    fontSize: 14,
-    color: '#222',
-  },
-});
+ 

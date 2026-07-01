@@ -44,6 +44,14 @@ type TodayData = {
   checkOut?: string | null;
   workedHours?: number;
   location?: WorkLocation;
+  // #336 Multi-session support
+  // firstCheckIn       — snapshot of the day's very first arrival
+  // accumulatedSeconds — total worked time from all COMPLETED sessions
+  // isOnBreak          — true when the day has at least one closed session
+  //                      and no open session (i.e. Resume-Work state)
+  firstCheckIn?: string | null;
+  accumulatedSeconds?: number;
+  isOnBreak?: boolean;
 };
 
 type Announcement = {
@@ -212,29 +220,71 @@ const LiveClock = memo(function LiveClock({
 const LiveWorkedHours = memo(function LiveWorkedHours({
   checkIn,
   checkOut,
+  accumulatedSeconds = 0,
+  firstCheckIn,
+  workedHours = 0,
 }: {
   checkIn?: string | null;
   checkOut?: string | null;
+  accumulatedSeconds?: number;
+  firstCheckIn?: string | null;
+  workedHours?: number;
 }) {
   const [, setTick] = useState(0);
 
+  // Working iff there's an open session (checkIn set, no closing
+  // checkOut). On break / done: static value = accumulated.
+  const isWorking = !!(checkIn && !checkOut);
+
   useEffect(() => {
-    // If the employee hasn't checked in yet or has already checked out,
-    // the value is static — no need to burn a 1Hz interval.
-    if (!checkIn || checkOut) return;
+    // Only tick while actively working — no point burning a 1 Hz
+    // interval when the value is frozen (on break or nothing to show).
+    if (!isWorking) return;
     const t = setInterval(() => setTick((x) => (x + 1) % 1_000_000), 1000);
     return () => clearInterval(t);
-  }, [checkIn, checkOut]);
+  }, [isWorking]);
 
+  // #336/#337 — Total = accumulated (rolled up from all closed sessions)
+  //                    + current session running time (if actively working).
+  // This is what makes the timer RESUME from 03:00 instead of restarting
+  // at 00:00 after an accidental check-out.
+  //
+  // Fallback cascade (#337):
+  //   1. accumulatedSeconds prop (new backend)
+  //   2. workedHours * 3600 (legacy backend, whole-day total)
+  //   3. checkOut − checkIn (single-session row)
   const value = (() => {
-    if (!checkIn) return '00:00';
-    const start = new Date(checkIn).getTime();
-    const end = checkOut ? new Date(checkOut).getTime() : Date.now();
-    if (!Number.isFinite(start) || end <= start) return '00:00';
-    const totalMin = Math.floor((end - start) / 60000);
-    const hh = Math.floor(totalMin / 60);
-    const mm = totalMin % 60;
-    return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+    let base = Math.max(0, Number(accumulatedSeconds || 0));
+    if (base === 0 && Number(workedHours || 0) > 0) {
+      base = Math.round(Number(workedHours) * 3600);
+    }
+    let running = 0;
+    if (isWorking && checkIn) {
+      const start = new Date(checkIn).getTime();
+      if (Number.isFinite(start) && Date.now() > start) {
+        running = Math.floor((Date.now() - start) / 1000);
+      }
+    }
+    let total = base + running;
+    // Final safety net — a completed session pair on the row directly.
+    if (total === 0 && checkIn && checkOut) {
+      const s = new Date(checkIn).getTime();
+      const e = new Date(checkOut).getTime();
+      if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
+        total = Math.floor((e - s) / 1000);
+      }
+    }
+    // Nothing to show yet AND nothing to hint at → keep zeros.
+    if (!isWorking && total <= 0 && !firstCheckIn) return '00:00:00';
+    // #344 — HH:MM:SS so the counter visibly ticks every second (per the
+    // original multi-session spec: 03:00:00, 03:01:00, 04:00:00, ...).
+    const totalSec = Math.max(0, total);
+    const hh  = Math.floor(totalSec / 3600);
+    const mm  = Math.floor((totalSec % 3600) / 60);
+    const ss  = totalSec % 60;
+    return String(hh).padStart(2, '0') + ':' +
+           String(mm).padStart(2, '0') + ':' +
+           String(ss).padStart(2, '0');
   })();
 
   return (
@@ -253,6 +303,17 @@ export default function HomeScreen() {
   // every second. Used in computeWorkedHours() WITHOUT being in component
   // state, so reading it never triggers a HomeScreen re-render (fix G).
   const nowRef = useRef(new Date());
+  // #339 — Wall-clock ms of the most recent Check In Again tap. For
+  // 30 s afterwards, refreshToday() ignores the server's checkOut (it
+  // is stale while the old backend hasn't been redeployed OR the write
+  // hasn't propagated yet) and keeps the local "back to working" state
+  // so the button stays as "Check Out" instead of flipping back.
+  const resumeAtRef = useRef(0);
+  // #340 — Freeze the loader copy/color to the user's INTENT for the
+  // full duration of actionBusy=true. Prevents the "1-sec Checking
+  // you out" flash during a Check In Again tap (which optimistically
+  // clears checkOut mid-await and briefly changes the derived state).
+  const [pendingKind, setPendingKind] = useState<'in' | 'out' | null>(null);
   const [today, setToday] = useState<TodayData>({});
   // Start empty — only show real announcements from the API. If the API
   // returns nothing we render an empty-state below instead of fake data.
@@ -305,6 +366,13 @@ export default function HomeScreen() {
         checkOut:    data.checkOut   || null,
         workedHours: data.workedHours || 0,
         location:    data.location   || 'office',
+        // #336 Multi-session fields — used to resume the timer after
+        // an accidental check-out. The server rolls session durations
+        // into `accumulatedSeconds` at each checkout, and the client
+        // reads that base and adds the running session on top.
+        firstCheckIn:       data.firstCheckIn       || null,
+        accumulatedSeconds: Number(data.accumulatedSeconds || 0),
+        isOnBreak:          !!data.isOnBreak,
       };
       // FIX (Jun 2026 — optimistic-state guard):
       // refreshToday() was previously always calling setToday(fresh),
@@ -318,13 +386,55 @@ export default function HomeScreen() {
       // server is lying (stale read). Once the server catches up and
       // returns the real checkIn, subsequent polls will update correctly.
       // Same logic applies to checkOut.
+      //
+      // #336: never let accumulatedSeconds go BACKWARDS during a race —
+      // if the local value is greater than the server's (e.g. the
+      // client optimistically added the current session on Check Out
+      // before the server responded), keep the max so the timer never
+      // rolls back visibly.
       setToday(prev => {
-        const mergedCheckIn  = fresh.checkIn  || prev.checkIn  || null;
-        const mergedCheckOut = fresh.checkOut || prev.checkOut || null;
+        // #339 Resume-window guard: within 30 s of the user tapping
+        // Check In Again, treat local state as truth for checkIn /
+        // checkOut / isOnBreak so a stale server payload (old backend
+        // or slow write propagation) doesn't flip the button back to
+        // "Check In Again" moments after the user resumed.
+        // #346 — Override lasts until real checkout (clears resumeAtRef=0) or
+        // 24 h from the last resume/checkin, so a fresh check-in isn't
+        // wiped by a stale server poll 30 s later.
+        const inResumeWindow = (Date.now() - Number(resumeAtRef.current || 0)) < 86_400_000;
+        const useLocalOverride = inResumeWindow && !prev.checkOut;
+        const mergedCheckIn  = useLocalOverride
+          ? (prev.checkIn || fresh.checkIn || null)
+          : (fresh.checkIn  || prev.checkIn  || null);
+        const mergedCheckOut = useLocalOverride
+          ? null
+          : (fresh.checkOut || prev.checkOut || null);
+        // #337 Legacy-backend fallback — if the server hasn't been
+        // redeployed with the multi-session upgrade, accumulatedSeconds
+        // will be missing but workedHours (the day total) is still
+        // authoritative. Convert to seconds so the timer doesn't reset
+        // to 00:00 after a Home-tab remount / app relaunch on a
+        // same-day post-checkout row.
+        const derivedFromWorked = Math.round(Number(fresh.workedHours || 0) * 3600);
+        const mergedAccum    = Math.max(
+          Number(fresh.accumulatedSeconds || 0),
+          Number(prev.accumulatedSeconds  || 0),
+          derivedFromWorked,
+        );
+        const mergedFirst    = fresh.firstCheckIn || prev.firstCheckIn || mergedCheckIn;
+        // isOnBreak fallback — a same-day row with both a checkIn AND a
+        // checkOut is a break state, regardless of whether the server
+        // sent the flag explicitly.
+        const derivedBreak   = !!(mergedCheckIn && mergedCheckOut);
         const merged: TodayData = {
           ...fresh,
           checkIn:  mergedCheckIn,
           checkOut: mergedCheckOut,
+          accumulatedSeconds: mergedAccum,
+          firstCheckIn:       mergedFirst,
+          isOnBreak:          useLocalOverride
+            ? false
+            : (!!fresh.isOnBreak || derivedBreak),
         };
         // Persist the merged truth to AsyncStorage.
         AsyncStorage.setItem(STORAGE_KEY_TODAY, JSON.stringify(merged)).catch(() => {});
@@ -1094,9 +1204,30 @@ export default function HomeScreen() {
 
   const handleCheckPress = async () => {
     if (actionBusy) return;
+    // #340 — Capture intent NOW so the loader's copy/color stays stable
+    // even after the optimistic setToday(checkOut=null) fires during
+    // Check In Again. Fresh check-in and resume both count as 'in'.
+    const wantsCheckInAtTap = !checkedIn || (checkedIn && checkedOut);
+    setPendingKind(wantsCheckInAtTap ? 'in' : 'out');
     setActionBusy(true);
     try {
-      if (!checkedIn) {
+      // #336 Resume Work — an employee who has already checked out
+      // (checkedIn && checkedOut) taps this button to start a new
+      // session. The backend's /checkin endpoint detects the closed
+      // session on the same-day row and treats it as a resume: it
+      // does NOT create a new attendance record, does NOT reset the
+      // accumulated timer, and does NOT re-evaluate late/on-time.
+      // On the client, the loader / success modal / tracking side
+      // effects reuse the check-in path, so this collapses cleanly
+      // into the existing `!checkedIn` branch.
+      const wantsCheckIn = !checkedIn || (checkedIn && checkedOut);
+      // #339 — When the user's intent is Resume (Check In Again), mark
+      // the moment so refreshToday keeps the "back to working" state
+      // for 30 s even if the server response is stale.
+      if (wantsCheckIn && checkedIn && checkedOut) {
+        resumeAtRef.current = Date.now();
+      }
+      if (wantsCheckIn) {
         // ── STEP 1: Get a GPS fix.
         //
         // Fix B (Jun 2026): REMOVED the outer withTimeout() wrapper.
@@ -1133,6 +1264,10 @@ export default function HomeScreen() {
         // cancelled and the user got an error toast instead of success.
         // ═══════════════════════════════════════════════════════════════
         const checkInResp = await attendanceAPI.checkIn(today.location || 'office', coords);
+        // #346 — Stamp resume window on every successful check-in so the
+        // next refreshToday poll can't wipe our fresh checkIn with a
+        // stale row the old backend still has cached.
+        resumeAtRef.current = Date.now();
 
         // ── (a) OPTIMISTIC LOCAL STATE — fixes the "button doesn't flip
         //         immediately" complaint. The button label is derived
@@ -1149,10 +1284,24 @@ export default function HomeScreen() {
         // SAME FIX for AsyncStorage: capture via functional updater
         // pattern so we get the real previous state, not the closure.
         const nowIso = new Date().toISOString();
-        const serverCheckIn = checkInResp?.data?.checkIn || nowIso;
+        const serverCheckIn = checkInResp?.data?.record?.checkIn || checkInResp?.data?.checkIn || nowIso;
+        // #341 — Preserve firstCheckIn (day's very first arrival) so
+        // the Check In tile stays stable across resume cycles while
+        // today.checkIn advances to the current session start for the
+        // running-time formula.
+        const serverFirst =
+          checkInResp?.data?.record?.firstCheckIn ||
+          checkInResp?.data?.firstCheckIn ||
+          null;
         let optimisticToday: TodayData = {};
         setToday(prev => {
-          optimisticToday = { ...prev, checkIn: serverCheckIn, checkOut: null };
+          optimisticToday = {
+            ...prev,
+            checkIn: serverCheckIn,
+            checkOut: null,
+            firstCheckIn: serverFirst || prev.firstCheckIn || serverCheckIn,
+            isOnBreak: false,
+          };
           return optimisticToday;
         });
         // Persist immediately so a crash-restart restores Check-Out button.
@@ -1331,14 +1480,48 @@ export default function HomeScreen() {
           }
         } catch {/* best-effort, ignore */}
         const checkOutResp = await attendanceAPI.checkOut(outCoords);
-        // Optimistic local state — flip "Check Out" → "Done" instantly.
+        // #340 — user just did an authoritative Check Out, so end the
+        // #339 resume-window guard: refreshToday should trust the
+        // server's checkOut from here on so the button correctly
+        // flips to "Check In Again" for the next cycle.
+        resumeAtRef.current = 0;
+        // Optimistic local state — flip "Check Out" → "Check In Again" instantly.
         // FIX (Jun 2026 — stale closure bug): use functional update
         // to capture prev state safely, not the stale `today` closure.
+        //
+        // #336 — On optimistic checkout, also fold the CURRENT session's
+        // running seconds into accumulatedSeconds. Without this, the
+        // Working HR's tile would visibly DROP (e.g. from 03:15 to
+        // 03:00) at the instant of checkout, because LiveWorkedHours
+        // stops ticking once checkOut is set and shows only the base
+        // `accumulatedSeconds` — which the client's optimistic state
+        // hadn't updated yet. Prefer the server's returned
+        // accumulatedSeconds when present; otherwise compute the delta
+        // locally from prev.checkIn + prev.accumulatedSeconds.
         const nowIsoOut = new Date().toISOString();
         const serverCheckOut = checkOutResp?.data?.checkOut || nowIsoOut;
+        // Backend returns { message, record } — accumulatedSeconds lives
+        // inside the record. Fall back to a bare top-level field just in
+        // case a future middleware unwraps it.
+        const serverAccum    = Number(
+          checkOutResp?.data?.record?.accumulatedSeconds ??
+          checkOutResp?.data?.accumulatedSeconds ?? 0
+        );
         let optimisticTodayOut: TodayData = {};
         setToday(prev => {
-          optimisticTodayOut = { ...prev, checkOut: serverCheckOut };
+          const startMs = prev.checkIn ? new Date(prev.checkIn).getTime() : NaN;
+          const nowMs   = new Date(serverCheckOut).getTime();
+          const currentSec = Number.isFinite(startMs) && nowMs > startMs
+            ? Math.max(0, Math.round((nowMs - startMs) / 1000))
+            : 0;
+          const localAccum = Math.max(0, Number(prev.accumulatedSeconds || 0)) + currentSec;
+          const finalAccum = Math.max(serverAccum, localAccum);
+          optimisticTodayOut = {
+            ...prev,
+            checkOut: serverCheckOut,
+            accumulatedSeconds: finalAccum,
+            isOnBreak: true,
+          };
           return optimisticTodayOut;
         });
         // Persist checkout state for crash-restart recovery.
@@ -1373,13 +1556,77 @@ export default function HomeScreen() {
       // margin so the first sync returns real data.
       setTimeout(() => refreshToday().catch(() => {}), 8000);
     } catch (err: any) {
-      Alert.alert('Error', err?.response?.data?.message || 'Could not record attendance');
+      // #337 — "Already checked in today" / "Already checked out today"
+      // is not really an error for the user. It shows up when the
+      // (still-old) backend rejects a Resume Work re-checkin, or when
+      // a duplicate tap slips through. Treat both as a silent
+      // "server is already in the state you wanted" and just refetch.
+      const msg = err?.response?.data?.message || err?.message || 'Could not record attendance';
+      if (/already checked in/i.test(msg) || /already checked out/i.test(msg)) {
+        // #339 — Old backend rejected the resume; still flip the local
+        // UI so the user isn't stuck staring at the same "Check In
+        // Again" button. Stamp resumeAtRef so refreshToday preserves
+        // the optimistic state for 30 s.
+        if (/already checked in/i.test(msg)) {
+          // #341 — Old backend rejected the resume. Locally advance
+          // checkIn to NOW so the timer's running-time formula measures
+          // only the new session; keep firstCheckIn pinned so the
+          // Check In tile still shows the day's original arrival.
+          resumeAtRef.current = Date.now();
+          const nowIso = new Date().toISOString();
+          setToday(prev => ({
+            ...prev,
+            checkIn: nowIso,
+            checkOut: null,
+            isOnBreak: false,
+            firstCheckIn: prev.firstCheckIn || prev.checkIn || nowIso,
+          }));
+        } else if (/already checked out/i.test(msg)) {
+          // #340 — user tapped Check Out but old backend rejects because
+          // its checkOut is already set from the previous cycle. Locally
+          // we want the button to flip to "Check In Again", so end the
+          // resume-window guard and roll the running session into the
+          // accumulated total.
+          resumeAtRef.current = 0;
+          setToday(prev => {
+            const startMs = prev.checkIn ? new Date(prev.checkIn).getTime() : NaN;
+            const nowMs   = Date.now();
+            const currentSec = Number.isFinite(startMs) && nowMs > startMs
+              ? Math.max(0, Math.round((nowMs - startMs) / 1000))
+              : 0;
+            return {
+              ...prev,
+              checkOut: new Date().toISOString(),
+              accumulatedSeconds: Number(prev.accumulatedSeconds || 0) + currentSec,
+              isOnBreak: true,
+            };
+          });
+        }
+        try { await refreshToday(); } catch { /* keep going */ }
+      } else {
+        Alert.alert('Error', msg);
+      }
     } finally {
       setActionBusy(false);
+      setPendingKind(null);
     }
   };
 
-  const buttonLabel = !checkedIn ? 'Check In' : !checkedOut ? 'Check Out' : 'Done';
+  // #338 Multi-session button label:
+  //   • No open session and no closed session today → "Check In"
+  //   • Currently working (checkIn set, checkOut null) → "Check Out"
+  //   • On break (both checkIn AND checkOut set = last session closed
+  //     but the workday isn't over) → "Check In Again"
+  // The Resume state used to render "Done" and hide the tap area, so
+  // an accidental checkout locked the employee out for the rest of the
+  // day. Now they can tap once and pick right back up where they left
+  // off — the timer keeps their accumulated total.
+  const isOnBreak = checkedIn && checkedOut;
+  const buttonLabel = !checkedIn
+    ? 'Check In'
+    : isOnBreak
+      ? 'Check In Again'
+      : 'Check Out';
 
   const greeting = (() => {
     const h = nowRef.current.getHours();
@@ -1460,25 +1707,39 @@ export default function HomeScreen() {
               {/* Fix G: LiveClock owns its own 1-second interval so only
                   the clock Text re-renders, not the entire HomeScreen. */}
               <LiveClock nowRef={nowRef} />
-              {!checkedOut && (
-                <TouchableOpacity
-                  onPress={handleCheckPress}
-                  activeOpacity={0.85}
-                  disabled={actionBusy}
-                  style={[
-                    styles.checkBtn,
-                    checkedIn && !checkedOut && { backgroundColor: '#1565C0', shadowColor: '#1565C0' },
-                    actionBusy && { opacity: 0.85 },
-                  ]}
-                >
-                  <Text style={styles.checkBtnText}>{buttonLabel}</Text>
-                </TouchableOpacity>
-              )}
+              {/* #336 — Button is now ALWAYS visible while it's the same
+                  attendance day. States:
+                    • Check In     — fresh (green)
+                    • Check Out    — actively working (blue)
+                    • Resume Work  — on break after an accidental /
+                                     intentional check-out (green again)
+                  This lets an employee who mis-tapped Check Out at
+                  12:00 tap Resume Work at 12:05 and continue their day
+                  with the accumulated 3-hour total preserved. */}
+              <TouchableOpacity
+                onPress={handleCheckPress}
+                activeOpacity={0.85}
+                disabled={actionBusy}
+                style={[
+                  styles.checkBtn,
+                  // Actively working → blue (matches Check Out palette).
+                  checkedIn && !checkedOut && { backgroundColor: '#1565C0', shadowColor: '#1565C0' },
+                  actionBusy && { opacity: 0.85 },
+                ]}
+              >
+                <Text style={styles.checkBtnText}>{buttonLabel}</Text>
+              </TouchableOpacity>
             </View>
 
             <View style={styles.divider} />
 
             <View style={styles.statsRow}>
+              {/* #343 — Show the CURRENT session's exact check-in time
+                  (which advances on every Check In / Check In Again
+                  tap) so the user immediately sees when they just
+                  clocked in. firstCheckIn stays available in state
+                  for HRMS reports + attendance history, but not for
+                  the live dashboard tile. */}
               <StatItem
                 icon={<Feather name="log-in" size={20} color="#2E7D32" />}
                 value={formatHourMin(today.checkIn)}
@@ -1502,6 +1763,9 @@ export default function HomeScreen() {
               <LiveWorkedHours
                 checkIn={today.checkIn}
                 checkOut={today.checkOut}
+                accumulatedSeconds={today.accumulatedSeconds || 0}
+                firstCheckIn={today.firstCheckIn}
+                workedHours={today.workedHours || 0}
               />
             </View>
           </View>
@@ -1609,22 +1873,39 @@ export default function HomeScreen() {
         statusBarTranslucent
         onRequestClose={() => { /* swallow back-press while busy */ }}
       >
+        {/* #340 — Loader driven by pendingKind (frozen at tap time in
+            handleCheckPress). Prevents the "1-sec Checking you out"
+            flash during a Check In Again tap — the derived
+            checkedIn/checkedOut/isOnBreak flips MID-await when the
+            optimistic setToday(checkOut=null) fires, but pendingKind
+            stays stable for the full duration of actionBusy. Falls
+            back to the derived value if pendingKind is null (initial
+            mount / never tapped). */}
         <View style={loaderStyles.backdrop}>
           <View style={loaderStyles.card}>
-            <PremiumLoader variant={!checkedIn ? 'in' : 'out'} />
-            <Text style={loaderStyles.label}>
-              {!checkedIn ? 'Checking you in' : 'Checking you out'}
-            </Text>
-            <Text style={loaderStyles.sub}>
-              {!checkedIn
-                ? 'Confirming your location with HR…'
-                : 'Saving today\'s log and stopping live tracking…'}
-            </Text>
-            <View style={loaderStyles.dotRow}>
-              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#16A34A' : '#1D4ED8' }]} />
-              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#22C55E' : '#3B82F6', opacity: 0.6 }]} />
-              <View style={[loaderStyles.dot, { backgroundColor: !checkedIn ? '#86EFAC' : '#93C5FD', opacity: 0.35 }]} />
-            </View>
+            {(() => {
+              const derivedKind: 'in' | 'out' =
+                (!checkedIn || (checkedIn && checkedOut)) ? 'in' : 'out';
+              const loaderShowsIn = (pendingKind ?? derivedKind) === 'in';
+              return (
+                <>
+                  <PremiumLoader variant={loaderShowsIn ? 'in' : 'out'} />
+                  <Text style={loaderStyles.label}>
+                    {loaderShowsIn ? 'Checking you in' : 'Checking you out'}
+                  </Text>
+                  <Text style={loaderStyles.sub}>
+                    {loaderShowsIn
+                      ? 'Confirming your location with HR…'
+                      : 'Saving today\'s log and stopping live tracking…'}
+                  </Text>
+                  <View style={loaderStyles.dotRow}>
+                    <View style={[loaderStyles.dot, { backgroundColor: loaderShowsIn ? '#16A34A' : '#1D4ED8' }]} />
+                    <View style={[loaderStyles.dot, { backgroundColor: loaderShowsIn ? '#22C55E' : '#3B82F6', opacity: 0.6 }]} />
+                    <View style={[loaderStyles.dot, { backgroundColor: loaderShowsIn ? '#86EFAC' : '#93C5FD', opacity: 0.35 }]} />
+                  </View>
+                </>
+              );
+            })()}
           </View>
         </View>
       </Modal>
@@ -1888,11 +2169,10 @@ const styles = StyleSheet.create({
   annCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    marginBottom: 12,
+    padding: 14,
+    marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#E6EDE7',
+    borderColor: '#E5E7EB',
     shadowColor: '#000',
     shadowOpacity: 0.03,
     shadowOffset: { width: 0, height: 2 },
@@ -1912,29 +2192,26 @@ const loaderStyles = StyleSheet.create({
     backgroundColor: 'rgba(15, 23, 42, 0.55)',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 36,
+    padding: 24,
   },
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 28,
-    paddingHorizontal: 34,
-    paddingVertical: 36,
-    minWidth: 300,
+    borderRadius: 20,
+    paddingVertical: 30,
+    paddingHorizontal: 28,
     alignItems: 'center',
-    justifyContent: 'center',
+    minWidth: 260,
     shadowColor: '#0F172A',
-    shadowOpacity: 0.28,
-    shadowOffset: { width: 0, height: 14 },
-    shadowRadius: 32,
-    elevation: 20,
+    shadowOpacity: 0.24,
+    shadowOffset: { width: 0, height: 12 },
+    shadowRadius: 28,
+    elevation: 12,
   },
-  // Premium loader centerpiece (#276) ─────────────────────────────
   centerpiece: {
-    width: 110, height: 110,
+    width: 120,
+    height: 120,
     alignItems: 'center',
     justifyContent: 'center',
-    position: 'relative',
-    marginBottom: 10,
   },
   halo: {
     position: 'absolute',
@@ -1975,7 +2252,9 @@ const loaderStyles = StyleSheet.create({
     marginTop: 18,
   },
   dot: {
-    width: 8, height: 8, borderRadius: 4,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     marginHorizontal: 4,
   },
 });
