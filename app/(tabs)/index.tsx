@@ -21,6 +21,15 @@ import * as Location from 'expo-location';
 import { Linking, AppState } from 'react-native';
 import { attendanceAPI, announcementAPI, notificationAPI, wakeBackend } from '../../services/api';
 import SideDrawer from '../../components/SideDrawer';
+// #377 — Per-screen error boundary. Every OTHER tab already wraps its
+// JSX with this so a single render error is contained to that screen.
+// HomeScreen was the ONLY tab without it — meaning any null-access,
+// bad Ionicons name, or malformed announcement `_id` bubbled all the
+// way to the RootErrorBoundary and unmounted the ENTIRE app (killing
+// the GPS task, AppState listener, and session). This was the biggest
+// remaining "app comes out by itself" source. HomeScreen is the most
+// complex tab in the app; it MUST have per-screen protection.
+import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import {
   startBackgroundLocationUpdates,
   stopBackgroundLocationUpdates,
@@ -1683,6 +1692,13 @@ export default function HomeScreen() {
     (user?.name && String(user.name).split(' ')[0]) || 'Vijay';
 
   return (
+    // #377 — Per-screen boundary. Every OTHER tab already had this.
+    // HomeScreen was unprotected — any render error here would bubble
+    // to the RootErrorBoundary and tear down the ENTIRE app (killing
+    // the GPS bg task, AppState listener, and auth session). Now a
+    // single bad render is contained to this screen with a "Try again"
+    // recovery card; the other tabs, tracking, and session stay alive.
+    <ScreenErrorBoundary name="Home">
     <View style={styles.root}>
       {/* Solid green status bar so the safe-area strip never shows the
           page background through the translucent OS layer (caused the
@@ -2039,6 +2055,7 @@ export default function HomeScreen() {
         </Pressable>
       </Modal>
     </View>
+    </ScreenErrorBoundary>
   );
 }
 
@@ -2227,71 +2244,86 @@ const styles = StyleSheet.create({
 });
 
 // Premium overlay loader used by the centered Check-In / Check-Out modal.
-// Layout: pulse-ring + icon + spinner stacked → label → subtitle → dots.
+// Layout: halo behind spinner behind icon disc, then label + subtitle + dots.
 const loaderStyles = StyleSheet.create({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.55)',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
+    paddingHorizontal: 36,
   },
   card: {
-    width: '100%',
-    maxWidth: 340,
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    paddingVertical: 30,
-    paddingHorizontal: 22,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 12,
-  },
-  iconStack: {
-    width: 100,
-    height: 100,
+    borderRadius: 28,
+    paddingHorizontal: 34,
+    paddingVertical: 36,
+    minWidth: 300,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 18,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.28,
+    shadowOffset: { width: 0, height: 14 },
+    shadowRadius: 32,
+    elevation: 20,
   },
-  pulseRing: {
+  centerpiece: {
+    width: 110,
+    height: 110,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    marginBottom: 10,
+  },
+  halo: {
     position: 'absolute',
-    width: 100,
-    height: 100,
-    borderRadius: 50,
+    width: 110,
+    height: 110,
+    borderRadius: 55,
   },
-  iconInner: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+  spinRing: {
+    position: 'absolute',
+    width: 94,
+    height: 94,
+    borderRadius: 47,
+    borderWidth: 4,
+    borderStyle: 'solid',
+  },
+  iconDisc: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F1F5F9',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.22,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 8,
   },
   label: {
+    marginTop: 18,
     fontSize: 18,
     fontWeight: '800',
     color: '#0F172A',
-    marginTop: 4,
-  },
-  subtitle: {
-    fontSize: 13,
-    color: '#64748B',
-    marginTop: 6,
+    letterSpacing: 0.2,
     textAlign: 'center',
   },
-  dots: {
+  sub: {
+    marginTop: 6,
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  dotRow: {
     flexDirection: 'row',
-    marginTop: 14,
-    gap: 6,
+    marginTop: 18,
   },
   dot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#94A3B8',
+    marginHorizontal: 4,
   },
 });
