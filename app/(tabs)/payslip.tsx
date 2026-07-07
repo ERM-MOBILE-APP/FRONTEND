@@ -776,19 +776,4 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-  /* ─── Year picker (header chip) ─────────────────────────────────── */
-  yearPicker: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 16,
-    backgroundColor: '#F5F5F5',
-  },
-  yearPickerText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1A1A1A',
-    marginRight: 4,
-  },
-  /* ─── Year picker modal ────────────── */
+});

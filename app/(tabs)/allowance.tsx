@@ -1380,4 +1380,32 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderWidth: 1,
     borderColor: '#E5E7EB',
-  
+    borderRadius: 10,
+    backgroundColor: '#FAFAFA',
+    marginBottom: 10,
+  },
+  locSearchInput: {
+    flex: 1,
+    fontSize: 13.5,
+    color: '#111',
+    paddingVertical: 0,
+  },
+  locRow: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  locRowActive: {
+    backgroundColor: '#E8F5E9',
+  },
+  locRowText: {
+    fontSize: 14,
+    color: '#111',
+  },
+  locEmpty: {
+    paddingVertical: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});
