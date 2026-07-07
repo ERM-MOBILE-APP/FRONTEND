@@ -635,21 +635,20 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
   //                                       persistent low-priority sticky
   //                                       notification (cannot be swiped
   //                                       away by accident).
-  // Production-tuned config (Jun 2026): Highest accuracy + 60-sec interval.
-  // We upgraded from High → Highest because HR complained about pin
-  // jitter on the map — employees standing still appeared to drift 20-50 m
-  // because High accuracy mode mixes GPS + cell-tower + Wi-Fi triangulation
-  // and the latter two have huge error radii. Highest forces pure GPS
-  // (or Fused with GPS preferred) so urban-canyon accuracy drops from
-  // ±50 m to ±5-10 m typical.
+  // Production-tuned config (Jul 2026 — #373): Highest accuracy + 120-sec
+  // interval. HR's target cadence is exactly one ping every 2 minutes
+  // from check-in to check-out. Aligning the OS-level task interval to
+  // 120s means the OS itself paces us instead of relying on backend
+  // dedup to swallow every-other tick. Battery + network cost is halved,
+  // dedup becomes a safety net instead of primary gating, and the actual
+  // ping timeline in the DB reads cleanly at 2-minute intervals.
   //
-  // Interval tightened from 90 s → 60 s. With the new 10-min stale
-  // window on the backend we have less headroom, and "Highest" doesn't
-  // cost meaningfully more battery than "High" once GPS is already on.
+  // Highest accuracy stays (pure GPS ±5-10 m) so the pin doesn't jitter
+  // on the map when employees are stationary.
   await appendEvent('start', 'startLocationUpdatesAsync invoked');
   await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
     accuracy:         Location.Accuracy.Highest,
-    timeInterval:     60 * 1000,
+    timeInterval:     120 * 1000,
     distanceInterval: 0,
     showsBackgroundLocationIndicator: true,
     pausesUpdatesAutomatically:       false,

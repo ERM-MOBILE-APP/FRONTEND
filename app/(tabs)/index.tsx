@@ -757,16 +757,27 @@ export default function HomeScreen() {
   // we don't spam them with an alert every 30 seconds.
   const gpsOffWarnedRef = React.useRef(false);
 
+  // #374 — Clears ONLY the JS foreground timers. Does NOT touch the OS-level
+  // background location task. The BG task must survive foreground remounts,
+  // startTracking() re-invocations, and any transient state re-renders —
+  // otherwise the OS teardown+restart introduces a 1-2 second gap in the
+  // ping stream every time. The BG task is stopped in exactly ONE place:
+  // stopContinuousTracking() below, which is called only at check-out.
   const stopTracking = () => {
     if (pingTimerRef.current)  { clearInterval(pingTimerRef.current);  pingTimerRef.current  = null; }
     if (gpsWatcherRef.current) { clearInterval(gpsWatcherRef.current); gpsWatcherRef.current = null; }
     if (bgGuardianRef.current) { clearInterval(bgGuardianRef.current); bgGuardianRef.current = null; }
     gpsOffWarnedRef.current = false;
-    // Tell the OS to stop the background location task too — otherwise
-    // it keeps pinging after check-out, which is privacy-bad and burns
-    // the user's battery for no reason.
-    stopBackgroundLocationUpdates('stopTracking (checkout/unmount/auto-checkout)').catch(() => {});
-    console.log('[tracking] stopped');
+    console.log('[tracking] fg timers cleared (bg task untouched)');
+  };
+
+  // #374 — Full teardown for check-out / logout / auto-checkout. Clears FG
+  // timers AND stops the OS BG task. This is the ONLY entry point that
+  // stops the background location service.
+  const stopContinuousTracking = (reason: string) => {
+    stopTracking();
+    stopBackgroundLocationUpdates('checkout: ' + reason).catch(() => {});
+    console.log('[tracking] continuous tracking fully stopped (' + reason + ')');
   };
 
   /**
@@ -808,11 +819,31 @@ export default function HomeScreen() {
     // caused a double-call (once in handleCheckPress, once here) which
     // raced the background permission dialog on some devices.
 
-    const PING_MS = 2 * 60 * 1000;   // 2 minutes — full location ping
+    // #374 production polish — the OS-scheduled expo-location background
+    // task is the PRIMARY source of pings (every 2 min while the app is
+    // in ANY state). This foreground timer is a fallback: it fires every
+    // 3 minutes and only sends a ping if the native task appears dead.
+    // On healthy devices the FG timer never actually POSTs — the native
+    // task has always beaten it. Net effect: zero wasted HTTP on healthy
+    // devices, guaranteed 2-min cadence on unhealthy ones.
+    const PING_MS = 3 * 60 * 1000;   // 3 minutes — fallback cadence (fires only if native task dead)
     const WATCH_MS = 30 * 1000;      // 30 seconds — fast GPS-on/off check
 
-    const ping = async () => {
+    const ping = async (isImmediate = false) => {
       try {
+        // #374 — Fallback gate. If this is a scheduled tick (not the
+        // check-in immediate ping), only fire if the native background
+        // task is not running. On healthy devices the OS task handles
+        // every scheduled ping; FG timer is a hot backup.
+        if (!isImmediate) {
+          const taskAlive = await Location
+            .hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK)
+            .catch(() => false);
+          if (taskAlive) {
+            // Native task is delivering — skip the redundant FG ping.
+            return;
+          }
+        }
         const servicesOn = await Location.hasServicesEnabledAsync();
         if (!servicesOn) { await handleGpsOffWarn(); return; }
 
@@ -960,7 +991,10 @@ export default function HomeScreen() {
     // still initialising right after check-in) doesn't escape startTracking()
     // and crash the handleCheckPress finally block. The scheduled intervals
     // below still run on time — a single failed warm-up ping is irrelevant.
-    try { ping().catch((e) => console.warn('[tracking] ping warm-up rejection:', e?.message || e)); }
+    // #374 — Immediate ping at check-in: pass `true` so it bypasses the
+    // task-alive gate. This is the ONLY ping we want to fire on the
+    // foreground path unconditionally — everything else is fallback.
+    try { ping(true).catch((e) => console.warn('[tracking] ping warm-up rejection:', e?.message || e)); }
     catch (e: any) { console.warn('[tracking] initial ping failed:', e?.message || e); }
     try { guardian().catch((e) => console.warn('[tracking] guardian warm-up rejection:', e?.message || e)); }
     catch (e: any) { console.warn('[tracking] initial guardian failed:', e?.message || e); }
@@ -1001,8 +1035,11 @@ export default function HomeScreen() {
     console.log('[tracking] started (ping 2 min, gpsWatcher 30s, bgGuardian 30s) — wrapped against unhandled rejections');
   };
 
-  // Clean up intervals if the home component unmounts (e.g. logout).
-  useEffect(() => () => stopTracking(), []);
+  // #374 — Component unmount (logout / navigation out of tabs). Full
+  // teardown: FG timers + OS BG task. If the user was still checked in,
+  // they'll need to re-check-in on next login, so stopping the BG task
+  // here is correct — no orphaned service after logout.
+  useEffect(() => () => stopContinuousTracking('component unmount'), []);
 
   // If the user is already checked-in when the home screen mounts (e.g.
   // they killed the app and re-opened it later), resume the loop.
@@ -1011,7 +1048,10 @@ export default function HomeScreen() {
       startTracking();
     }
     if ((!checkedIn || checkedOut) && pingTimerRef.current) {
-      stopTracking();
+      // #374 — Full teardown when the session ends via state change
+      // (checked-out flag flipped, or logout). Both FG timers and OS BG
+      // task stop here — the only other place is user check-out tap.
+      stopContinuousTracking('session state change');
     }
   }, [checkedIn, checkedOut]);
 
@@ -1536,8 +1576,10 @@ export default function HomeScreen() {
           catch (e: any) { console.warn('[handleCheckPress] setCheckResult(out) failed:', e?.message || e); }
         }, 60);
         try { await attendanceAPI.setPresence('offline'); } catch {}
-        try { stopTracking(); } catch (e: any) {
-          console.warn('[handleCheckPress] stopTracking failed:', e?.message || e);
+        // #374 — Full teardown: FG timers + OS BG task. Only place we
+        // stop the OS background location service outside of auto-checkout.
+        try { stopContinuousTracking('user check-out'); } catch (e: any) {
+          console.warn('[handleCheckPress] stopContinuousTracking failed:', e?.message || e);
         }
       } else {
         const doneTime = formatLiveTime(new Date());
@@ -2195,66 +2237,61 @@ const loaderStyles = StyleSheet.create({
     padding: 24,
   },
   card: {
+    width: '100%',
+    maxWidth: 340,
     backgroundColor: '#FFFFFF',
     borderRadius: 20,
     paddingVertical: 30,
-    paddingHorizontal: 28,
+    paddingHorizontal: 22,
     alignItems: 'center',
-    minWidth: 260,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.24,
-    shadowOffset: { width: 0, height: 12 },
-    shadowRadius: 28,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 8 },
     elevation: 12,
   },
-  centerpiece: {
-    width: 120,
-    height: 120,
+  iconStack: {
+    width: 100,
+    height: 100,
     alignItems: 'center',
     justifyContent: 'center',
+    marginBottom: 18,
   },
-  halo: {
+  pulseRing: {
     position: 'absolute',
-    width: 110, height: 110, borderRadius: 55,
+    width: 100,
+    height: 100,
+    borderRadius: 50,
   },
-  spinRing: {
-    position: 'absolute',
-    width: 94, height: 94, borderRadius: 47,
-    borderWidth: 4,
-    borderStyle: 'solid',
-  },
-  iconDisc: {
-    width: 58, height: 58, borderRadius: 29,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.22,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 12,
-    elevation: 8,
+  iconInner: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F1F5F9',
   },
   label: {
-    marginTop: 18,
     fontSize: 18,
     fontWeight: '800',
     color: '#0F172A',
-    letterSpacing: 0.2,
-    textAlign: 'center',
+    marginTop: 4,
   },
-  sub: {
-    marginTop: 6,
+  subtitle: {
     fontSize: 13,
     color: '#64748B',
+    marginTop: 6,
     textAlign: 'center',
-    lineHeight: 18,
   },
-  dotRow: {
+  dots: {
     flexDirection: 'row',
-    marginTop: 18,
+    marginTop: 14,
+    gap: 6,
   },
   dot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    marginHorizontal: 4,
+    backgroundColor: '#94A3B8',
   },
 });

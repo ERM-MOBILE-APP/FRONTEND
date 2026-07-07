@@ -26,7 +26,7 @@
     },
     "android": {
       "package": "com.tescodigitals26.tescoerm",
-      "versionCode": 2,
+      "versionCode": 3,
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
@@ -72,7 +72,9 @@
           "locationAlwaysPermission": "Tesco ERM shares your location with HR while you're checked in, even when the app is closed. Tracking stops the moment you check out.",
           "locationWhenInUsePermission": "Tesco ERM uses your location to record check-ins and verify field-work attendance.",
           "isAndroidBackgroundLocationEnabled": true,
-          "isAndroidForegroundServiceEnabled": true
+          "isAndroidForegroundServiceEnabled": true,
+          "locationForegroundServiceType": "location",
+          "androidBackgroundPermissionRationale": "Tesco ERM needs Allow all the time so we can share your live location with HR between check-in and check-out. Without this, HR sees you as Offline within minutes of the app being backgrounded."
         }
       ],
       "expo-font"
