@@ -30,6 +30,12 @@ import SideDrawer from '../../components/SideDrawer';
 // remaining "app comes out by itself" source. HomeScreen is the most
 // complex tab in the app; it MUST have per-screen protection.
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
+// #405 — Primary bg tracker (react-native-background-actions FGS).
+import {
+  startBackgroundTracking,
+  stopBackgroundTracking,
+  requestTrackingPermissions,
+} from '../../services/backgroundTracking';
 import {
   startBackgroundLocationUpdates,
   stopBackgroundLocationUpdates,
@@ -44,6 +50,9 @@ import {
   isHeartbeatStale,
   resetTrackingDiagnostics,
 } from '../../services/locationTask';
+// #409 — SQLite-backed offline queue for pings + tracking state.
+import { initPingStore, markCheckIn, markCheckOut, getPendingCount } from '../../services/pingStore';
+import { startPingSyncListener, flushPendingPings, syncMissingPingsFromLocal } from '../../services/pingSync';
 
 type WorkLocation = 'remote' | 'office';
 
@@ -253,47 +262,39 @@ const LiveWorkedHours = memo(function LiveWorkedHours({
     return () => clearInterval(t);
   }, [isWorking]);
 
-  // #336/#337 — Total = accumulated (rolled up from all closed sessions)
-  //                    + current session running time (if actively working).
-  // This is what makes the timer RESUME from 03:00 instead of restarting
-  // at 00:00 after an accidental check-out.
+  // #395 — Working-hours math is now IDENTICAL to Web ERM
+  // (Frontend/src/pages/Dashboard.jsx `workedHrs`). Since #394 locked
+  // the mobile app to one check-in + one check-out per day, the
+  // multi-session accumulated logic is no longer needed — same as
+  // the web ERM which never supported multi-session.
   //
-  // Fallback cascade (#337):
-  //   1. accumulatedSeconds prop (new backend)
-  //   2. workedHours * 3600 (legacy backend, whole-day total)
-  //   3. checkOut − checkIn (single-session row)
+  // Web ERM formula (mirrored below):
+  //   • Actively working (checkIn set, no checkOut):
+  //       ms       = now.getTime() − checkIn.getTime()
+  //       totalMin = max(0, floor(ms / 60_000))
+  //       h        = floor(totalMin / 60)
+  //       m        = totalMin % 60
+  //       display  = `${HH}:${MM}` (2-digit padded)
+  //   • Day complete (checkOut landed):
+  //       wh       = Number(workedHours ?? 0)   // decimal hours from server
+  //       h        = floor(wh)
+  //       m        = round((wh − h) × 60)
+  //       display  = `${HH}:${MM}` (2-digit padded)
+  //
+  // Format is HH:MM (no seconds). Same rounding, same padding,
+  // same value for the same row.
   const value = (() => {
-    let base = Math.max(0, Number(accumulatedSeconds || 0));
-    if (base === 0 && Number(workedHours || 0) > 0) {
-      base = Math.round(Number(workedHours) * 3600);
+    if (checkIn && !checkOut) {
+      const ms       = Date.now() - new Date(checkIn).getTime();
+      const totalMin = Math.max(0, Math.floor(ms / 60000));
+      const h        = Math.floor(totalMin / 60);
+      const m        = totalMin % 60;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
     }
-    let running = 0;
-    if (isWorking && checkIn) {
-      const start = new Date(checkIn).getTime();
-      if (Number.isFinite(start) && Date.now() > start) {
-        running = Math.floor((Date.now() - start) / 1000);
-      }
-    }
-    let total = base + running;
-    // Final safety net — a completed session pair on the row directly.
-    if (total === 0 && checkIn && checkOut) {
-      const s = new Date(checkIn).getTime();
-      const e = new Date(checkOut).getTime();
-      if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
-        total = Math.floor((e - s) / 1000);
-      }
-    }
-    // Nothing to show yet AND nothing to hint at → keep zeros.
-    if (!isWorking && total <= 0 && !firstCheckIn) return '00:00:00';
-    // #344 — HH:MM:SS so the counter visibly ticks every second (per the
-    // original multi-session spec: 03:00:00, 03:01:00, 04:00:00, ...).
-    const totalSec = Math.max(0, total);
-    const hh  = Math.floor(totalSec / 3600);
-    const mm  = Math.floor((totalSec % 3600) / 60);
-    const ss  = totalSec % 60;
-    return String(hh).padStart(2, '0') + ':' +
-           String(mm).padStart(2, '0') + ':' +
-           String(ss).padStart(2, '0');
+    const wh = Number(workedHours || 0);
+    const h  = Math.floor(wh);
+    const m  = Math.round((wh - h) * 60);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   })();
 
   return (
@@ -502,6 +503,36 @@ export default function HomeScreen() {
     // until check-out actually happens.
     (async () => {
       try {
+        // #415 — PER-USER GUARD. Before restoring any cached today
+        // snapshot, verify it belongs to the CURRENT logged-in user.
+        // Without this, User B logging in on the same device sees
+        // User A's checkIn / workedHours / Check Out button (Expo
+        // dev-client account switch bug reported Jul 2026).
+        //
+        // The cached snapshot doesn't itself carry a userId, so we
+        // cross-reference the SQLite tracking_state — it stores
+        // employeeId at check-in time and the wipe helper clears it
+        // on logout / login mismatch. If tracking_state.employeeId
+        // doesn't match the currently-logged-in user's employeeId
+        // (or userId), we drop the cache entirely.
+        const userRaw = await AsyncStorage.getItem('user');
+        const currentUser = userRaw ? JSON.parse(userRaw) : {};
+        const currentEmpId =
+          currentUser?.employeeId || currentUser?.userId ||
+          currentUser?._id || currentUser?.id || null;
+        try {
+          const { getTrackingState, wipeUserScopedTracking } = require('../../services/pingStore');
+          const state = await getTrackingState();
+          const stateOwner = state?.employeeId || state?.userId || null;
+          if (stateOwner && currentEmpId && String(stateOwner) !== String(currentEmpId)) {
+            console.log('[home mount] user mismatch — wiping stale tracking state',
+              { was: stateOwner, now: currentEmpId });
+            await wipeUserScopedTracking();
+            // No cache restore possible after a wipe.
+            return;
+          }
+        } catch { /* pingStore not ready yet — fall through */ }
+
         const raw = await AsyncStorage.getItem('erm-today-v1');
         if (!raw) return;
         const cached: TodayData = JSON.parse(raw);
@@ -541,11 +572,77 @@ export default function HomeScreen() {
     // trigger ONE combined re-render instead of three separate ones.
     // Previously each resolved independently → three render cycles on
     // mount, visible as a multi-frame flash (the "flickering" on open).
+    // #409 — Initialise the SQLite ping store + start the sync listener
+    // as early as possible. Both are idempotent; init returns the same
+    // promise on repeat calls. The sync listener drains any pings that
+    // piled up while the app was closed, then re-runs on every
+    // NetInfo online-restore event and on a 60-s periodic timer.
+    initPingStore()
+      .then(() => startPingSyncListener())
+      .then(() => getPendingCount())
+      .then((n) => { if (n > 0) console.log(`[pingStore] ${n} pending pings queued at startup`); })
+      .catch((e) => console.warn('[pingStore] init failed:', e?.message || e));
+
     Promise.all([
       refreshToday(),
       refreshAnnouncements(),
       refreshUnread(),
-    ]).catch(() => {});
+    ])
+      // #405 — COLD-BOOT AUTO-RESUME.
+      // After a fresh app launch (OS killed the process, task-swipe,
+      // force-stop, phone reboot), refreshToday() tells us whether the
+      // employee was checked-in when the app died. If they were AND they
+      // haven't checked out yet, immediately restart BOTH bg trackers
+      // and the FG guardian so the 2-min ping cadence resumes without
+      // requiring the user to reopen the app or tap anything. The
+      // trackers themselves are idempotent — calling start() on an
+      // already-running service is a safe no-op.
+      .then(async () => {
+        try {
+          const raw = await AsyncStorage.getItem('token');
+          if (!raw) return; // logged out — nothing to resume
+          // refreshToday has already populated the today state; check the ref.
+          // We can't read state here (stale closure), so re-check via API for freshness.
+          const res = await attendanceAPI.today().catch(() => null);
+          const t = res?.data || {};
+          const checkedIn  = !!t.checkIn;
+          const checkedOut = !!t.checkOut;
+          if (checkedIn && !checkedOut) {
+            console.log('[cold-boot resume] user still checked in — restarting both bg trackers');
+            // #408 — Unconditional presence push on cold-boot resume so
+            // the client + backend both log `[presence] TES080 → active`
+            // even when GPS never went off (which is why setPresence was
+            // silent under normal flow).
+            attendanceAPI.setPresence('active').catch(() => {});
+            // #409 — Drain any pending pings queued while the app was
+            // closed BEFORE we start pushing new ones. This preserves
+            // strict chronological order in the DB.
+            flushPendingPings('cold-boot-resume').catch(() => {});
+            // #416 — Also run the batch missing-pings reconciliation on
+            // cold-boot so anything the per-row flush missed (bg-task
+            // pings that bypassed SQLite historically) gets uploaded.
+            syncMissingPingsFromLocal('cold-boot-resume').catch(() => {});
+            // Primary: react-native-background-actions FGS.
+            try {
+              await requestTrackingPermissions().catch(() => {});
+              await startBackgroundTracking().catch(() => {});
+            } catch (e: any) {
+              console.warn('[cold-boot resume] startBackgroundTracking failed:', e?.message || e);
+            }
+            // Secondary: expo-task-manager OS-scheduled callback.
+            try {
+              await startBackgroundLocationUpdates().catch(() => {});
+            } catch (e: any) {
+              console.warn('[cold-boot resume] startBackgroundLocationUpdates failed:', e?.message || e);
+            }
+            // Foreground guardian + AppState re-check.
+            try { startTracking(); } catch (e: any) {
+              console.warn('[cold-boot resume] startTracking (FG timers) failed:', e?.message || e);
+            }
+          }
+        } catch { /* silent — resume is best-effort */ }
+      })
+      .catch(() => {});
     // NOTE: the 1-second clock is now owned by <LiveClock> (fix G).
     // No setInterval or cleanup needed here.
   }, [refreshToday, refreshAnnouncements, refreshUnread]);
@@ -835,7 +932,10 @@ export default function HomeScreen() {
     // On healthy devices the FG timer never actually POSTs — the native
     // task has always beaten it. Net effect: zero wasted HTTP on healthy
     // devices, guaranteed 2-min cadence on unhealthy ones.
-    const PING_MS = 3 * 60 * 1000;   // 3 minutes — fallback cadence (fires only if native task dead)
+    // #410 — 2-minute cadence so the FG timer's console log fires at
+    // the same beat HR expects. Was 3 min from #374 "fallback only"
+    // era; user asked for a guaranteed line every 2 min.
+    const PING_MS = 2 * 60 * 1000;   // 2 minutes — matches bg-task cadence
     const WATCH_MS = 30 * 1000;      // 30 seconds — fast GPS-on/off check
 
     const ping = async (isImmediate = false) => {
@@ -850,6 +950,10 @@ export default function HomeScreen() {
             .catch(() => false);
           if (taskAlive) {
             // Native task is delivering — skip the redundant FG ping.
+            // #412 — Removed the "fg tick — bg task owns this cycle"
+            // log per HR feedback: the 2-min throttled `fix` and the
+            // `[tracking] ✔ ping` lines are already enough proof that
+            // tracking is alive; this extra line was just noise.
             return;
           }
         }
@@ -879,7 +983,9 @@ export default function HomeScreen() {
           }).catch(() => null);
         }
         if (!fix) {
-          console.warn('[tracking] no fix available this cycle — skipping ping');
+          console.warn(
+  `[tracking] ${new Date().toLocaleString()} - no fix available this cycle — skipping ping`
+);
           return;
         }
 
@@ -903,6 +1009,7 @@ export default function HomeScreen() {
           filtered.accuracy ?? undefined,
           filtered.speed    ?? undefined,
           filtered.isStationary,
+          
         );
         // GPS came back on after being off — clear the warning latch so the
         // next disable-event can show the prompt again, and flip presence
@@ -911,11 +1018,17 @@ export default function HomeScreen() {
           gpsOffWarnedRef.current = false;
           attendanceAPI.setPresence('active').catch(() => {});
         }
-        console.log(
-          '[tracking] ✔ ping',
-          filtered.lat.toFixed(5), filtered.lng.toFixed(5),
-          filtered.isStationary ? '(STATIONARY)' : '(MOVING)',
-        );
+        // #411 — Prefix with IST time so the 2-min cadence is visible.
+        // #413 — Label coords `latitude:` / `longitude:` for readability.
+        {
+          const nowIst = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false });
+          console.log(
+            `[${nowIst}] [tracking] ✔ ping`,
+            `latitude: ${filtered.lat.toFixed(5)}`,
+            `longitude: ${filtered.lng.toFixed(5)}`,
+            filtered.isStationary ? '(STATIONARY)' : '(MOVING)',
+          );
+        }
       } catch (err: any) {
         console.warn('[tracking] ping failed:', err?.message || err);
       }
@@ -972,8 +1085,14 @@ export default function HomeScreen() {
         if (!on) return;   // GPS off — handled by watchGps + handleGpsOffWarn
 
         // Layer 1: does the OS think the task is registered?
-        const taskAlive = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => false);
-
+        // #408 — Restored the real OS check. Was hardcoded to `true`
+        // during an earlier debug pass, which silently disabled the
+        // guardian's revive path (`if (!taskAlive)` could never fire)
+        // and left "taskAlive: true" spamming the logs every 15 s
+        // regardless of actual state.
+        const taskAlive = await Location
+          .hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK)
+          .catch(() => false);
         // Layer 2: heartbeat freshness. Even when the OS REPORTS the
         // task as registered, OEM battery savers (MIUI/ColorOS/etc.)
         // can SIGKILL the foreground service so the task callback
@@ -982,10 +1101,18 @@ export default function HomeScreen() {
         // stale (> 3 min for a 60-s interval) we know the OS is lying
         // about the task being alive — force a hard revive.
         const stale = await isHeartbeatStale();
+        // #412 — Removed the `[guardian] taskAlive=... stale=...` log
+        // per HR feedback. The guardian still runs every 15-30 s and
+        // will still print `[tracking] bg task is zombie ...` on a real
+        // revive event, which is the only case that actually matters.
 
         if (!taskAlive) {
-          console.warn('[tracking] bg task not registered — reviving');
-          await reviveBackgroundLocationUpdates('guardian: !taskAlive');
+      
+console.warn(
+  `[tracking] ${new Date().toLocaleString()} - bg task not registered — reviving`
+);
+
+await reviveBackgroundLocationUpdates('guardian: !taskAlive');
         } else if (stale) {
           console.warn('[tracking] bg task is zombie (heartbeat stale) — reviving');
           await reviveBackgroundLocationUpdates('guardian: heartbeat stale');
@@ -1135,12 +1262,14 @@ export default function HomeScreen() {
               Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
               new Promise<null>((r) => setTimeout(() => r(null), 8000)),
             ]);
+            console.warn("fix", fix);
             if (fix) {
               const filtered = await filterFix({
                 lat: fix.coords.latitude,
                 lng: fix.coords.longitude,
                 accuracy: fix.coords.accuracy ?? undefined,
                 speed:    fix.coords.speed    ?? undefined,
+                remarks : "CheckinRemarks"
               });
               if (filtered) {
                 await attendanceAPI.locationPing(
@@ -1253,29 +1382,29 @@ export default function HomeScreen() {
 
   const handleCheckPress = async () => {
     if (actionBusy) return;
-    // #340 — Capture intent NOW so the loader's copy/color stays stable
-    // even after the optimistic setToday(checkOut=null) fires during
-    // Check In Again. Fresh check-in and resume both count as 'in'.
-    const wantsCheckInAtTap = !checkedIn || (checkedIn && checkedOut);
+    // #394 — Belt-and-braces guard: if the day is already complete
+    // (checked in AND out today), never allow another tap-through.
+    // The button is hidden in JSX (see !dayComplete gate below), but
+    // this also protects against any race that could re-render the
+    // button after a stale-refresh briefly restores checkOut = null.
+    if (checkedIn && checkedOut) return;
+    // #340 — Capture intent NOW so the loader's copy/color stays stable.
+    // With #394 in place we only ever take the fresh check-in branch
+    // (checkedIn === false) or the check-out branch (checkedIn === true
+    // and checkedOut === false). The "resume" branch is dead.
+    const wantsCheckInAtTap = !checkedIn;
     setPendingKind(wantsCheckInAtTap ? 'in' : 'out');
     setActionBusy(true);
     try {
-      // #336 Resume Work — an employee who has already checked out
-      // (checkedIn && checkedOut) taps this button to start a new
-      // session. The backend's /checkin endpoint detects the closed
-      // session on the same-day row and treats it as a resume: it
-      // does NOT create a new attendance record, does NOT reset the
-      // accumulated timer, and does NOT re-evaluate late/on-time.
-      // On the client, the loader / success modal / tracking side
-      // effects reuse the check-in path, so this collapses cleanly
-      // into the existing `!checkedIn` branch.
-      const wantsCheckIn = !checkedIn || (checkedIn && checkedOut);
-      // #339 — When the user's intent is Resume (Check In Again), mark
-      // the moment so refreshToday keeps the "back to working" state
-      // for 30 s even if the server response is stale.
-      if (wantsCheckIn && checkedIn && checkedOut) {
-        resumeAtRef.current = Date.now();
-      }
+      // #394 — Single-session policy: check-in only fires when the
+      // employee hasn't checked in today. The legacy "resume" branch
+      // (checkedIn && checkedOut → treat as check-in again) is gone,
+      // matching the web ERM which hides the button entirely once
+      // check-out has landed. Backend still supports the multi-session
+      // API for backwards compat, but the mobile client will never
+      // exercise it — one row per employee per day, with a single
+      // check-in and a single check-out timestamp.
+      const wantsCheckIn = !checkedIn;
       if (wantsCheckIn) {
         // ── STEP 1: Get a GPS fix.
         //
@@ -1381,7 +1510,38 @@ export default function HomeScreen() {
         //         can prevent the success modal from showing or stop
         //         the user from interacting with the app.
         try { await attendanceAPI.setPresence('active'); } catch {}
-        try { await resetGpsAnchor(); } catch {}
+        // #409 — Persist check-in state to SQLite so cold-boot resume
+        // knows we're checked in even before the /attendance/today
+        // round-trip returns. This is the belt-and-braces backup for
+        // the server-side flag.
+        try {
+          const raw = await AsyncStorage.getItem('user');
+          if (raw) {
+            const u = JSON.parse(raw);
+            const uid = u?._id || u?.id || u?.userId || '';
+            const eid = u?.employeeId || u?.userId || '';
+            await markCheckIn(String(uid), String(eid));
+          }
+        } catch {}
+        // #392 — Instead of resetting the anchor (which forced the next
+        // tick to establish a fresh anchor from a live GPS fix), SEED
+        // the anchor with the check-in coordinates. This guarantees the
+        // background tracking task has a fallback from tick 0 — so even
+        // if the phone's GPS chip is cold or the employee walks straight
+        // into a poor-signal room, the anti-jitter filter always has
+        // something to fall back to for the "purely time-based" 2-min
+        // ping. Previously, if the first few GPS reads had bad accuracy,
+        // filterFix returned null and no ping was sent for 4-6 minutes.
+        try {
+          if (coords && typeof coords.lat === 'number' && typeof coords.lng === 'number') {
+            const { seedGpsAnchor } = require('../../services/backgroundTracking');
+            if (typeof seedGpsAnchor === 'function') {
+              await seedGpsAnchor(coords.lat, coords.lng, (coords as any).accuracy ?? null);
+            }
+          } else {
+            await resetGpsAnchor();
+          }
+        } catch { await resetGpsAnchor().catch(() => {}); }
         try { await resetTrackingDiagnostics(); } catch {}
 
         // Start the foreground tracking timers first (no native dialogs,
@@ -1585,6 +1745,14 @@ export default function HomeScreen() {
           catch (e: any) { console.warn('[handleCheckPress] setCheckResult(out) failed:', e?.message || e); }
         }, 60);
         try { await attendanceAPI.setPresence('offline'); } catch {}
+        // #409 — Persist check-out state to SQLite. Also flush any
+        // pending pings so the polyline for today's route is complete
+        // by the time HR looks at the map.
+        try { await markCheckOut(); } catch {}
+        try { await flushPendingPings('post-checkout'); } catch {}
+        // #416 — Final belt-and-braces sync at checkout so any ping still
+        // lingering in SQLite reaches the DB before the day closes.
+        try { await syncMissingPingsFromLocal('post-checkout'); } catch {}
         // #374 — Full teardown: FG timers + OS BG task. Only place we
         // stop the OS background location service outside of auto-checkout.
         try { stopContinuousTracking('user check-out'); } catch (e: any) {
@@ -1663,21 +1831,19 @@ export default function HomeScreen() {
     }
   };
 
-  // #338 Multi-session button label:
-  //   • No open session and no closed session today → "Check In"
-  //   • Currently working (checkIn set, checkOut null) → "Check Out"
-  //   • On break (both checkIn AND checkOut set = last session closed
-  //     but the workday isn't over) → "Check In Again"
-  // The Resume state used to render "Done" and hide the tap area, so
-  // an accidental checkout locked the employee out for the rest of the
-  // day. Now they can tap once and pick right back up where they left
-  // off — the timer keeps their accumulated total.
-  const isOnBreak = checkedIn && checkedOut;
-  const buttonLabel = !checkedIn
-    ? 'Check In'
-    : isOnBreak
-      ? 'Check In Again'
-      : 'Check Out';
+  // #394 — SINGLE CHECK-IN / SINGLE CHECK-OUT per day (matches Web ERM).
+  //   • No check-in yet                     → "Check In" (green)
+  //   • Actively working (in, no out)       → "Check Out" (blue)
+  //   • Both in + out set (workday complete)→ button HIDDEN entirely
+  //
+  // Previously an "on break" state existed with a "Check In Again"
+  // button that let employees start a second session on the same day.
+  // HR asked for the mobile app to mirror the web ERM's simpler rule:
+  // once you've checked out for the day, you're done. No second
+  // session, no re-check-in, no re-check-out — the day is locked.
+  // The final tap-target completely disappears (see JSX below).
+  const dayComplete = checkedIn && checkedOut;
+  const buttonLabel = !checkedIn ? 'Check In' : 'Check Out';
 
   const greeting = (() => {
     const h = nowRef.current.getHours();
@@ -1765,28 +1931,29 @@ export default function HomeScreen() {
               {/* Fix G: LiveClock owns its own 1-second interval so only
                   the clock Text re-renders, not the entire HomeScreen. */}
               <LiveClock nowRef={nowRef} />
-              {/* #336 — Button is now ALWAYS visible while it's the same
-                  attendance day. States:
-                    • Check In     — fresh (green)
-                    • Check Out    — actively working (blue)
-                    • Resume Work  — on break after an accidental /
-                                     intentional check-out (green again)
-                  This lets an employee who mis-tapped Check Out at
-                  12:00 tap Resume Work at 12:05 and continue their day
-                  with the accumulated 3-hour total preserved. */}
-              <TouchableOpacity
-                onPress={handleCheckPress}
-                activeOpacity={0.85}
-                disabled={actionBusy}
-                style={[
-                  styles.checkBtn,
-                  // Actively working → blue (matches Check Out palette).
-                  checkedIn && !checkedOut && { backgroundColor: '#1565C0', shadowColor: '#1565C0' },
-                  actionBusy && { opacity: 0.85 },
-                ]}
-              >
-                <Text style={styles.checkBtnText}>{buttonLabel}</Text>
-              </TouchableOpacity>
+              {/* #394 — Matches Web ERM: button is hidden once the
+                  day's Check Out has landed. Employees get exactly
+                  ONE check-in and ONE check-out per day — no re-taps,
+                  no "Check In Again", no accidental second session.
+                  States:
+                    • Check In  — fresh (green)          → shown
+                    • Check Out — actively working (blue)→ shown
+                    • Done for the day                    → button HIDDEN */}
+              {!dayComplete && (
+                <TouchableOpacity
+                  onPress={handleCheckPress}
+                  activeOpacity={0.85}
+                  disabled={actionBusy}
+                  style={[
+                    styles.checkBtn,
+                    // Actively working → blue (matches Check Out palette).
+                    checkedIn && !checkedOut && { backgroundColor: '#1565C0', shadowColor: '#1565C0' },
+                    actionBusy && { opacity: 0.85 },
+                  ]}
+                >
+                  <Text style={styles.checkBtnText}>{buttonLabel}</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.divider} />
@@ -2244,6 +2411,7 @@ const styles = StyleSheet.create({
 });
 
 // Premium overlay loader used by the centered Check-In / Check-Out modal.
+// Premium overlay loader used by the centered Check-In / Check-Out modal.
 // Layout: halo behind spinner behind icon disc, then label + subtitle + dots.
 const loaderStyles = StyleSheet.create({
   backdrop: {
@@ -2295,7 +2463,6 @@ const loaderStyles = StyleSheet.create({
     borderRadius: 29,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#0F172A',
     shadowOpacity: 0.22,
     shadowOffset: { width: 0, height: 6 },
     shadowRadius: 12,

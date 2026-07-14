@@ -14,6 +14,12 @@ import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { profileAPI, attendanceAPI } from '../../services/api';
 import { stopBackgroundLocationUpdates } from '../../services/locationTask';
+// #384 — Also stop the react-native-background-actions tracker on logout.
+import { stopBackgroundTracking } from '../../services/backgroundTracking';
+// #415 — Per-user wipe: clear SQLite tracking_state + pending pings +
+// every `erm-bg-*`/`erm-today-*` AsyncStorage key so User A's state
+// can never bleed into User B's session.
+import { wipeUserScopedTracking } from '../../services/pingStore';
 // #322 — Per-screen error boundary. If anything inside Profile throws
 // during render, this catches it locally and shows a 'Try again' card.
 // The rest of the app (other tabs, GPS task, session) stays alive
@@ -138,7 +144,22 @@ export default function ProfileScreen() {
           // the server too so HR sees the correct presence immediately.
           try { await attendanceAPI.setPresence('offline'); } catch {}
           try { await stopBackgroundLocationUpdates('user logout'); } catch {}
-          await AsyncStorage.multiRemove(['token', 'user']);
+          // #384 — Also stop the react-native-background-actions
+          // tracker. Otherwise the foreground-service notification
+          // hangs around after logout and the task keeps trying to
+          // POST with a token that just got wiped.
+          try { await stopBackgroundTracking('user logout'); } catch {}
+          // #415 — Wipe user-scoped local state BEFORE clearing the
+          // token. If we cleared the token first and this call failed,
+          // the next user would inherit the previous user's checkedIn
+          // flag, cached `today` snapshot, and pending ping queue.
+          // wipeUserScopedTracking removes:
+          //   • SQLite tracking_state row (checkedIn / employeeId / …)
+          //   • Pending pings from the queue
+          //   • erm-today-v1 (cached Home tab snapshot)
+          //   • Every erm-bg-* AsyncStorage key
+          try { await wipeUserScopedTracking(); } catch {}
+          await AsyncStorage.multiRemove(['token', 'user', 'userId']);
           router.replace('/(auth)/login' as any);
         },
       },
@@ -326,6 +347,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  /* Legacy logoutRow/logoutText kept for any old reference but the new
   /* Legacy logoutRow/logoutText kept for any old reference but the new
      round button below replaces it. */
   logoutRow: {

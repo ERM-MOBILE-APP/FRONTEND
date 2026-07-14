@@ -90,8 +90,23 @@ export default function LoginScreen() {
     wakeBackend();
   }, []);
 
-  const validateEmail = (e: string) =>
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
+  // #400 — Accept EITHER a valid email OR an employee id (e.g. "TES080",
+  // "TES047"). The backend /auth/login handler already looks up by email,
+  // employeeId, username, or emailHistory — so blocking employee IDs
+  // client-side was preventing valid logins for anyone whose HRMS record
+  // has no email column (older users, imports). Now we only reject
+  // truly-empty or clearly-malformed input; the backend has the final
+  // say on whether an id/email exists.
+  const validateEmail = (e: string) => {
+    const s = String(e || '').trim();
+    if (!s) return false;
+    // Email format is fine.
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return true;
+    // Employee id format (any alphanumeric id, at least 3 chars, no spaces)
+    // — TES080, TES047, EMP123, etc.
+    if (/^[A-Za-z0-9._-]{3,}$/.test(s)) return true;
+    return false;
+  };
 
   const canSubmit =
     email.trim().length > 0 &&
@@ -105,15 +120,31 @@ export default function LoginScreen() {
       return;
     }
     if (!validateEmail(email)) {
-      Alert.alert('Invalid email', 'Please enter a valid email address.');
+      Alert.alert('Invalid input', 'Please enter a valid email or employee ID (e.g. TES080).');
       return;
     }
 
     try {
       setLoading(true);
       const res = await authAPI.login(email.trim(), password);
+      if (!res?.data?.token) {
+        // Some intermediate proxy or old backend can return 200 without a
+        // token payload. Surface that clearly instead of the silent crash
+        // that used to happen when we tried to save `undefined` as the
+        // token.
+        throw new Error('Login response missing token — please try again.');
+      }
+      // #415 — Wipe every trace of any previous user's tracking state
+      // BEFORE we persist the new token. Belt-and-braces: even if the
+      // previous logout crashed before its own wipe fired, this
+      // guarantees the incoming user cannot inherit a stale checkedIn
+      // flag, cached `today` snapshot, or pending ping queue.
+      try {
+        const { wipeUserScopedTracking } = require('../../services/pingStore');
+        await wipeUserScopedTracking();
+      } catch { /* non-fatal — login continues */ }
       await AsyncStorage.setItem('token', res.data.token);
-      await AsyncStorage.setItem('user', JSON.stringify(res.data.user));
+      await AsyncStorage.setItem('user', JSON.stringify(res.data.user || {}));
       if (remember) {
         await AsyncStorage.setItem('rememberedEmail', email.trim());
       } else {
@@ -121,10 +152,35 @@ export default function LoginScreen() {
       }
       router.replace('/(tabs)/');
     } catch (err: any) {
-      Alert.alert(
-        'Login Failed',
-        err?.response?.data?.message || 'Invalid credentials'
-      );
+      // #400 — Show the ACTUAL reason for the failure so HR can act on
+      // it. Previously we always said "Invalid credentials", which
+      // masked network errors, cold-start failures, and server 500s.
+      // Now:
+      //   • 400/401 with a message  → show that message
+      //   • no err.response (network/timeout) → clear "connection" text
+      //   • 5xx                      → show "Server error, try again"
+      let title = 'Login Failed';
+      let msg;
+      if (err?.response) {
+        // Backend answered with an error status.
+        const status = err.response.status;
+        const backendMsg = err.response.data?.message;
+        if (status === 401 || status === 400) {
+          msg = backendMsg || 'Invalid credentials. Check your ID/email and password.';
+        } else if (status >= 500) {
+          msg = 'Server error. Please try again in a moment.';
+        } else {
+          msg = backendMsg || `Unexpected response (HTTP ${status}).`;
+        }
+      } else if (err?.code === 'ECONNABORTED' || /timeout/i.test(String(err?.message))) {
+        title = 'Server waking up';
+        msg = 'The server is starting up (this can take up to a minute on the free plan). Please try again in ~30 seconds.';
+      } else if (/network/i.test(String(err?.message))) {
+        msg = 'Connection lost. Please check your internet and try again.';
+      } else {
+        msg = err?.message || 'Something went wrong. Please try again.';
+      }
+      Alert.alert(title, msg);
     } finally {
       setLoading(false);
     }

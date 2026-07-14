@@ -4,9 +4,10 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-nati
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { markNavReady } from '../services/api';
 
-// Import-only side-effect: registers the background location ping task
-// with TaskManager so the OS can invoke it even when the app is killed.
-// Must run at module load time, before any screen renders.
+// Import-only side-effect: registers the LEGACY expo-location background
+// task with TaskManager. Kept as a warm fallback in case
+// react-native-background-actions is not linked in a particular build.
+// The primary tracking is now via services/backgroundTracking.ts (#384).
 import '../services/locationTask';
 
 // Persist the last crash detail so when the user reopens the app we

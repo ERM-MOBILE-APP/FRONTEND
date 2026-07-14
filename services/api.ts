@@ -1,8 +1,19 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
+// #409 — SQLite-backed offline queue. Every ping is persisted BEFORE
+// hitting the network, so nothing is lost if the POST fails.
+import { savePendingPing, markPingSynced, markPingFailed, markLastPingAt, bucketFor } from './pingStore';
 
-export const BASE_URL = 'https://backend-9rtc.onrender.com/api';
+// #401 — Backend mounts every route under /api/* (see backend/src/app.js
+// `app.use('/api/auth', ...)`, `app.use('/api/attendance', ...)`, etc.).
+// The mobile used to point at the bare origin, which sent
+// POST /auth/login → 404 "Cannot POST /auth/login". Bake the /api
+// prefix into BASE_URL so every endpoint the app already declares as
+// `/auth/login`, `/attendance/checkin`, `/attendance/location-ping`
+// lands on `${origin}/api/...` and hits Express correctly.
+export const ORIGIN   = 'https://backend-9rtc.onrender.com';
+export const BASE_URL = `${ORIGIN}/api`;
 
 /**
  * Session policy (Jun 2026):
@@ -25,6 +36,9 @@ let _logoutInFlight = false;
 let _navReady = false;
 /** Call once from RootLayout after the navigator has mounted. */
 export function markNavReady() { _navReady = true; }
+
+// #379 — Foreground-timer burst guard. See locationPing below.
+let _lastFgPingSentAt = 0;
 
 async function forceLogout(reason: string) {
   if (_logoutInFlight) return;
@@ -210,12 +224,155 @@ export const attendanceAPI = {
     api.post('/attendance/auto-checkout', { reason: reason || 'gps-off' }),
   /** Every 2 min while checked in, send the live location.
    *  isStationary: true → marker stays anchored, polyline isn't extended.
-   *  isStationary: false → confirmed movement; new point added to polyline. */
-  locationPing: (lat: number, lng: number, accuracy?: number, speed?: number, isStationary?: boolean) =>
-    api.post('/attendance/location-ping', { lat, lng, accuracy, speed, isStationary }),
+   *  isStationary: false → confirmed movement; new point added to polyline.
+   *
+   *  #379 — CLIENT-SIDE BURST GUARD. Before every ping, check the
+   *  in-memory lastPingSentAt. If we sent one less than 110 s ago, skip
+   *  this call entirely — the backend's atomic 120-s bucket would just
+   *  reject it anyway with E11000, and skipping saves the network hop.
+   *  This kills the "3 concurrent recovery pings after a 20-min gap"
+   *  pattern at the source: only the FIRST ping in a burst hits the
+   *  wire; the other 2 are dropped locally.
+   *
+   *  We use a module-level variable rather than AsyncStorage because
+   *  bursts are always within a single JS context; the OS bg-task uses
+   *  its own module context (locationTask.ts) which has its own guard.
+   */
+  locationPing: async (lat: number, lng: number, accuracy?: number, speed?: number, isStationary?: boolean) => {
+    // #409 — SAVE-THEN-SEND. Every ping goes through the local SQLite
+    // queue first (bucketed by 2-min slot for idempotency). Only after
+    // a 2xx server response do we mark the row synced. On failure the
+    // row stays pending and pingSync.ts will drain it on the next
+    // network-restore event or 60-s periodic tick.
+    //
+    // Burst guard (#390/#402) still runs first so we don't send a
+    // duplicate for a bucket the OS bg-task already covered.
+    let priorLastSent = 0;
+    try {
+      const raw = await AsyncStorage.getItem('erm-bg-last-ping-sent-at');
+      priorLastSent = raw ? Number(raw) || 0 : 0;
+      const gapMs   = Date.now() - priorLastSent;
+      if (priorLastSent > 0 && gapMs < 110_000) {
+        console.log('[api] locationPing skipped — sent', Math.round(gapMs / 1000), 's ago (shared FG+BG guard)');
+        return { data: { ok: true, accepted: false, reason: 'client-burst-guard', gapMs } } as any;
+      }
+    } catch { /* AsyncStorage hiccup — proceed */ }
+
+    // Resolve the user's ObjectId + employeeId so the queued row can
+    // be de-duped per-user and inspected in Metro logs.
+    let userId: string | undefined;
+    let employeeId: string | undefined;
+    try {
+      const raw = await AsyncStorage.getItem('user');
+      if (raw) {
+        const u = JSON.parse(raw);
+        userId     = u?._id || u?.id || u?.userId || undefined;
+        employeeId = u?.employeeId || u?.userId || undefined;
+      }
+    } catch {}
+
+    const recordedAt = Date.now();
+    const bucket = bucketFor(recordedAt);
+
+    // Step 1: persist the row LOCALLY first. Even a crash between here
+    // and the POST leaves us with an auditable record.
+    let localId = -1;
+    try {
+      localId = await savePendingPing({
+        userId, employeeId,
+        lat, lng,
+        accuracy: accuracy ?? null,
+        speed:    speed    ?? null,
+        isStationary: !!isStationary,
+        recordedAt,
+      } as any);
+    } catch (e: any) {
+      console.log('[api] pingStore.savePendingPing failed (non-fatal):', e?.message || e);
+    }
+
+    _lastFgPingSentAt = Date.now();
+    try { await AsyncStorage.setItem('erm-bg-last-ping-sent-at', String(Date.now())); } catch {}
+
+    // Step 2: try to send. Success → mark synced + advance lastPingAt.
+    try {
+      const res = await api.post('/attendance/location-ping', { lat, lng, accuracy, speed, isStationary });
+      if (localId > 0) {
+        try { await markPingSynced(localId); } catch {}
+      }
+      try { await markLastPingAt(Date.now()); } catch {}
+      return res;
+    } catch (err: any) {
+      // On any non-auth failure: LEAVE the row pending, rollback the
+      // burst guard so the next tick can retry, and swallow the throw
+      // so the tracker doesn't see this as a hard failure — the ping
+      // is safely queued and pingSync.ts will retry it.
+      const status = err?.response?.status;
+      const isAuthReject = status === 401 || status === 403;
+      if (localId > 0) {
+        try { await markPingFailed(localId, err?.message || String(status || 'network')); } catch {}
+      }
+      if (!isAuthReject) {
+        console.log(`[api] locationPing queued (${status || err?.message}); pingSync will retry — localId=${localId}`);
+        try { await AsyncStorage.setItem('erm-bg-last-ping-sent-at', String(priorLastSent)); } catch {}
+        // Return a synthetic "queued" success so the tracker moves on.
+        return { data: { ok: true, accepted: false, reason: 'queued-locally', localId } } as any;
+      }
+      // Auth reject → let the interceptor's forceLogout do its thing.
+      throw err;
+    }
+  },
+  /**
+   * #416 — Batch upload every locally-stored ping still pending. Server
+   * dedups by (employeeId + date + localTime) and inserts only missing
+   * rows in chronological order. Idempotent — safe to call repeatedly.
+   *
+   * Body shape:
+   *   { pings: [{ employeeId, date, localTime, latitude, longitude, … }] }
+   *
+   * Response:
+   *   { success, totalReceived, alreadyExisted, inserted, duplicatesSkipped,
+   *     insertedBuckets, existedBuckets, status }
+   */
+  syncMissingPings: (pings: any[]) =>
+    api.post('/attendance/location-pings/missing-pings', { pings }),
+
   /** Presence state: 'active' | 'idle' | 'offline'. */
-  setPresence: (state: 'active' | 'idle' | 'offline') =>
-    api.post('/attendance/presence', { state }),
+  setPresence: async (state: 'active' | 'idle' | 'offline') => {
+    // #408 — Show employee id in the Metro / device console alongside
+    // the presence state, so devs can watch presence transitions from
+    // the phone without needing the Render dashboard. Mirrors the
+    // backend's `[presence] TES080 → active` line.
+    // #408 — The mobile login response stores the employee id under
+    // `user.userId` (a Mongoose virtual that maps to `employeeId` on
+    // the User doc — see backend/src/models/User.js line 112). The
+    // physical `employeeId` field is NOT in the login payload, which
+    // is why the first cut of this log printed `unknown`. Try every
+    // known alias so future backend changes don't silently break this.
+    let empId = 'unknown';
+    try {
+      const raw = await AsyncStorage.getItem('user');
+      if (raw) {
+        const u = JSON.parse(raw);
+        empId =
+          u?.employeeId ||
+          u?.userId ||          // ← this is what the login response actually populates
+          u?.employee_id ||
+          u?.emp_id ||
+          'unknown';
+      }
+    } catch {}
+    console.log(`[presence] ${empId} → ${state}`);
+    console.warn('[attendanceAPI.setPresence] sending', { empId, state });
+    return api.post('/attendance/presence', { state })
+      .then((res) => {
+        console.warn('[attendanceAPI.setPresence] success', { empId, ...res?.data });
+        return res;
+      })
+      .catch((err) => {
+        console.warn('[attendanceAPI.setPresence] error', { empId, err: err?.response?.data || err?.message });
+        throw err;
+      });
+  },
   today: () => api.get('/attendance/today'),
   getMonthly: (month: number, year: number) =>
     api.get(`/attendance/monthly?month=${month}&year=${year}`),

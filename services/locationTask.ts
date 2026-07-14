@@ -1,30 +1,20 @@
-/**
- * locationTask.ts — background GPS pings via expo-task-manager.
- *
- * Why this exists
- * ───────────────
- * `setInterval` in a React Native screen pauses the moment the OS pushes
- * the app to background, so our previous "ping every 2 min" loop stopped
- * the second the employee swiped away from Tesco ERM. HR saw them turn
- * Offline within minutes even though Location was clearly still on.
- *
- * expo-location's `startLocationUpdatesAsync` API uses a native foreground
- * service (Android) / background-location capability (iOS) to keep GPS
- * deliveries flowing whether or not the JS bundle is on screen. The task
- * callback below runs in a *separate* JS context that the OS spins up on
- * each delivery — no React tree, no hooks, no AsyncStorage hook. It pulls
- * the JWT from AsyncStorage directly and POSTs the ping to the same
- * /api/attendance/location-ping endpoint the foreground loop used.
- *
- * Important: TaskManager.defineTask MUST be called at module load
- * time (top of app, before any render) so the OS can find the task by
- * name when it resurrects it after the app is killed. We import this
- * module from app/_layout.tsx for that reason.
- */
+
 import * as TaskManager from 'expo-task-manager';
 import * as Location    from 'expo-location';
 import AsyncStorage     from '@react-native-async-storage/async-storage';
 import { Platform }     from 'react-native';
+// #419 — SQLite save-then-send from the bg-task path. Previously only the
+// FG-timer POST route (services/api.ts) persisted to SQLite; the bg-task
+// posted directly and left no local trace, so the missing-pings sync
+// scanner reported `total pings in local storage = 0` even after a full
+// shift of pings landed successfully on the backend.
+import {
+  initPingStore,
+  savePendingPing,
+  markPingSynced,
+  markPingFailed,
+  bucketFor,
+} from './pingStore';
 
 export const BACKGROUND_LOCATION_TASK = 'tesco-erm-location-ping';
 
@@ -39,49 +29,11 @@ type LocationTaskBody = {
   locations: Location.LocationObject[];
 };
 
-/**
- * Offline ping queue (Jun 2026 — Requirement #7 prod fix).
- *
- * When the device has no internet, the location-ping POST fails. Earlier
- * versions just dropped the sample and moved on — net effect: HR saw a
- * straight line on the map between the last pre-outage ping and the
- * first post-outage ping, masking that the employee had genuinely
- * travelled across town during the outage.
- *
- * New behaviour: on POST failure (network error, timeout, 5xx) we push
- * the sample into AsyncStorage under PING_QUEUE_KEY. On the next
- * successful ping (i.e. once the network is back) we drain the queue
- * by replaying each saved sample, preserving its original timestamp.
- *
- * Queue is capped at 200 entries (~3 hours at the 60 s cadence) to
- * prevent unbounded growth if a phone is offline for an entire shift.
- * When the cap is hit, the oldest entries are dropped first so we keep
- * the freshest 200 samples.
- */
+
 const PING_QUEUE_KEY = 'erm-bg-ping-queue-v1';
 const PING_QUEUE_MAX = 200;
 
-/* ───────────────────────────────────────────────────────────────────────
- * HEARTBEAT + EVENT LOG (Jun 2026 — production fix for "tracking stops
- * randomly mid-shift").
- *
- * Problem
- * ───────
- * Even with every Android permission granted (incl. background location,
- * foreground service, battery-opt exemption), OEM battery savers on
- * Xiaomi/Oppo/Vivo/Realme/OnePlus can still SIGKILL the foreground
- * service after 4–8 hours. The OS gives no callback — the task just
- * vanishes. To detect this we maintain:
- *
- *   • lastHeartbeat — ISO timestamp of the most recent successful
- *     bg-task invocation. Foreground code can read this and, if it's
- *     stale (> 3 min for a 60-s interval), force-restart the task.
- *
- *   • event log    — circular buffer of every start / stop / kill /
- *     revival event with reason. Capped at 200 entries. Exported so
- *     HR can ask the employee to share their tracking diagnostics
- *     when investigating "you went offline for 2 hours" claims.
- * ───────────────────────────────────────────────────────────────────── */
+
 const HEARTBEAT_KEY  = 'erm-bg-task-last-heartbeat';
 const EVENT_LOG_KEY  = 'erm-bg-task-events-v1';
 const EVENT_LOG_MAX  = 200;
@@ -278,19 +230,38 @@ export async function filterFix(opts: {
   lng: number;
   accuracy?: number | null;
   speed?: number | null;
+  remarks?: string | null;
 }): Promise<FilteredFix | null> {
   const lat = opts.lat;
   const lng = opts.lng;
+  // #392 — Pure time-based cadence: never return null when a valid
+  // anchor exists, even if the caller passed NaN sentinels (index.tsx
+  // uses NaN to force a fallback when it couldn't get a fix at all).
   if (typeof lat !== 'number' || typeof lng !== 'number' || !isFinite(lat) || !isFinite(lng)) {
+    const a = await loadAnchor();
+    if (a) return { lat: a.lat, lng: a.lng, accuracy: a.accuracy, speed: 0, isStationary: true };
     return null;
   }
   const accuracy = typeof opts.accuracy === 'number' ? opts.accuracy : null;
   const speed    = typeof opts.speed    === 'number' ? opts.speed    : null;
 
-  // 1) HARD ACCURACY GATE. A fix with radius > 30 m is so coarse it's
-  //    worse than no data — drop it. The OS will deliver another in 60 s.
+  // 1) ACCURACY GATE (#392 revised).
+  //    Previously: hard `return null` when accuracy > 30 m — an indoor
+  //    phone would then have EVERY tick silently dropped, meaning zero
+  //    rows in the DB for the whole shift even though the timer was
+  //    ticking correctly. Root cause of "not recording continuously"
+  //    for stationary employees sitting indoors.
+  //
+  //    New behaviour: if accuracy is poor AND we have an anchor from an
+  //    earlier good fix, return the anchor position as a stationary
+  //    ping so the 2-min beat is never broken. Only when we have
+  //    neither a decent fix NOR any anchor at all do we still hold
+  //    back this tick — but seedGpsAnchor() at check-in normally
+  //    guarantees the anchor is present from tick 0.
   if (accuracy != null && accuracy > ACCURACY_GATE_M) {
-    console.log('[gps-filter] drop: accuracy', accuracy.toFixed(0), '> gate', ACCURACY_GATE_M);
+    console.log('[gps-filter] bad accuracy', accuracy.toFixed(0), '— falling back to anchor');
+    const a = await loadAnchor();
+    if (a) return { lat: a.lat, lng: a.lng, accuracy: a.accuracy, speed: 0, isStationary: true };
     return null;
   }
 
@@ -490,6 +461,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const { latitude: lat, longitude: lng, accuracy, speed } = fix.coords;
   if (typeof lat !== 'number' || typeof lng !== 'number') return;
 
+  // #414 — Removed the raw `fix {...}` console log per HR feedback.
+  // The `[tracking] ✔ ping latitude: ... longitude: ... (STATIONARY|MOVING)`
+  // line from the successful-POST path (line ~566) is sufficient proof
+  // that tracking is alive on the 2-min cadence.
+
   // Grab the JWT the user signed in with — the foreground services/api.ts
   // stores it under the 'token' key. Without a token the ping endpoint
   // returns 401 and the OS will just retry on the next delivery.
@@ -501,11 +477,16 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
   const recordedAt = new Date().toISOString();
 
-  // Anti-jitter filter — turns a noisy GPS sample into either a stationary
-  // anchor reading or a confirmed-move reading. Drops sub-quality fixes.
+  // Anti-jitter filter — turns a noisy GPS sample into either a
+  // stationary anchor reading or a confirmed-move reading.
+  // #392: filterFix now falls back to the last known anchor when the
+  // current fix is too coarse (indoor employees) so this callback
+  // still produces a ping. Returns null ONLY when we have neither a
+  // decent current fix NOR any anchor — a very-first-tick edge case
+  // that seedGpsAnchor() at check-in normally eliminates.
   const filtered = await filterFix({ lat, lng, accuracy, speed });
   if (!filtered) {
-    console.log('[bg-location] fix filtered out (poor accuracy) — no ping');
+    console.log('[bg-location] no fix + no anchor yet — skipping this tick (will retry in 2 min)');
     return;
   }
 
@@ -515,6 +496,75 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     accuracy: filtered.accuracy ?? undefined,
     speed:    filtered.speed    ?? undefined,
     isStationary: filtered.isStationary,
+    recordedAt,
+  };
+
+  // #419 — Save-then-send. Persist the ping to SQLite BEFORE the network
+  // POST so the missing-pings reconciliation can see it regardless of
+  // whether the FG timer or the bg-task fired the beat this cycle. This
+  // used to be a foreground-only concern (see services/api.ts:281) and
+  // was the reason `[missing-pings] total pings = 0` even when the bg
+  // task had cleanly delivered dozens of pings to the backend.
+  //
+  // Resolve user + employee IDs from AsyncStorage (bg-task runs in a
+  // fresh JS context so we can't rely on module-level cache).
+  let bgUserId = '';
+  let bgEmployeeId = '';
+  try {
+    const rawUser = await AsyncStorage.getItem('user');
+    if (rawUser) {
+      const u = JSON.parse(rawUser);
+      bgUserId     = u?._id || u?.id || '';
+      bgEmployeeId = u?.employeeId || u?.userId || '';
+    }
+  } catch { /* non-fatal — still save with empty ids so at least the coords survive */ }
+
+  const recordedAtMs = Date.now();
+  let bgLocalId = -1;
+  try {
+    // Ensure the pingStore is initialised in this bg JS context.
+    await initPingStore();
+    bgLocalId = await savePendingPing({
+      userId:      bgUserId || undefined,
+      employeeId:  bgEmployeeId || undefined,
+      lat:         filtered.lat,
+      lng:         filtered.lng,
+      accuracy:    filtered.accuracy ?? null,
+      speed:       filtered.speed ?? null,
+      isStationary: !!filtered.isStationary,
+      recordedAt:  recordedAtMs,
+      bucket:      bucketFor(recordedAtMs),
+    } as any);
+  } catch (e: any) {
+    console.log('[bg-location] pingStore.savePendingPing failed (non-fatal):', e?.message || e);
+  }
+
+  // #379 — Burst guard for the OS background task context. When the OS
+  // wakes the task up after a long suspension, it can deliver multiple
+  // queued LocationObjects in the same batch — and the guardian /
+  // AppState code paths in the foreground can also fire an immediate
+  // ping simultaneously. Without this gate, all of them insert
+  // separately (or race the backend's atomic dedup). AsyncStorage
+  // read+write keeps it cheap.
+  // #402 — Burst guard with ROLLBACK ON FAILURE. See postPing in
+  // services/backgroundTracking.ts for the full rationale. Capture the
+  // prior timestamp so we can restore it if the server returns 5xx or
+  // the network drops; otherwise a single failure would silently block
+  // 2-3 subsequent good ticks and the DB would look like tracking died.
+  let priorLastSent = 0;
+  try {
+    const raw = await AsyncStorage.getItem('erm-bg-last-ping-sent-at');
+    priorLastSent = raw ? Number(raw) || 0 : 0;
+    const gapMs  = Date.now() - priorLastSent;
+    if (priorLastSent > 0 && gapMs < 110_000) {
+      console.log('[bg-location] burst guard skip — sent', Math.round(gapMs / 1000), 's ago');
+      return;
+    }
+    await AsyncStorage.setItem('erm-bg-last-ping-sent-at', String(Date.now()));
+  } catch {/* AsyncStorage hiccup — proceed */}
+
+  const rollbackGuard = async () => {
+    try { await AsyncStorage.setItem('erm-bg-last-ping-sent-at', String(priorLastSent)); } catch {}
   };
 
   try {
@@ -533,25 +583,56 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // 60s; the next ping will succeed and tracking resumes seamlessly.
     if (res.status === 401 || res.status === 403) {
       console.warn('[bg-location] ping rejected (' + res.status + ') — skipping but keeping task alive.');
+      // Row stays 'pending' in SQLite → missing-pings sync will pick it up
+      // once the token issue resolves.
+      if (bgLocalId > 0) { try { await markPingFailed(bgLocalId, `HTTP ${res.status}`); } catch {} }
       return;
     }
 
-    // 5xx → server is up but unhealthy. Treat as a network failure
-    // and enqueue so the sample isn't lost.
+    // 5xx or non-2xx → server rejected. Enqueue AND roll back the
+    // guard so the next 2-min tick can retry immediately rather than
+    // waiting out the 110-s reservation.
     if (!res.ok) {
-      console.warn('[bg-location] ping HTTP', res.status, '— enqueuing for replay');
+      console.warn('[bg-location] ping HTTP', res.status, '— enqueuing + rollback guard');
       await enqueueFailedPing({ ...payload, recordedAt });
+      await rollbackGuard();
+      if (bgLocalId > 0) { try { await markPingFailed(bgLocalId, `HTTP ${res.status}`); } catch {} }
       return;
     }
 
+    // #419 — POST succeeded. Flip the local SQLite row to 'synced' so
+    // pendingCount drops but listAllPingsSince() still sees it inside the
+    // 3-day missing-pings window (server dedups by bucket, so re-shipping
+    // synced rows is safe and lets it heal any gaps caused by lost writes).
+    if (bgLocalId > 0) { try { await markPingSynced(bgLocalId); } catch {} }
+
+    // #410/#411/#413 — Match the FG-timer log so HR/devs see one confirmation
+    // line per successful 2-min ping regardless of which path handled it.
+    // #411 — Prefix with IST wall-clock so the 2-min cadence is visible.
+    // #413 — Label the coords `latitude:` / `longitude:` so the log is
+    // self-explanatory when HR scans it without knowing the order.
+    {
+      const nowIst = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false });
+      console.log(
+        `[${nowIst}] [tracking] ✔ ping`,
+        `latitude: ${filtered.lat.toFixed(5)}`,
+        `longitude: ${filtered.lng.toFixed(5)}`,
+        filtered.isStationary ? '(STATIONARY)' : '(MOVING)',
+      );
+    }
     // POST succeeded → try to drain any queued samples from a previous
     // network outage. Best-effort, non-blocking on errors.
     await drainQueue(token);
   } catch (e: any) {
     // Network error — queue the sample so it survives until the
-    // device gets back online. The OS will keep firing the task.
-    console.warn('[bg-location] ping POST failed (network):', e?.message || e);
+    // device gets back online, AND roll back the guard so we're not
+    // locked out for 110 s.
+    console.warn('[bg-location] ping POST failed (network):', e?.message || e, '— rollback guard');
     try { await enqueueFailedPing({ ...payload, recordedAt }); } catch {}
+    await rollbackGuard();
+    // Row stays 'pending' in SQLite so the missing-pings sync ships it
+    // once we're back online. Bump retryCount + lastError for visibility.
+    if (bgLocalId > 0) { try { await markPingFailed(bgLocalId, e?.message || 'network'); } catch {} }
   }
   // ═══════════════════════════════════════════════════════════════════
   // END OF CRASH GUARD. The outer catch below absorbs ANY remaining
@@ -577,6 +658,25 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
  *   • "Always" permission (requested lazily here for Android Q+ / iOS)
  */
 export async function startBackgroundLocationUpdates(): Promise<boolean> {
+  // #405 — PARALLEL-TRACKER POLICY (supersedes #391 single-tracker guard).
+  //
+  // We now run BOTH bg systems in parallel for maximum resilience:
+  //   1. react-native-background-actions — sticky foreground service, 2-min
+  //      internal loop. Robust while the app process is alive but can be
+  //      SIGKILLed by aggressive OEM battery savers (Xiaomi MIUI, Oppo
+  //      ColorOS, Vivo FunTouch) after 4–8 h.
+  //   2. expo-task-manager (this path)      — OS-scheduled callback that
+  //      the OS itself resurrects even after the app process is fully
+  //      killed. Slower cadence, but survives what the FGS can't.
+  //
+  // Old single-tracker guard was defensive against duplicates, but the
+  // backend now enforces atomic (user, date, bucket) uniqueness via the
+  // partial unique index (#403). Any race between the two trackers is
+  // caught server-side with a clean 200 accepted:false — no duplicates
+  // possible, no client-visible errors. So running both is safe AND
+  // gives us belt-and-braces resilience: if either dies, the other
+  // keeps the 2-min beat alive.
+
   // Ask for background permission. On Android < 10 this resolves to the
   // foreground permission already granted; on Android 10+ / iOS it pops
   // the "Allow all the time" prompt. Without it, the OS never delivers
