@@ -29,6 +29,7 @@ import {
   deleteSyncedPingsInRange,
   getTrackingState,
   isUploadAllowedNow,
+  markPingPending,
 } from './pingStore';
 import { attendanceAPI } from './api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -723,6 +724,84 @@ export async function reconcilePreviousSessions(reason: string = 'startup'): Pro
  * Pending rows and current-session rows (recorded >= sessionStartMs) are
  * never touched.
  */
+// ─────────────────────────────────────────────────────────────────────
+// #435 — VERIFY & HEAL AGAINST MONGODB (works with the CURRENT deployed
+// backend — uses the existing /attendance/ping-history read).
+//
+// Reads what MongoDB ACTUALLY holds for the current employee, uploads any
+// locally-stored pings that are missing there, then re-reads and corrects
+// each local row's status to match reality:
+//   • present in MongoDB   → mark 'synced'
+//   • absent from MongoDB  → mark 'pending' (undo a false 'synced')
+// This makes the local synced/pending counts always reflect the real DB —
+// no more "synced locally but not in Mongo". Never deletes anything.
+// ─────────────────────────────────────────────────────────────────────
+export async function verifyAndHealAgainstMongo(reason: string = 'manual'): Promise<{
+  status: 'Success' | 'Failed';
+  local: number;
+  inMongoBefore: number;
+  uploaded: number;
+  inMongoAfter: number;
+  stillMissing: number;
+  corrected: number;
+}> {
+  try {
+    let employeeId = '';
+    try { const raw = await AsyncStorage.getItem('user'); if (raw) { const u = JSON.parse(raw); employeeId = String(u?.employeeId || u?.userId || ''); } } catch {}
+
+    let rows = await listAllPingsSince(Date.now() - 30 * 24 * 3600 * 1000);
+    if (employeeId) rows = rows.filter(r => String(r.employeeId || '').toUpperCase() === employeeId.toUpperCase());
+    const local = rows.length;
+    if (local === 0) return { status: 'Success', local: 0, inMongoBefore: 0, uploaded: 0, inMongoAfter: 0, stillMissing: 0, corrected: 0 };
+
+    const dates = [...new Set(rows.map(r => toIstDateAndTime(r.recordedAt).date))];
+    const fetchMongoBuckets = async (): Promise<Set<number>> => {
+      const set = new Set<number>();
+      for (const d of dates) {
+        try {
+          const res: any = await attendanceAPI.pingHistory(d);
+          const pings = res?.data?.pings || [];
+          for (const p of pings) { if (Number.isFinite(p?.bucket)) set.add(Number(p.bucket)); }
+        } catch (e: any) { console.log(`[verify-heal] ping-history(${d}) failed: ${e?.message || e}`); }
+      }
+      return set;
+    };
+
+    let mongo = await fetchMongoBuckets();
+    const inMongoBefore = rows.filter(r => mongo.has(r.bucket)).length;
+    console.log(`[verify-heal] ${reason}: local=${local} inMongoBefore=${inMongoBefore} for ${employeeId}`);
+
+    // Upload the ones MongoDB doesn't have, oldest → newest, tagged source.
+    const missing = rows.filter(r => !mongo.has(r.bucket)).sort((a, b) => a.recordedAt - b.recordedAt);
+    let uploaded = 0;
+    if (missing.length > 0) {
+      const payload = missing.map(r => {
+        const { date, localTime } = toIstDateAndTime(r.recordedAt);
+        return { employeeId: r.employeeId || employeeId, date, localTime, latitude: r.lat, longitude: r.lng, accuracy: r.accuracy ?? null, speed: r.speed ?? null, isStationary: r.isStationary === true, bucket: r.bucket, source: 'sqlite' };
+      });
+      try { const up: any = await attendanceAPI.syncMissingPings(payload); uploaded = Number(up?.data?.inserted) || 0; } catch (e: any) { console.log(`[verify-heal] upload failed: ${e?.message || e}`); }
+      mongo = await fetchMongoBuckets(); // re-read ground truth after upload
+    }
+
+    // Correct every local row's status to match what MongoDB actually holds.
+    let corrected = 0;
+    for (const r of rows) {
+      if (!r.localId) continue;
+      const inDb = mongo.has(r.bucket);
+      if (inDb && r.status !== 'synced') { try { await markPingSynced(r.localId); corrected += 1; } catch {} }
+      else if (!inDb && r.status === 'synced') { try { await markPingPending(r.localId); corrected += 1; } catch {} }
+    }
+
+    const inMongoAfter = rows.filter(r => mongo.has(r.bucket)).length;
+    const stillMissing = local - inMongoAfter;
+    console.log(`[verify-heal] ${reason}: DONE local=${local} inMongoAfter=${inMongoAfter} uploaded=${uploaded} corrected=${corrected} stillMissing=${stillMissing}`);
+    return { status: 'Success', local, inMongoBefore, uploaded, inMongoAfter, stillMissing, corrected };
+  } catch (e: any) {
+    console.warn(`[verify-heal] ${reason} failed:`, e?.message || e);
+    return { status: 'Failed', local: 0, inMongoBefore: 0, uploaded: 0, inMongoAfter: 0, stillMissing: 0, corrected: 0 };
+  }
+}
+
 export async function purgePreviousSyncedBefore(sessionStartMs: number, reason: string = 'resume'): Promise<number> {
   try {
     if (!Number.isFinite(sessionStartMs) || sessionStartMs <= 0) return 0;
@@ -794,15 +873,20 @@ export async function checkoutSyncWithDiffAndVerify(sessionStartMsHint?: number)
   }
   const localBuckets = localRows.map(r => r.bucket);
 
-  const fromISO = new Date(fromMs).toISOString();
-  const toISO   = new Date(cutoffHi).toISOString();
-
-  // Fetch the set of buckets MongoDB already has for this user+window.
+  // Fetch the buckets MongoDB already has for this employee, using the
+  // ALREADY-DEPLOYED /attendance/ping-history endpoint (per date). This means
+  // the diff/verify works against the real DB without waiting for a backend
+  // redeploy of the newer /location-pings/mine endpoint.
+  const datesNeeded = [...new Set(localRows.map(r => toIstDateAndTime(r.recordedAt).date))];
   const fetchMongoBuckets = async (): Promise<Set<number>> => {
-    const res: any = await attendanceAPI.getMyPingBuckets(fromISO, toISO);
-    const body = res?.data || {};
-    if (!body?.success || !Array.isArray(body.buckets)) throw new Error('bad-response');
-    return new Set(body.buckets.map(Number));
+    const set = new Set<number>();
+    for (const d of datesNeeded) {
+      const res: any = await attendanceAPI.pingHistory(d);
+      const pings = res?.data?.pings || [];
+      if (!Array.isArray(pings)) throw new Error('bad-response');
+      for (const p of pings) { if (Number.isFinite(p?.bucket)) set.add(Number(p.bucket)); }
+    }
+    return set;
   };
 
   // Step 1 — Fetch existing from Mongo (fallback if endpoint not deployed).

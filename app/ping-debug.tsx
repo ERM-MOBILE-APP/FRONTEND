@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { getPingDebugSnapshot, PingDebugSnapshot, PingRow } from '../services/pingStore';
-import { syncMissingPingsFromLocal } from '../services/pingSync';
+import { verifyAndHealAgainstMongo } from '../services/pingSync';
 
 // #430 — READ-ONLY on-device viewer for the local SQLite ping store.
 //
@@ -78,21 +78,21 @@ export default function PingDebugScreen() {
     setVerifying(true);
     setVerifyMsg(null);
     try {
-      const r = await syncMissingPingsFromLocal('manual-verify');
+      // #435 — Verify against the REAL MongoDB (via the deployed ping-history
+      // read) and correct local status to match. Works without a backend
+      // redeploy.
+      const r = await verifyAndHealAgainstMongo('manual-verify');
       if (mountedRef.current) {
         if (r.status === 'Success') {
-          // #435 — Show GROUND TRUTH: what the server re-read from the DB.
-          const stored = (typeof r.storedInDb === 'number') ? r.storedInDb : r.markedSynced;
-          const miss = (typeof r.missing === 'number') ? r.missing : 0;
           setVerifyMsg(
-            `Server DB: "${r.dbName || '?'}".  Sent ${r.totalReceived}, ` +
-            `actually stored in DB: ${stored}, still missing: ${miss}. ` +
-            (miss > 0
-              ? `⚠ ${miss} ping(s) did NOT persist — kept locally for retry.`
-              : `✔ All present in MongoDB.`)
+            `Local: ${r.local}. In MongoDB: ${r.inMongoAfter}. ` +
+            `Uploaded now: ${r.uploaded}. Corrected labels: ${r.corrected}. ` +
+            (r.stillMissing > 0
+              ? `⚠ ${r.stillMissing} still not in MongoDB — kept pending for retry.`
+              : `✔ Every local ping is now in MongoDB.`)
           );
         } else {
-          setVerifyMsg(`Sync ${r.status}. Check connection and retry.`);
+          setVerifyMsg('Verify failed — check connection and retry.');
         }
       }
       await load();

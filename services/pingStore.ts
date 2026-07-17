@@ -93,6 +93,7 @@ type Backend = {
   savePending(row: PingRow): Promise<number>;
   listPending(limit: number): Promise<PingRow[]>;
   markSynced(localId: number): Promise<void>;
+  markPending(localId: number): Promise<void>;
   markFailed(localId: number, err: string): Promise<void>;
   pendingCount(): Promise<number>;
   purgeSyncedOlderThan(cutoffMs: number): Promise<number>;
@@ -307,6 +308,15 @@ function makeSqliteBackend(SQLite: any): Backend {
       );
     },
 
+    // #435 — Reset a row back to 'pending' (used to correct a row that was
+    // marked synced but a fresh MongoDB read shows it isn't actually there).
+    async markPending(localId: number) {
+      await exec(
+        `UPDATE pings SET status='pending', synced_at=NULL WHERE local_id=?`,
+        [localId]
+      );
+    },
+
     async markFailed(localId: number, err: string) {
       await exec(
         `UPDATE pings SET retry_count = retry_count + 1, last_error = ? WHERE local_id = ?`,
@@ -508,6 +518,12 @@ function makeAsyncStorageBackend(): Backend {
       }
     },
 
+    async markPending(localId: number) {
+      const rows = await readQueue();
+      const row = rows.find(r => r.localId === localId);
+      if (row) { row.status = 'pending'; await writeQueue(rows); }
+    },
+
     async markFailed(localId: number, err: string) {
       const rows = await readQueue();
       const row = rows.find(r => r.localId === localId);
@@ -631,6 +647,12 @@ export async function markPingSynced(localId: number): Promise<void> {
   if (!Number.isFinite(localId) || localId <= 0) return;
   const b = await ensure();
   await b.markSynced(localId);
+}
+
+export async function markPingPending(localId: number): Promise<void> {
+  if (!Number.isFinite(localId) || localId <= 0) return;
+  const b = await ensure();
+  await b.markPending(localId);
 }
 
 export async function markPingFailed(localId: number, err: any): Promise<void> {

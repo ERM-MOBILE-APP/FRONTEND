@@ -398,6 +398,15 @@ export const attendanceAPI = {
     return api.get('/attendance/location-pings/mine', { params });
   },
 
+  /**
+   * #435 — Read the logged-in user's LocationPings for a date. This endpoint
+   * is ALREADY deployed (/attendance/ping-history), so the client can verify
+   * against the real MongoDB state without waiting for a backend redeploy.
+   * Response: { count, date, pings: [{ bucket, recordedAt, ... }] }
+   */
+  pingHistory: (date?: string) =>
+    api.get('/attendance/ping-history', { params: date ? { date } : {} }),
+
   /** Presence state: 'active' | 'idle' | 'offline'. */
   setPresence: async (state: 'active' | 'idle' | 'offline') => {
     // #408 — Show employee id in the Metro / device console alongside
