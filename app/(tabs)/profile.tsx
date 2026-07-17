@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -100,17 +100,27 @@ const show = (v?: any): string => {
 export default function ProfileScreen() {
   const [user, setUser] = useState<UserProfile>({});
 
+  // #427 — Guard against setState-after-unmount. Profile is fetched on
+  // mount AND on every tab-focus, so tapping the Profile tab rapidly (or
+  // swiping to another tab mid-fetch) used to hit setState on a torn-down
+  // component. Under Hermes RN 0.81 this can escalate to SIGTERM.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const loadProfile = useCallback(async () => {
     // Fast paint from cache, then refresh from server.
     try {
       const cached = await AsyncStorage.getItem('user');
-      if (cached) setUser(JSON.parse(cached));
+      if (cached && mountedRef.current) setUser(JSON.parse(cached));
     } catch {}
 
     try {
       const res = await profileAPI.getProfile();
       const data = res?.data || {};
-      setUser(data);
+      if (mountedRef.current) setUser(data);
       AsyncStorage.setItem('user', JSON.stringify(data)).catch(() => {});
     } catch {
       // Network/server error → keep showing cached data.
@@ -180,15 +190,24 @@ export default function ProfileScreen() {
         {/* GREEN HEADER */}
         <View style={styles.greenHeader} />
 
-        {/* AVATAR */}
+        {/* AVATAR — #430: long-press opens the hidden read-only Ping Store
+            debug screen (local SQLite viewer). No visible menu entry so it
+            stays out of employees' way; only someone who knows the gesture
+            (or fires the tescoerm://ping-debug deep link) reaches it. */}
         <View style={styles.avatarWrap}>
-          <View style={styles.avatar}>
-            {user.photoUrl ? (
-              <Image source={{ uri: user.photoUrl }} style={styles.avatarImg} />
-            ) : (
-              <Text style={styles.avatarInitial}>{initial}</Text>
-            )}
-          </View>
+          <TouchableOpacity
+            activeOpacity={1}
+            delayLongPress={800}
+            onLongPress={() => { try { router.push('/ping-debug'); } catch {} }}
+          >
+            <View style={styles.avatar}>
+              {user.photoUrl ? (
+                <Image source={{ uri: user.photoUrl }} style={styles.avatarImg} />
+              ) : (
+                <Text style={styles.avatarInitial}>{initial}</Text>
+              )}
+            </View>
+          </TouchableOpacity>
         </View>
 
         {/* NAME + DESIGNATION */}

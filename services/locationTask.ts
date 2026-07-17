@@ -14,6 +14,7 @@ import {
   markPingSynced,
   markPingFailed,
   bucketFor,
+  isUploadAllowedNow,
 } from './pingStore';
 
 export const BACKGROUND_LOCATION_TASK = 'tesco-erm-location-ping';
@@ -37,15 +38,15 @@ const PING_QUEUE_MAX = 200;
 const HEARTBEAT_KEY  = 'erm-bg-task-last-heartbeat';
 const EVENT_LOG_KEY  = 'erm-bg-task-events-v1';
 const EVENT_LOG_MAX  = 200;
-// #315 — Tightened from 3 min → 2 min. With the bg task's 60-s
-// timeInterval, a single missed tick is normal (OS batching, brief
-// CPU contention). Two missed ticks (120 s of silence) is the earliest
-// reliable signal that the foreground service has actually died — so
-// 2 min is the sweet spot between "false-positive revives that
-// briefly toggle the GPS chip" and "user loses 5 minutes of tracking
-// before we notice". Pair this with the 15-s guardian cadence (#315)
-// and worst-case detection is now ~135 s instead of 210 s.
-const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
+// #421 — Relaxed 2 min → 4 min. When HEARTBEAT_STALE_MS equals the
+// timeInterval (both 2 min), any OS batching / brief CPU contention
+// pushes a single tick past the threshold and the guardian trips into
+// a stop-then-start cycle every 15 s. That thrash itself accelerates
+// OEM SIGKILL of the foreground service — exactly the problem #421
+// was diagnosing. 4 min = 2 missed ticks is a much better balance:
+// still fast enough to catch a real service death within one full
+// cycle, but immune to normal Doze-adjacent batching.
+const HEARTBEAT_STALE_MS = 4 * 60 * 1000;
 
 type TrackingEvent = {
   ts: string;
@@ -514,7 +515,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const rawUser = await AsyncStorage.getItem('user');
     if (rawUser) {
       const u = JSON.parse(rawUser);
-      bgUserId     = u?._id || u?.id || '';
+      // #430 — Add the `|| u?.userId` fallback so this path resolves the
+      // SAME user_id as api.ts / backgroundTracking.ts. Previously it could
+      // save NULL, which slipped past the (user_id, bucket) unique index and
+      // produced duplicate rows in one 2-min slot.
+      bgUserId     = u?._id || u?.id || u?.userId || '';
       bgEmployeeId = u?.employeeId || u?.userId || '';
     }
   } catch { /* non-fatal — still save with empty ids so at least the coords survive */ }
@@ -538,6 +543,24 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   } catch (e: any) {
     console.log('[bg-location] pingStore.savePendingPing failed (non-fatal):', e?.message || e);
   }
+
+  // #430 — STRICT SQLite-as-source-of-truth. The ping is now safely in
+  // SQLite. While the employee is checked in we DO NOT upload it — the
+  // single upload to MongoDB happens at Check Out. Return here so no
+  // network POST is attempted during the working session. The row stays
+  // 'pending' and is shipped by the checkout batch upload + verify.
+  try {
+    if (!(await isUploadAllowedNow())) {
+      const nowIst = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false });
+      console.log(
+        `[${nowIst}] [bg-location] ✔ ping stored to SQLite only (checked-in — no live upload)`,
+        `latitude: ${filtered.lat.toFixed(5)}`,
+        `longitude: ${filtered.lng.toFixed(5)}`,
+        `localId=${bgLocalId}`,
+      );
+      return;
+    }
+  } catch { /* gate error — fall through to the normal (checked-out retry) send path */ }
 
   // #379 — Burst guard for the OS background task context. When the OS
   // wakes the task up after a long suspension, it can deliver multiple
@@ -600,11 +623,22 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       return;
     }
 
-    // #419 — POST succeeded. Flip the local SQLite row to 'synced' so
-    // pendingCount drops but listAllPingsSince() still sees it inside the
-    // 3-day missing-pings window (server dedups by bucket, so re-shipping
-    // synced rows is safe and lets it heal any gaps caused by lost writes).
-    if (bgLocalId > 0) { try { await markPingSynced(bgLocalId); } catch {} }
+    // #433 — Only flip the row to 'synced' when the server actually STORED
+    // it. A 200 with accepted:false (accuracy-gated, or a server-side bucket
+    // collision when a late/retried ping is bucketed on the server's clock)
+    // does NOT mean the ping is in Mongo — marking it synced would flag an
+    // unstored row as safe-to-delete. Parse the body; on "not stored", keep
+    // it PENDING so the batch reconciliation ships it (the batch endpoint has
+    // no accuracy gate and buckets by capture time, so it can't collide).
+    let bgStored = true;
+    try {
+      const body: any = await res.json();
+      bgStored = body?.ok === true && (body?.accepted !== false || body?.reason === 'duplicate-bucket');
+    } catch { bgStored = res.ok; }
+    if (bgLocalId > 0) {
+      if (bgStored) { try { await markPingSynced(bgLocalId); } catch {} }
+      else { try { await markPingFailed(bgLocalId, 'not-stored'); } catch {} }
+    }
 
     // #410/#411/#413 — Match the FG-timer log so HR/devs see one confirmation
     // line per successful 2-min ping regardless of which path handled it.

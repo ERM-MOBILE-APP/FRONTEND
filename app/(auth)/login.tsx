@@ -134,15 +134,35 @@ export default function LoginScreen() {
         // token.
         throw new Error('Login response missing token — please try again.');
       }
-      // #415 — Wipe every trace of any previous user's tracking state
-      // BEFORE we persist the new token. Belt-and-braces: even if the
-      // previous logout crashed before its own wipe fired, this
-      // guarantees the incoming user cannot inherit a stale checkedIn
-      // flag, cached `today` snapshot, or pending ping queue.
+      // #423 — HARDENED LOGIN SEQUENCE (supersedes #415 best-effort wipe).
+      //
+      // Order is critical:
+      //   1) Nuke the OLD user's identity tokens FIRST. If any step below
+      //      crashes, a fresh app open will re-hit the login screen
+      //      rather than showing a home page where the token is new but
+      //      the cache is old.
+      //   2) Nuke the today snapshot explicitly (belt-and-braces — the
+      //      home mount ownership guard would drop it anyway, but let's
+      //      not rely on that on the login path).
+      //   3) Run wipeUserScopedTracking — SQLite tracking_state, pending
+      //      pings, all erm-* AsyncStorage keys.
+      //   4) THEN write the new user's token/user.
+      // If the wipe throws, we still proceed (the ownership guard on the
+      // home mount is the second defensive layer) but we log loudly.
+      try {
+        await AsyncStorage.multiRemove(['token', 'user', 'userId', 'erm-today-v1']);
+      } catch (e: any) {
+        console.warn('[login] multiRemove failed (non-fatal, wipe will follow):', e?.message || e);
+      }
+      let wipeOk = false;
       try {
         const { wipeUserScopedTracking } = require('../../services/pingStore');
         await wipeUserScopedTracking();
-      } catch { /* non-fatal — login continues */ }
+        wipeOk = true;
+      } catch (e: any) {
+        console.warn('[login] wipeUserScopedTracking failed — ownership guard on home mount will still protect:', e?.message || e);
+      }
+      console.log('[login] pre-login wipe complete, wipeOk=', wipeOk);
       await AsyncStorage.setItem('token', res.data.token);
       await AsyncStorage.setItem('user', JSON.stringify(res.data.user || {}));
       if (remember) {
@@ -433,6 +453,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 22,
   },
+
   rememberRow: { flexDirection: 'row', alignItems: 'center' },
   checkbox: {
     width: 16,

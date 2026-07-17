@@ -16,7 +16,9 @@
  *     white. Tap-to-read marks the announcement read for this user.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
+// #428 — Local error boundary + unmount guards for every setState.
+import ScreenErrorBoundary from '../components/ScreenErrorBoundary';
 import {
   View,
   Text,
@@ -94,15 +96,24 @@ function formatRelative(iso?: string): string {
   }
 }
 
-export default function AnnouncementScreen() {
+function AnnouncementScreenInner() {
   const [items, setItems]           = useState<Announcement[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+
+  // #428 — Every setState guarded against post-unmount fire. This screen
+  // has 4 async paths (load, focus-refetch, mark-all-read, mark-one-read)
+  // and users tap the back button rapidly.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const load = useCallback(async () => {
     try {
       const res = await announcementAPI.list(50);
       const list = Array.isArray(res?.data) ? (res.data as Announcement[]) : [];
-      setItems(list);
+      if (mountedRef.current) setItems(list);
     } catch {
       // Silent — pull-to-refresh retries.
     }
@@ -122,15 +133,17 @@ export default function AnnouncementScreen() {
   );
 
   const onRefresh = async () => {
-    setRefreshing(true);
+    if (mountedRef.current) setRefreshing(true);
     await load();
-    setRefreshing(false);
+    if (mountedRef.current) setRefreshing(false);
   };
 
   const markAllRead = async () => {
     try {
       await announcementAPI.markAllRead();
-      setItems((prev) => prev.map((a) => ({ ...a, isRead: true })));
+      if (mountedRef.current) {
+        setItems((prev) => prev.map((a) => ({ ...a, isRead: true })));
+      }
     } catch {}
   };
 
@@ -138,7 +151,9 @@ export default function AnnouncementScreen() {
     if (!a.isRead) {
       try { await announcementAPI.markAsRead(a._id); } catch {}
     }
-    setItems((prev) => prev.map((x) => (x._id === a._id ? { ...x, isRead: true } : x)));
+    if (mountedRef.current) {
+      setItems((prev) => prev.map((x) => (x._id === a._id ? { ...x, isRead: true } : x)));
+    }
   };
 
   return (
@@ -281,6 +296,16 @@ export default function AnnouncementScreen() {
         )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+// #428 — Boundary wrapper so a render error inside Announcements stays
+// scoped to this screen.
+export default function AnnouncementScreen() {
+  return (
+    <ScreenErrorBoundary name="Announcements">
+      <AnnouncementScreenInner />
+    </ScreenErrorBoundary>
   );
 }
 

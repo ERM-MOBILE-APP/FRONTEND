@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 // #409 — SQLite-backed offline queue. Every ping is persisted BEFORE
 // hitting the network, so nothing is lost if the POST fails.
-import { savePendingPing, markPingSynced, markPingFailed, markLastPingAt, bucketFor } from './pingStore';
+import { savePendingPing, markPingSynced, markPingFailed, markLastPingAt, bucketFor, isUploadAllowedNow } from './pingStore';
 
 // #401 — Backend mounts every route under /api/* (see backend/src/app.js
 // `app.use('/api/auth', ...)`, `app.use('/api/attendance', ...)`, etc.).
@@ -45,7 +45,17 @@ async function forceLogout(reason: string) {
   _logoutInFlight = true;
   try {
     console.warn('[API] forcing logout —', reason);
-    await AsyncStorage.multiRemove(['token', 'user', 'userId']).catch(() => {});
+    // #423 — Wipe user-scoped caches BEFORE removing identity keys.
+    // Without this, a 401 (expired token, session revoked, password
+    // reset) would leave `erm-today-v1` primed with the departing
+    // user's snapshot. The next successful login on the same device
+    // would then briefly show that stale data before refreshToday
+    // finished. Nuking here closes that race.
+    try {
+      const { wipeUserScopedTracking } = require('./pingStore');
+      await wipeUserScopedTracking();
+    } catch { /* pingStore not ready — the identity multiRemove below still helps */ }
+    await AsyncStorage.multiRemove(['token', 'user', 'userId', 'erm-today-v1']).catch(() => {});
     // Defer navigation so we never call router.replace() inside a
     // render cycle or response-interceptor callback.
     setTimeout(() => {
@@ -293,11 +303,49 @@ export const attendanceAPI = {
     _lastFgPingSentAt = Date.now();
     try { await AsyncStorage.setItem('erm-bg-last-ping-sent-at', String(Date.now())); } catch {}
 
-    // Step 2: try to send. Success → mark synced + advance lastPingAt.
+    // #430 — STRICT SQLite-as-source-of-truth. While the employee is
+    // checked in, the ping is stored LOCALLY ONLY and is NEVER uploaded.
+    // The single upload to MongoDB happens at Check Out
+    // (finalCheckoutSyncAndCleanup). Return a synthetic "stored-locally"
+    // result so the caller (FG timer / AppState ping / gpsWatcher) moves
+    // on exactly as before. The row stays 'pending' in SQLite until the
+    // checkout batch upload ships + verifies it.
     try {
-      const res = await api.post('/attendance/location-ping', { lat, lng, accuracy, speed, isStationary });
+      const uploadAllowed = await isUploadAllowedNow();
+      if (!uploadAllowed) {
+        try { await markLastPingAt(Date.now()); } catch {}
+        console.log(`[api] ping stored to SQLite only (checked-in — no live upload) localId=${localId}`);
+        return { data: { ok: true, accepted: false, reason: 'stored-locally-checked-in', localId } } as any;
+      }
+    } catch { /* if the gate errors, fall through to the normal send path */ }
+
+    // Step 2: try to send. Success → mark synced + advance lastPingAt.
+    // NOTE: this path only runs while the employee is checked OUT — it is
+    // used by the leftover-batch retry (pingSync flush) after a failed
+    // checkout upload, never during a working session.
+    try {
+      // #433 — Send the capture time so the server buckets the ping by WHEN
+      // IT WAS TAKEN, not when it arrived. Without this, a late/retried ping
+      // is bucketed on the server's clock, collides with a later bucket, and
+      // the server drops it as a "duplicate" — silently losing that sample.
+      const res = await api.post('/attendance/location-ping', {
+        lat, lng, accuracy, speed, isStationary,
+        recordedAt: new Date(recordedAt).toISOString(),
+      });
+      // #433 — Only mark the row SYNCED when the server actually STORED it.
+      // The endpoint returns 200 even when it does NOT persist a ping
+      // (accuracy-gated, burst-guarded, or a server-side bucket collision).
+      // Marking such a row 'synced' would wrongly flag it safe-to-delete even
+      // though it never reached Mongo. Treat as stored ONLY on a real success
+      // or a genuine duplicate-bucket (which means it's already in Mongo).
+      // Otherwise keep it PENDING so the batch reconciliation ships it — the
+      // batch endpoint has no accuracy gate and reconstructs the correct
+      // bucket from the capture time, so it can't collide the same way.
+      const d: any = res?.data || {};
+      const stored = d.ok === true && (d.accepted !== false || d.reason === 'duplicate-bucket');
       if (localId > 0) {
-        try { await markPingSynced(localId); } catch {}
+        if (stored) { try { await markPingSynced(localId); } catch {} }
+        else { try { await markPingFailed(localId, `not-stored:${d.reason || 'unknown'}`); } catch {} }
       }
       try { await markLastPingAt(Date.now()); } catch {}
       return res;
@@ -335,6 +383,20 @@ export const attendanceAPI = {
    */
   syncMissingPings: (pings: any[]) =>
     api.post('/attendance/location-pings/missing-pings', { pings }),
+
+  /**
+   * #434 — Fetch the set of 2-minute `bucket`s this employee already has in
+   * MongoDB (optionally within a recordedAt ISO range). Used at Check-Out to
+   * DIFF the local SQLite store against the server (upload only missing) and
+   * to VERIFY completeness before deleting local records.
+   * Response: { success, count, buckets: number[] }
+   */
+  getMyPingBuckets: (fromISO?: string, toISO?: string) => {
+    const params: any = {};
+    if (fromISO) params.from = fromISO;
+    if (toISO) params.to = toISO;
+    return api.get('/attendance/location-pings/mine', { params });
+  },
 
   /** Presence state: 'active' | 'idle' | 'offline'. */
   setPresence: async (state: 'active' | 'idle' | 'offline') => {
@@ -505,18 +567,8 @@ export const announcementAPI = {
 };
 
 export const notificationAPI = {
-  list: (params?: { limit?: number; onlyUnread?: boolean }) => {
-    const q: string[] = [];
-    if (params?.limit) q.push(`limit=${params.limit}`);
-    if (params?.onlyUnread) q.push(`onlyUnread=true`);
-    const qs = q.length ? `?${q.join('&')}` : '';
-    return api.get(`/notification${qs}`);
-  },
-  unreadCount: () => api.get('/notification/unread-count'),
-  getById: (id: string) => api.get(`/notification/${id}`),
-  markAsRead: (id: string) => api.patch(`/notification/${id}/read`),
-  markAllRead: () => api.patch('/notification/read-all'),
-  remove: (id: string) => api.delete(`/notification/${id}`),
+  list:       (params?: { limit?: number }) => api.get('/notifications', { params }),
+  markAsRead: (id: string) => api.patch(`/notifications/${id}/read`),
+  markAllRead: () => api.patch('/notifications/read-all'),
+  unreadCount: () => api.get('/notifications/unread-count'),
 };
-
-export default api;

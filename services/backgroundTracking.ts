@@ -2,6 +2,16 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+// #430 — STRICT SQLite-as-source-of-truth. This react-native-background-
+// actions path historically POSTed straight to the network and left NO
+// local trace. Under the new policy every ping must land in SQLite first
+// and must NOT be uploaded while checked in — so we now persist here too.
+import {
+  initPingStore,
+  savePendingPing,
+  bucketFor,
+  isUploadAllowedNow,
+} from './pingStore';
 
 // ── Optional runtime imports ─────────────────────────────────────
 // These native libs must be linked via `npx expo prebuild` + a
@@ -282,6 +292,46 @@ async function readPositionOnce(): Promise<{ lat: number; lng: number; accuracy:
 // remains the final backstop: even if this guard somehow lets two
 // requests through, only one can persist.
 async function postPing(token: string, f: Fix): Promise<void> {
+  // #430 — STRICT SQLite-as-source-of-truth. Persist EVERY ping to the
+  // local SQLite queue FIRST so no sample is ever lost, then decide
+  // whether we're allowed to upload. While the employee is checked in we
+  // store locally ONLY and RETURN without any network POST — the single
+  // upload to MongoDB happens at Check Out (finalCheckoutSyncAndCleanup).
+  try {
+    await initPingStore();
+    let uId = '';
+    let eId = '';
+    try {
+      const rawUser = await AsyncStorage.getItem('user');
+      if (rawUser) {
+        const u = JSON.parse(rawUser);
+        uId = u?._id || u?.id || u?.userId || '';
+        eId = u?.employeeId || u?.userId || '';
+      }
+    } catch { /* still save with empty ids so the coords survive */ }
+    const recMs = Date.now();
+    await savePendingPing({
+      userId:       uId || undefined,
+      employeeId:   eId || undefined,
+      lat:          f.lat,
+      lng:          f.lng,
+      accuracy:     f.accuracy ?? null,
+      speed:        f.speed ?? null,
+      isStationary: !!f.isStationary,
+      recordedAt:   recMs,
+      bucket:       bucketFor(recMs),
+    } as any);
+  } catch (e: any) {
+    console.log('[bg-actions] savePendingPing failed (non-fatal):', e?.message || e);
+  }
+
+  try {
+    if (!(await isUploadAllowedNow())) {
+      console.log('[bg-actions] ✔ ping stored to SQLite only (checked-in — no live upload):', { lat: f.lat, lng: f.lng });
+      return;
+    }
+  } catch { /* gate error — fall through to the normal (checked-out retry) send path */ }
+
   // #402 — Burst guard with ROLLBACK ON FAILURE.
   //
   // The reservation-style guard (#391) writes LAST_SENT_KEY before the
@@ -421,7 +471,18 @@ const options = {
   color:          '#4CAF50',
   linkingURI:     'tescoerm://home',
   parameters:     {},
+  // #421 — Explicit FGS type. Android 14+ requires this both here AND in
+  // the manifest (via config plugin); without either the OS refuses to
+  // start the service. The manifest side is handled by expo-build-properties
+  // / a small config plugin — see app.json.
   foregroundServiceType: 'location',
+  // #421 — Attach to the LOW-importance channel we created above so the
+  // persistent notification actually renders on Android 13+ (killer of
+  // background tracking on every modern device without this).
+  progressBar: undefined,      // hide progress spinner in notif
+  // r-n-b-a picks up the channelId when present. If the constant doesn't
+  // exist on the installed version, the option is silently ignored.
+  channelId: 'tesco-erm-tracking',
 };
 
 /** Start the background-actions foreground service. */
@@ -490,6 +551,46 @@ export async function requestTrackingPermissions(): Promise<'granted' | 'denied'
       );
       if (bg !== PermissionsAndroid.RESULTS.GRANTED) return 'denied';
     } catch { /* not required on Android < 10 */ }
+    // #421 — CRITICAL FIX. Without POST_NOTIFICATIONS on Android 13+ the
+    // foreground service's persistent notification cannot be shown, and
+    // the OS SIGKILLs the FGS ~10 seconds after start. This was the #1
+    // reason bg tracking was dying the moment the app went to background.
+    try {
+      if (PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS) {
+        const notif = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+          {
+            title: 'Notification',
+            message: 'Tesco ERM needs to show a small notification while tracking so Android does not stop location updates.',
+            buttonPositive: 'Allow',
+          }
+        );
+        if (notif !== PermissionsAndroid.RESULTS.GRANTED) {
+          console.warn('[permissions] POST_NOTIFICATIONS denied — FGS may be killed by Android after ~10s');
+        }
+      }
+    } catch { /* POST_NOTIFICATIONS not present on older RN — noop */ }
+    // #421 — Create the LOW-importance notification channel r-n-b-a will
+    // attach its notification to. Without the channel on Android 8+ the
+    // notification silently fails and the FGS is torn down.
+    try {
+      const Notifications = require('expo-notifications');
+      if (Notifications && typeof Notifications.setNotificationChannelAsync === 'function') {
+        await Notifications.setNotificationChannelAsync('tesco-erm-tracking', {
+          name: 'Tesco ERM · Live tracking',
+          importance: Notifications.AndroidImportance
+            ? Notifications.AndroidImportance.LOW
+            : 2,
+          lockscreenVisibility: 1,
+          sound: null,
+          vibrationPattern: null,
+          enableVibrate: false,
+          enableLights: false,
+          bypassDnd: false,
+          showBadge: false,
+        }).catch(() => {});
+      }
+    } catch { /* expo-notifications not installed — fallback to r-n-b-a default */ }
     return 'granted';
   } catch { return 'denied'; }
 }

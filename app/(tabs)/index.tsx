@@ -35,6 +35,7 @@ import {
   startBackgroundTracking,
   stopBackgroundTracking,
   requestTrackingPermissions,
+  isBackgroundTrackingRunning,   // #421 — guardian uses this to detect FGS SIGKILL
 } from '../../services/backgroundTracking';
 import {
   startBackgroundLocationUpdates,
@@ -52,7 +53,7 @@ import {
 } from '../../services/locationTask';
 // #409 — SQLite-backed offline queue for pings + tracking state.
 import { initPingStore, markCheckIn, markCheckOut, getPendingCount } from '../../services/pingStore';
-import { startPingSyncListener, flushPendingPings, syncMissingPingsFromLocal } from '../../services/pingSync';
+import { startPingSyncListener, checkoutSyncWithDiffAndVerify, reconcilePreviousSessions, purgePreviousSyncedBefore } from '../../services/pingSync';
 
 type WorkLocation = 'remote' | 'office';
 
@@ -446,8 +447,21 @@ export default function HomeScreen() {
             ? false
             : (!!fresh.isOnBreak || derivedBreak),
         };
-        // Persist the merged truth to AsyncStorage.
-        AsyncStorage.setItem(STORAGE_KEY_TODAY, JSON.stringify(merged)).catch(() => {});
+        // #423 — Stamp ownership so a later mount for a DIFFERENT user
+        // can reject this cache immediately, even if wipeUserScopedTracking
+        // failed silently on logout. Reading the user id here is
+        // non-blocking (fire-and-forget cache write).
+        AsyncStorage.getItem('user')
+          .then((u) => {
+            let ownerId: string | null = null;
+            try {
+              const parsed = u ? JSON.parse(u) : null;
+              ownerId = parsed?.employeeId || parsed?.userId || parsed?._id || parsed?.id || null;
+            } catch {}
+            const stamped: any = { ...merged, __ownerId: ownerId };
+            return AsyncStorage.setItem(STORAGE_KEY_TODAY, JSON.stringify(stamped));
+          })
+          .catch(() => {});
         return merged;
       });
     } catch {
@@ -457,6 +471,13 @@ export default function HomeScreen() {
       // button flickered back to "Check In" on any transient network blip.
       // Now we preserve whatever is already in state (via functional update)
       // and only fill in shiftName if it was missing.
+      //
+      // #423 — BUT: on the FIRST refresh after mount, if the network
+      // fails and `prev` was hydrated from an owner-verified cache, we
+      // trust that. If it was empty (fresh login), we don't invent
+      // check-in state out of nothing. Either way, preserving prev is
+      // safe here because the ownership guard above already ensured
+      // prev belongs to the current user.
       setToday(prev => ({ shiftName: 'General Shift', ...prev }));
     }
   }, []);
@@ -535,13 +556,36 @@ export default function HomeScreen() {
 
         const raw = await AsyncStorage.getItem('erm-today-v1');
         if (!raw) return;
-        const cached: TodayData = JSON.parse(raw);
+        const cached: any = JSON.parse(raw);
+        // #423 — OWNERSHIP GUARD (critical). If the cache carries an
+        // __ownerId that doesn't match the currently-logged-in user,
+        // this cache belongs to a previous account. Drop it immediately
+        // — do NOT setToday with it, do NOT render check-out button
+        // from another user's session.
+        //
+        // Missing __ownerId is treated as SUSPECT: the cache was written
+        // by an older build that didn't stamp owners, so we can't prove
+        // provenance. Rather than risk showing another user's data, we
+        // drop it and wait for refreshToday to paint from the server.
+        if (!cached?.__ownerId || !currentEmpId) {
+          console.log('[home mount] cache missing __ownerId — dropping (safe default)');
+          await AsyncStorage.removeItem('erm-today-v1').catch(() => {});
+          return;
+        }
+        if (String(cached.__ownerId) !== String(currentEmpId)) {
+          console.log('[home mount] cache owner mismatch — dropping stale cache',
+            { cacheOwner: cached.__ownerId, currentUser: currentEmpId });
+          await AsyncStorage.removeItem('erm-today-v1').catch(() => {});
+          return;
+        }
         if (!cached?.checkIn) return;
         // Stale-day guard: only restore if the cached check-in is from today.
         const cachedDate = new Date(cached.checkIn).toDateString();
         const todayDate  = new Date().toDateString();
         if (cachedDate === todayDate) {
-          setToday(cached);
+          // Strip the metadata field before storing in React state.
+          const { __ownerId, ...clean } = cached;
+          setToday(clean as TodayData);
         } else {
           await AsyncStorage.removeItem('erm-today-v1').catch(() => {});
         }
@@ -609,23 +653,60 @@ export default function HomeScreen() {
           const checkedOut = !!t.checkOut;
           if (checkedIn && !checkedOut) {
             console.log('[cold-boot resume] user still checked in — restarting both bg trackers');
+            // #430 — CRITICAL. Re-assert local check-in state on resume.
+            // markCheckIn() is otherwise only called from the manual
+            // handleCheckPress flow, so after an app restart mid-shift the
+            // local tracking_state stayed checkedIn=false. Two bad effects:
+            //   1) the ping-debug tracking_state showed blank employee/times, and
+            //   2) the strict upload gate (isUploadAllowedNow = !checkedIn)
+            //      saw "checked out" and let pings upload in real time —
+            //      exactly what the SQLite-as-source-of-truth rule forbids.
+            // Re-stamping it here makes the gate correct after any restart.
+            try {
+              const raw2 = await AsyncStorage.getItem('user');
+              if (raw2) {
+                const u = JSON.parse(raw2);
+                const uid = u?._id || u?.id || u?.userId || '';
+                const eid = u?.employeeId || u?.userId || '';
+                // Prefer the server's authoritative check-in time so the
+                // session window used at checkout cleanup is accurate.
+                const ciMs = t?.checkIn ? new Date(t.checkIn).getTime() : Date.now();
+                await markCheckIn(String(uid), String(eid), Number.isFinite(ciMs) ? ciMs : Date.now());
+                // #432 — Purge any SYNCED rows left over from a PREVIOUS
+                // session (recorded before this check-in). Safe to run during
+                // an active session: it deletes only server-confirmed prior-
+                // session rows and never touches pending or current rows.
+                await purgePreviousSyncedBefore(Number.isFinite(ciMs) ? ciMs : Date.now(), 'resume').catch(() => {});
+              }
+            } catch (e: any) {
+              console.warn('[cold-boot resume] markCheckIn re-assert failed:', e?.message || e);
+            }
             // #408 — Unconditional presence push on cold-boot resume so
             // the client + backend both log `[presence] TES080 → active`
             // even when GPS never went off (which is why setPresence was
             // silent under normal flow).
             attendanceAPI.setPresence('active').catch(() => {});
-            // #409 — Drain any pending pings queued while the app was
-            // closed BEFORE we start pushing new ones. This preserves
-            // strict chronological order in the DB.
-            flushPendingPings('cold-boot-resume').catch(() => {});
-            // #416 — Also run the batch missing-pings reconciliation on
-            // cold-boot so anything the per-row flush missed (bg-task
-            // pings that bypassed SQLite historically) gets uploaded.
-            syncMissingPingsFromLocal('cold-boot-resume').catch(() => {});
+            // #430 — STRICT SQLite-as-source-of-truth. This branch runs
+            // ONLY when the user is still checked in, so we must NOT upload
+            // anything here — pings stay in SQLite until Check Out. The
+            // previous cold-boot flush/missing-pings calls were REMOVED so
+            // no ping is ever shipped mid-shift. Collection simply resumes
+            // below; the checkout batch upload will ship everything.
             // Primary: react-native-background-actions FGS.
+            // #424 — Read the permission result and DON'T start the FGS
+            // if POST_NOTIFICATIONS was denied. On Android 13+, starting
+            // the service without a visible notification means the OS
+            // SIGKILLs it within ~10 s — which then reads to the user as
+            // "app just crashed after check-in". Better to skip the
+            // start silently and let the user grant the permission the
+            // next time they tap Check In.
             try {
-              await requestTrackingPermissions().catch(() => {});
-              await startBackgroundTracking().catch(() => {});
+              const permResult = await requestTrackingPermissions().catch(() => 'denied' as const);
+              if (permResult === 'granted') {
+                await startBackgroundTracking().catch(() => {});
+              } else {
+                console.warn('[cold-boot resume] tracking permissions not granted (' + permResult + ') — skipping FGS start');
+              }
             } catch (e: any) {
               console.warn('[cold-boot resume] startBackgroundTracking failed:', e?.message || e);
             }
@@ -639,6 +720,22 @@ export default function HomeScreen() {
             try { startTracking(); } catch (e: any) {
               console.warn('[cold-boot resume] startTracking (FG timers) failed:', e?.message || e);
             }
+          } else if (res) {
+            // #431/#432 — FORGOT-TO-CHECK-OUT / PREVIOUS-SESSION RECONCILE.
+            //
+            // We successfully fetched attendance state (res is non-null) and
+            // the user is NOT in an active session — they've already checked
+            // out, or the day was auto-closed server-side while the app was
+            // shut (they forgot to check out). Any pings from that prior
+            // session are still in SQLite. Upload + verify + delete them now
+            // (server-confirmed rows only), and purge lingering synced rows.
+            //
+            // Gated on res!=null so a FAILED state fetch (which would look
+            // like "checked out") can never trigger a mid-shift upload/delete.
+            // Never deletes anything not confirmed in MongoDB; retains + retries
+            // on failure via the checked-out background listener + next open.
+            try { await markCheckOut(); } catch {}
+            await reconcilePreviousSessions('cold-boot').catch(() => {});
           }
         } catch { /* silent — resume is best-effort */ }
       })
@@ -1107,7 +1204,7 @@ export default function HomeScreen() {
         // revive event, which is the only case that actually matters.
 
         if (!taskAlive) {
-      
+
 console.warn(
   `[tracking] ${new Date().toLocaleString()} - bg task not registered — reviving`
 );
@@ -1116,6 +1213,34 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
         } else if (stale) {
           console.warn('[tracking] bg task is zombie (heartbeat stale) — reviving');
           await reviveBackgroundLocationUpdates('guardian: heartbeat stale');
+        }
+
+        // #421 — CRITICAL FIX. The guardian used to only check the
+        // expo-task-manager path. But the PRIMARY tracker in #405 is the
+        // react-native-background-actions FGS, and that's the one OEMs
+        // (Xiaomi/Oppo/Vivo/Realme) actually SIGKILL first. Without this
+        // check, the FGS could stay dead for the entire rest of the
+        // shift while the OS quietly reported the expo-task-manager task
+        // as "alive" (because OEMs sometimes lie about foreground service
+        // state until reboot).
+        //
+        // Check it AFTER the expo path so a shared revive-in-flight state
+        // doesn't collide with itself.
+        try {
+          const fgsAlive = isBackgroundTrackingRunning();
+          if (!fgsAlive) {
+            console.warn(
+              `[tracking] ${new Date().toLocaleString()} - r-n-b-a FGS is dead — restarting`
+            );
+            const ok = await startBackgroundTracking().catch(() => false);
+            if (ok) {
+              console.log('[tracking] r-n-b-a FGS restart succeeded');
+            } else {
+              console.warn('[tracking] r-n-b-a FGS restart failed — will retry next guardian tick');
+            }
+          }
+        } catch (fgsErr: any) {
+          console.warn('[tracking] r-n-b-a FGS revive attempt errored:', fgsErr?.message || fgsErr);
         }
       } catch (err: any) {
         console.warn('[tracking] guardian error:', err?.message || err);
@@ -1171,11 +1296,25 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
     console.log('[tracking] started (ping 2 min, gpsWatcher 30s, bgGuardian 30s) — wrapped against unhandled rejections');
   };
 
-  // #374 — Component unmount (logout / navigation out of tabs). Full
-  // teardown: FG timers + OS BG task. If the user was still checked in,
-  // they'll need to re-check-in on next login, so stopping the BG task
-  // here is correct — no orphaned service after logout.
-  useEffect(() => () => stopContinuousTracking('component unmount'), []);
+  // #421 — CRITICAL FIX. The previous implementation unconditionally
+  // stopped the OS background task on Home-screen unmount, but expo-router
+  // remounts this component on many innocuous events (deep-link nav, drawer
+  // reopens, RootErrorBoundary catches from a child, hot reload during
+  // development). Every remount silently killed tracking.
+  //
+  // We now clear FG timers only (they belong to this component instance
+  // and must be replaced by the next mount's `startTracking()`), but we
+  // leave the OS BG task and the r-n-b-a FGS ALONE. They are process-
+  // scoped, not component-scoped — the real stop happens only at
+  // user-checkout, logout, or auto-checkout.
+  useEffect(() => () => {
+    try {
+      if (pingTimerRef.current)     { clearInterval(pingTimerRef.current);     pingTimerRef.current = null; }
+      if (gpsWatcherRef.current)    { clearInterval(gpsWatcherRef.current);    gpsWatcherRef.current = null; }
+      if (bgGuardianRef.current)    { clearInterval(bgGuardianRef.current);    bgGuardianRef.current = null; }
+      console.log('[tracking] fg timers cleared on unmount (bg task + r-n-b-a FGS untouched)');
+    } catch {}
+  }, []);
 
   // If the user is already checked-in when the home screen mounts (e.g.
   // they killed the app and re-opened it later), resume the loop.
@@ -1183,11 +1322,20 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
     if (checkedIn && !checkedOut && !pingTimerRef.current) {
       startTracking();
     }
+    // #421 — Same reasoning as above. Do NOT call stopContinuousTracking
+    // just because `checkedIn` / `checkedOut` flipped in local state.
+    // The real teardown lives in the user-tap check-out handler and the
+    // logout / auto-checkout paths. A stale `today` fetch during app
+    // resume can briefly flip these to false and used to kill tracking
+    // right after cold-boot resume — the exact opposite of what #405
+    // wanted.
     if ((!checkedIn || checkedOut) && pingTimerRef.current) {
-      // #374 — Full teardown when the session ends via state change
-      // (checked-out flag flipped, or logout). Both FG timers and OS BG
-      // task stop here — the only other place is user check-out tap.
-      stopContinuousTracking('session state change');
+      try {
+        if (pingTimerRef.current)  { clearInterval(pingTimerRef.current);  pingTimerRef.current  = null; }
+        if (gpsWatcherRef.current) { clearInterval(gpsWatcherRef.current); gpsWatcherRef.current = null; }
+        if (bgGuardianRef.current) { clearInterval(bgGuardianRef.current); bgGuardianRef.current = null; }
+        console.log('[tracking] fg timers cleared on session state change (bg task + r-n-b-a FGS untouched)');
+      } catch {}
     }
   }, [checkedIn, checkedOut]);
 
@@ -1262,7 +1410,16 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
               Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
               new Promise<null>((r) => setTimeout(() => r(null), 8000)),
             ]);
-            console.warn("fix", fix);
+            // #430 — Log the fix's capture time (IST) alongside the raw
+            // object so the 2-min ping cadence is visible in the console.
+            console.warn(
+              "fix",
+              fix,
+              "time:",
+              fix?.timestamp
+                ? new Date(fix.timestamp).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false }) + ' IST'
+                : '(no timestamp)',
+            );
             if (fix) {
               const filtered = await filterFix({
                 lat: fix.coords.latitude,
@@ -1485,7 +1642,18 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
         // Persist immediately so a crash-restart restores Check-Out button.
         // We use a small delay so optimisticToday is set by the setState call above.
         setTimeout(() => {
-          AsyncStorage.setItem('erm-today-v1', JSON.stringify(optimisticToday)).catch(() => {});
+          // #423 — Stamp ownership on optimistic check-in cache too.
+          AsyncStorage.getItem('user').then((u) => {
+            let ownerId: string | null = null;
+            try {
+              const parsed = u ? JSON.parse(u) : null;
+              ownerId = parsed?.employeeId || parsed?.userId || parsed?._id || parsed?.id || null;
+            } catch {}
+            return AsyncStorage.setItem(
+              'erm-today-v1',
+              JSON.stringify({ ...optimisticToday, __ownerId: ownerId })
+            );
+          }).catch(() => {});
         }, 0);
 
         // ── (b) SUCCESS MODAL — fired AFTER the loader has had a frame
@@ -1501,15 +1669,38 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
         //         displayed time is the actual moment the user tapped,
         //         not 60 ms later.
         const checkInTime = formatLiveTime(new Date());
+        // #424 — INCREASED 60 ms → 260 ms.
+        //
+        // At 60 ms the SubmitLoader modal was still mid-fade-out (Android
+        // uses ~200 ms transparent-modal fade), and the success modal
+        // mounted on top of it. Two <Modal animationType="fade"> instances
+        // visible simultaneously = the "vanish + crash" symptom users
+        // reported on check-in. 260 ms is safely past the fade window so
+        // the loader has fully unmounted before the success modal starts
+        // its own animation.
         setTimeout(() => {
+          if (!mountedRef.current) return;   // don't render on a dead component
           try { setCheckResult({ kind: 'in', time: checkInTime }); }
           catch (e: any) { console.warn('[handleCheckPress] setCheckResult failed:', e?.message || e); }
-        }, 60);
+        }, 260);
 
         // ── (c) SIDE-EFFECTS — each in its own guard. None of these
         //         can prevent the success modal from showing or stop
         //         the user from interacting with the app.
         try { await attendanceAPI.setPresence('active'); } catch {}
+        // #432 — PROCESS THE PREVIOUS SESSION BEFORE STARTING THIS ONE.
+        // If a prior session was never checked out, its pings are still in
+        // SQLite. We are still checked out at this point (markCheckIn below
+        // hasn't run yet), so the upload gate is open: upload + verify those
+        // pending pings and delete only the server-confirmed rows now. The new
+        // tracking session must not start on top of stale pending data. On
+        // failure they're retained and retried — never lost, never deleted
+        // before MongoDB confirms them.
+        try {
+          await reconcilePreviousSessions('pre-checkin');
+        } catch (e: any) {
+          console.warn('[handleCheckPress] pre-session reconcile failed (retained for retry):', e?.message || e);
+        }
         // #409 — Persist check-in state to SQLite so cold-boot resume
         // knows we're checked in even before the /attendance/today
         // round-trip returns. This is the belt-and-braces backup for
@@ -1735,35 +1926,96 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
         });
         // Persist checkout state for crash-restart recovery.
         setTimeout(() => {
-          AsyncStorage.setItem('erm-today-v1', JSON.stringify(optimisticTodayOut)).catch(() => {});
+          // #423 — Stamp ownership on optimistic check-out cache too.
+          AsyncStorage.getItem('user').then((u) => {
+            let ownerId: string | null = null;
+            try {
+              const parsed = u ? JSON.parse(u) : null;
+              ownerId = parsed?.employeeId || parsed?.userId || parsed?._id || parsed?.id || null;
+            } catch {}
+            return AsyncStorage.setItem(
+              'erm-today-v1',
+              JSON.stringify({ ...optimisticTodayOut, __ownerId: ownerId })
+            );
+          }).catch(() => {});
         }, 0);
         // Defer success modal one macrotask (#299) — see check-in branch
         // above for the full Android-modal-overlap rationale.
         const checkOutTime = formatLiveTime(new Date());
+        // #424 — Same 60→260 ms fix as the check-in branch above. Prevents
+        // the loader / success modal double-fade race that was crashing
+        // check-out on Android 12/13.
         setTimeout(() => {
+          if (!mountedRef.current) return;
           try { setCheckResult({ kind: 'out', time: checkOutTime }); }
           catch (e: any) { console.warn('[handleCheckPress] setCheckResult(out) failed:', e?.message || e); }
-        }, 60);
+        }, 260);
         try { await attendanceAPI.setPresence('offline'); } catch {}
-        // #409 — Persist check-out state to SQLite. Also flush any
-        // pending pings so the polyline for today's route is complete
-        // by the time HR looks at the map.
+        // #420 — CHECKOUT SYNC-AND-CLEANUP ORCHESTRATOR.
+        //
+        // Order matters here — read carefully before reordering.
+        //   1) Persist SQLite tracking_state.checkOutAt so a mid-flow
+        //      crash still records the intent.
+        //   2) Flush per-row pending queue best-effort (fast path for
+        //      recent bg-task rows that landed while we were composing
+        //      this checkout request).
+        //   3) Run finalCheckoutSyncAndCleanup — this drives the full
+        //      contract: final sync → wait for server confirmation →
+        //      delete ONLY this session's confirmed rows → return a
+        //      status the caller can decide against.
+        //   4) Stop bg tracking ONLY after (3) completes. If (3) fails
+        //      (offline, 5xx, timeout) we still stop the OS location
+        //      service — the pending SQLite rows survive and will be
+        //      shipped by the periodic sync listener the next time the
+        //      device comes online.
+        //
+        // Capture the session start BEFORE we overwrite state. We prefer
+        // firstCheckIn (day-level anchor) when present, since the whole
+        // day's session started there. Fallback: today's checkIn.
+        const _sessionStartHintMs = (() => {
+          // `today` is captured from the closure at the moment the user
+          // tapped Check Out. Prefer firstCheckIn (day anchor) so all of
+          // today's synced rows are eligible for cleanup; fall back to
+          // checkIn (this-session anchor).
+          const src = (today as any)?.firstCheckIn || (today as any)?.checkIn || null;
+          if (!src) return undefined;
+          const t = new Date(src).getTime();
+          return Number.isFinite(t) && t > 0 ? t : undefined;
+        })();
         try { await markCheckOut(); } catch {}
-        try { await flushPendingPings('post-checkout'); } catch {}
-        // #416 — Final belt-and-braces sync at checkout so any ping still
-        // lingering in SQLite reaches the DB before the day closes.
-        try { await syncMissingPingsFromLocal('post-checkout'); } catch {}
-        // #374 — Full teardown: FG timers + OS BG task. Only place we
-        // stop the OS background location service outside of auto-checkout.
-        try { stopContinuousTracking('user check-out'); } catch (e: any) {
+        let _checkoutSyncResult: any = null;
+        try {
+          // #434 — Explicit fetch-from-Mongo → diff → upload-only-missing
+          // (oldest→newest, tagged source:'sqlite') → re-fetch → verify →
+          // delete-only-after-verified. Retries internally; retains all on
+          // failure. Falls back to the batch reconcile if the /mine endpoint
+          // isn't deployed yet.
+          _checkoutSyncResult = await checkoutSyncWithDiffAndVerify(_sessionStartHintMs);
+          console.log('[checkout-diff] result:', JSON.stringify(_checkoutSyncResult));
+        } catch (e: any) {
+          console.log('[checkout-diff] ✘ orchestrator threw — retaining ALL local rows:', e?.message || e);
+        }
+        // #420 — Stop bg tracking AFTER the sync/cleanup phase. We stop
+        // in both success and failure paths, because the alternative
+        // (leaving the OS location service running until the next app
+        // launch) would drain battery and spam pings that no longer
+        // have a checked-in session to belong to. On failure, the
+        // pending SQLite rows persist and are retried by the sync
+        // listener when the network recovers.
+        try {
+          stopContinuousTracking('user check-out');
+          console.log('[checkout-sync] ✔ Background location tracking stopped');
+        } catch (e: any) {
           console.warn('[handleCheckPress] stopContinuousTracking failed:', e?.message || e);
         }
       } else {
         const doneTime = formatLiveTime(new Date());
+        // #424 — Same 60→260 ms fix (see check-in branch).
         setTimeout(() => {
+          if (!mountedRef.current) return;
           try { setCheckResult({ kind: 'done', time: doneTime }); }
           catch (e: any) { console.warn('[handleCheckPress] setCheckResult(done) failed:', e?.message || e); }
-        }, 60);
+        }, 260);
       }
       // FIX (Jun 2026 — delayed sync): increased from 3s → 8s.
       // The optimistic state + AsyncStorage persist above are accurate.
@@ -1773,7 +2025,18 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
       // would return stale data, the optimistic-state guard in refreshToday
       // now prevents it from wiping checkIn, but 8s is still a safer
       // margin so the first sync returns real data.
-      setTimeout(() => refreshToday().catch(() => {}), 8000);
+      // #424 — Gate the 8-second deferred refresh behind mountedRef.
+      // Previously fire-and-forget: if the user logged out, backgrounded
+      // to a hard OEM kill, or the RootErrorBoundary caught a child
+      // exception within those 8 seconds, refreshToday() would still
+      // resolve on a dead component and call setToday(...) — Hermes
+      // 0.75+ turns that into a SIGTERM on Android. Guard both the
+      // firing and the callback so neither can trigger a post-unmount
+      // setState.
+      setTimeout(() => {
+        if (!mountedRef.current) return;
+        refreshToday().catch(() => {});
+      }, 8000);
     } catch (err: any) {
       // #337 — "Already checked in today" / "Already checked out today"
       // is not really an error for the user. It shows up when the

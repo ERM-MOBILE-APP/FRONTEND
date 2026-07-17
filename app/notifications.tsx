@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { notificationAPI } from '../services/api';
+// #428 — Per-screen boundary so a render error inside the list (bad
+// notification payload with an unexpected `n.type`, malformed date,
+// etc.) is caught locally and shows a "Try again" card instead of
+// bubbling to RootErrorBoundary and tearing down the whole app.
+import ScreenErrorBoundary from '../components/ScreenErrorBoundary';
 
 type NotificationItem = {
   _id: string;
@@ -31,10 +36,22 @@ const TYPE_EDGE: Record<string, string> = {
   general: '#9E9E9E',
 };
 
-export default function NotificationsScreen() {
+function NotificationsScreenInner() {
   // Start empty — only show real server-side notifications.
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+
+  // #428 — Guard every setState behind mountedRef. The Notifications
+  // screen is reachable via the home-page bell (rapid taps happen) and
+  // any of its 3 async paths (initial load, pull-to-refresh, mark-read)
+  // could fire setState after the user backs out. Under Hermes RN 0.81
+  // that escalates to SIGTERM. This closes the crash class for this
+  // screen entirely.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -43,7 +60,7 @@ export default function NotificationsScreen() {
       // Always trust the server — set whatever it returned (including [])
       // so notifications the user already read or that were deleted
       // disappear correctly.
-      setItems(Array.isArray(list) ? list : []);
+      if (mountedRef.current) setItems(Array.isArray(list) ? list : []);
     } catch {
       // Network/server error — leave whatever's currently on screen alone.
     }
@@ -66,15 +83,17 @@ export default function NotificationsScreen() {
   }, [load]);
 
   const onRefresh = async () => {
-    setRefreshing(true);
+    if (mountedRef.current) setRefreshing(true);
     await load();
-    setRefreshing(false);
+    if (mountedRef.current) setRefreshing(false);
   };
 
   const markAllRead = async () => {
     try {
       await notificationAPI.markAllRead();
-      setItems((prev) => prev.map((n) => ({ ...n, isRead: true })));
+      if (mountedRef.current) {
+        setItems((prev) => prev.map((n) => ({ ...n, isRead: true })));
+      }
     } catch {}
   };
 
@@ -84,9 +103,11 @@ export default function NotificationsScreen() {
         await notificationAPI.markAsRead(n._id);
       } catch {}
     }
-    setItems((prev) =>
-      prev.map((x) => (x._id === n._id ? { ...x, isRead: true } : x))
-    );
+    if (mountedRef.current) {
+      setItems((prev) =>
+        prev.map((x) => (x._id === n._id ? { ...x, isRead: true } : x))
+      );
+    }
     if (n.link) {
       router.push(n.link as any);
     }
@@ -179,6 +200,18 @@ export default function NotificationsScreen() {
         )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+// #428 — Export the boundary-wrapped screen. If anything inside renders
+// wrong (bad payload, unexpected type, etc.), the boundary shows a
+// "Try again" card locally — the rest of the app (tracking, other
+// tabs, session) stays alive.
+export default function NotificationsScreen() {
+  return (
+    <ScreenErrorBoundary name="Notifications">
+      <NotificationsScreenInner />
+    </ScreenErrorBoundary>
   );
 }
 

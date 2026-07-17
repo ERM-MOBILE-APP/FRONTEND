@@ -99,10 +99,20 @@ type Backend = {
   readState(): Promise<TrackingState>;
   writeState(patch: Partial<TrackingState>): Promise<void>;
   _readAllSince?(sinceMs: number): Promise<PingRow[]>;
+  // #420 — Safe per-session cleanup on checkout. Deletes ONLY rows that
+  // are already `synced` AND whose recorded_at falls inside [fromMs, toMs].
+  // Pending rows are never touched (they must survive to retry).
+  deleteSyncedInRange?(fromMs: number, toMs: number): Promise<number>;
 };
 
 let _backend: Backend | null = null;
 let _initPromise: Promise<void> | null = null;
+// #430 — Which storage engine is actually live (surfaced on the in-app
+// debug screen so you can tell at a glance whether SQLite is in use).
+let _backendKind: 'sqlite' | 'asyncstorage' = 'asyncstorage';
+
+/** The physical SQLite database filename this app writes pings into. */
+export const PING_DB_NAME = 'erm_pings.db';
 
 function selectBackend(): Backend {
   try {
@@ -110,10 +120,12 @@ function selectBackend(): Backend {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const SQLite = require('expo-sqlite');
     if (SQLite && (SQLite.openDatabaseSync || SQLite.openDatabaseAsync || SQLite.openDatabase)) {
+      _backendKind = 'sqlite';
       return makeSqliteBackend(SQLite);
     }
   } catch { /* fall through */ }
   console.log('[pingStore] expo-sqlite unavailable — using AsyncStorage fallback');
+  _backendKind = 'asyncstorage';
   return makeAsyncStorageBackend();
 }
 
@@ -180,6 +192,36 @@ function makeSqliteBackend(SQLite: any): Backend {
       `);
       await exec(`CREATE INDEX IF NOT EXISTS idx_pings_status_rec ON pings(status, recorded_at);`).catch(() => {});
       await exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_pings_bucket ON pings(user_id, bucket) WHERE user_id IS NOT NULL;`).catch(() => {});
+      // #430 — Collapse any pre-existing duplicate buckets (rows created
+      // before device-level bucket dedup shipped). Keep exactly ONE row per
+      // bucket: prefer a 'synced' row so a server-confirmed one is never
+      // dropped, otherwise the lowest local_id. The removed rows are the
+      // same 2-min slot / same location, so this is lossless in practice and
+      // matches the server's one-row-per-bucket rule. Idempotent — a clean
+      // table deletes nothing. Wrapped in try/catch: if the SQLite build
+      // lacks window functions it simply no-ops (future dedup still holds).
+      await exec(`
+        DELETE FROM pings
+         WHERE local_id NOT IN (
+           SELECT keep_id FROM (
+             SELECT local_id AS keep_id,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY bucket
+                      ORDER BY (status = 'synced') DESC, local_id ASC
+                    ) AS rn
+               FROM pings
+           ) WHERE rn = 1
+         );
+      `).catch((e: any) => { console.log('[pingStore] dup-bucket cleanup skipped:', e?.message || e); });
+      // #430 — Bulletproof enforcement: a unique index on `bucket` ALONE
+      // (single-user device). Created AFTER the cleanup above so no existing
+      // duplicates block it. From now on a second insert for a taken slot —
+      // even with a NULL user_id — trips this index, and savePending's catch
+      // returns the existing row instead of writing a duplicate. If the
+      // table still had dups (cleanup no-op'd on an old SQLite build), this
+      // create simply fails and we rely on the app-level bucket pre-check.
+      await exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_pings_bucket_only ON pings(bucket);`)
+        .catch((e: any) => { console.log('[pingStore] bucket-only unique index skipped:', e?.message || e); });
       await exec(`
         CREATE TABLE IF NOT EXISTS tracking_state (
           k TEXT PRIMARY KEY,
@@ -190,6 +232,20 @@ function makeSqliteBackend(SQLite: any): Backend {
 
     async savePending(row: PingRow) {
       const now = Date.now();
+      // #430 — DEVICE-LEVEL BUCKET DEDUP. The phone only ever has ONE
+      // logged-in user, so a 2-min bucket may hold at most ONE ping. We
+      // dedup on `bucket` ALONE here. The DB unique index is
+      // (user_id, bucket) WHERE user_id IS NOT NULL — it silently permits
+      // duplicates whenever a collector saves a NULL user_id (e.g. the bg
+      // task couldn't resolve the id from AsyncStorage). Three collectors
+      // (FG timer + 2 bg tasks) run concurrently, so without this a slot
+      // could get two rows (one with user_id, one NULL). Bucket-only dedup
+      // closes that hole regardless of how each path resolved user_id.
+      const dup: any = await exec(
+        `SELECT local_id FROM pings WHERE bucket = ? LIMIT 1`,
+        [row.bucket]
+      ).catch(() => null);
+      if (dup && dup[0]) return Number(dup[0].local_id);
       try {
         const r: any = await exec(
           `INSERT INTO pings
@@ -210,11 +266,12 @@ function makeSqliteBackend(SQLite: any): Backend {
         );
         return Number(r?.lastInsertRowId || r?.insertId || 0);
       } catch (e: any) {
-        // Unique-bucket collision → row already queued/synced for this bucket.
-        // Look up the existing local_id and return it.
+        // Unique-bucket collision (or the race lost to a concurrent insert)
+        // → the slot is already taken. Return that row's local_id. Look up
+        // by bucket ALONE so a NULL-user_id winner is still found.
         const existing: any = await exec(
-          `SELECT local_id FROM pings WHERE user_id = ? AND bucket = ? LIMIT 1`,
-          [row.userId || null, row.bucket]
+          `SELECT local_id FROM pings WHERE bucket = ? LIMIT 1`,
+          [row.bucket]
         ).catch(() => null);
         if (existing && existing[0]) return Number(existing[0].local_id);
         throw e;
@@ -266,6 +323,20 @@ function makeSqliteBackend(SQLite: any): Backend {
       const r: any = await exec(
         `DELETE FROM pings WHERE status='synced' AND synced_at < ?`,
         [cutoffMs]
+      );
+      return Number(r?.changes || 0);
+    },
+
+    // #420 — Delete synced rows recorded within [fromMs, toMs]. Pending
+    // rows in the range are LEFT ALONE — they must retry later. Used at
+    // checkout to clean up a completed session's confirmed pings.
+    async deleteSyncedInRange(fromMs: number, toMs: number) {
+      const r: any = await exec(
+        `DELETE FROM pings
+           WHERE status = 'synced'
+             AND recorded_at >= ?
+             AND recorded_at <= ?`,
+        [fromMs, toMs]
       );
       return Number(r?.changes || 0);
     },
@@ -383,7 +454,10 @@ function makeAsyncStorageBackend(): Backend {
       // return the existing localId rather than duplicating.
       if (await alreadySynced(row.userId, row.bucket)) return -1;
       const rows = await readQueue();
-      const existing = rows.find(r => r.userId === row.userId && r.bucket === row.bucket);
+      // #430 — Dedup by bucket ALONE (single-user device). Matches the
+      // SQLite backend so a NULL/mismatched user_id can't create a second
+      // row in the same 2-min slot.
+      const existing = rows.find(r => r.bucket === row.bucket);
       if (existing) return existing.localId!;
       seq += 1;
       const insert: PingRow = {
@@ -465,6 +539,21 @@ function makeAsyncStorageBackend(): Backend {
       return rows
         .filter(r => (r.recordedAt || 0) >= sinceMs)
         .sort((a, b) => a.recordedAt - b.recordedAt);
+    },
+
+    // #420 — Delete synced rows recorded within [fromMs, toMs]. Pending
+    // rows in the range are LEFT ALONE — they must retry later. Used at
+    // checkout to clean up a completed session's confirmed pings.
+    async deleteSyncedInRange(fromMs: number, toMs: number) {
+      const rows = await readQueue();
+      const keep = rows.filter(r => {
+        const rec = r.recordedAt || 0;
+        const inRange = rec >= fromMs && rec <= toMs;
+        const isSynced = (r.status || 'pending') === 'synced';
+        return !(inRange && isSynced);   // drop only synced-in-range
+      });
+      if (keep.length !== rows.length) await writeQueue(keep);
+      return rows.length - keep.length;
     },
 
     async readState() {
@@ -593,25 +682,66 @@ export async function markLastPingAt(atMs: number = Date.now()): Promise<void> {
 }
 
 /**
+ * #430 — STRICT "SQLite is the source of truth during the shift" policy.
+ *
+ * HR requirement (Jul 2026, final): location pings must NEVER be uploaded
+ * while the employee is checked in. Every ping is written to SQLite only;
+ * the SINGLE upload to MongoDB happens at Check Out via
+ * finalCheckoutSyncAndCleanup(). Leftover pings from a checkout whose
+ * upload failed may be retried in the background — but ONLY while the
+ * employee is checked OUT (so we still never touch the network during a
+ * working session).
+ *
+ * This helper is the ONE gate every collection/sync path consults before
+ * hitting the network:
+ *   • true  → not checked in → uploading is allowed (checkout / leftover retry)
+ *   • false → checked in (working) → store to SQLite only, do NOT upload
+ *
+ * Fails CLOSED: if the tracking state can't be read we assume "working"
+ * and refuse to upload, so a corrupt/missing state can never cause an
+ * accidental mid-shift upload. The checkout flow reconciles regardless.
+ */
+export async function isUploadAllowedNow(): Promise<boolean> {
+  try {
+    const st = await getTrackingState();
+    return !st?.checkedIn;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * #415 — Wipe every piece of user-scoped local state (SQLite tracking_state,
  * pending pings, and every erm-bg-* / erm-today-* AsyncStorage key). Called
  * on logout, on login (belt-and-braces), and on Home mount when the stored
  * tracking_state.userId doesn't match the current logged-in user.
  */
-export async function wipeUserScopedTracking(): Promise<void> {
+export async function wipeUserScopedTracking(opts: { dropPendingPings?: boolean } = {}): Promise<void> {
   try {
     await setTrackingState({
       checkedIn: false, checkInAt: null, checkOutAt: null,
       lastPingAt: null, userId: null, employeeId: null,
     });
   } catch {}
-  try {
-    const b = await ensure();
-    const pending = await b.listPending(500);
-    for (const row of pending) {
-      if (row.localId) await b.markSynced(row.localId).catch(() => {});
-    }
-  } catch {}
+  // #432 — DATA-LOSS FIX. This previously marked EVERY pending ping as
+  // 'synced' (without ever uploading it), which silently dropped un-uploaded
+  // pings whenever an employee who forgot to check out logged out / back in —
+  // exactly the data loss the "no ping is ever lost" requirement forbids.
+  //
+  // We now PRESERVE pending pings by default. They survive login/logout and
+  // are uploaded by the previous-session reconciliation on the next app open
+  // / check-in (which is guarded by employee-id ownership, so one user's
+  // pings can never be misattributed to another). Only an explicit
+  // dropPendingPings flag discards them.
+  if (opts.dropPendingPings) {
+    try {
+      const b = await ensure();
+      const pending = await b.listPending(500);
+      for (const row of pending) {
+        if (row.localId) await b.markSynced(row.localId).catch(() => {});
+      }
+    } catch {}
+  }
   const keys = [
     'erm-today-v1',
     'erm-bg-last-ping-sent-at',
@@ -645,4 +775,80 @@ export async function listAllPingsSince(sinceMs: number): Promise<PingRow[]> {
   } catch { /* fall through */ }
   const pending = await b.listPending(2000);
   return pending.filter(r => r.recordedAt >= sinceMs);
+}
+
+/**
+ * #420 — Delete SYNCED pings recorded within [fromMs, toMs]. Pending
+ * rows are never touched. Returns the number of rows deleted. Safe to
+ * call from the checkout flow only AFTER the server has confirmed the
+ * synced rows landed — never before.
+ *
+ * The range is inclusive on both ends. `toMs` should be `Date.now()` at
+ * the moment of checkout so any late-arriving ping from a lagging bg
+ * task tick isn't accidentally wiped.
+ */
+export async function deleteSyncedPingsInRange(fromMs: number, toMs: number): Promise<number> {
+  const b = await ensure();
+  const _any: any = b as any;
+  if (typeof _any.deleteSyncedInRange === 'function') {
+    return _any.deleteSyncedInRange(fromMs, toMs);
+  }
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// #430 — Read-only debug snapshot (powers app/ping-debug.tsx)
+// ─────────────────────────────────────────────────────────────────────
+
+export type PingDebugSnapshot = {
+  /** Which storage engine is live: 'sqlite' (device DB) or 'asyncstorage' (fallback). */
+  backend: 'sqlite' | 'asyncstorage';
+  /** The SQLite database filename on the device. */
+  dbName: string;
+  /** Total rows scanned (capped — see `capped`). */
+  total: number;
+  /** Rows still awaiting upload. */
+  pending: number;
+  /** Rows already confirmed on the server. */
+  synced: number;
+  /** True if the scan hit the 5000-row cap (older rows not counted). */
+  capped: boolean;
+  /** Current check-in / tracking state. */
+  tracking: TrackingState;
+  /** The most recent `latestLimit` pings, newest first. */
+  latest: PingRow[];
+};
+
+/**
+ * Read a full read-only snapshot of the local ping store for the in-app
+ * debug screen. Never mutates anything. Safe to call on any build.
+ */
+export async function getPingDebugSnapshot(latestLimit = 50): Promise<PingDebugSnapshot> {
+  await ensure();
+  // Pull every locally-stored row (pending + synced) since epoch 0. The
+  // SQLite backend caps this at 5000 rows (recorded_at ASC).
+  const all = await listAllPingsSince(0);
+  const capped = all.length >= 5000;
+  let pending = 0;
+  let synced = 0;
+  for (const r of all) {
+    if (r.status === 'synced') synced += 1; else pending += 1;
+  }
+  // Prefer the authoritative pending COUNT(*) when available (not capped).
+  try { pending = await getPendingCount(); synced = Math.max(0, all.length - pending); } catch {}
+
+  const tracking = await getTrackingState();
+  // `all` is ASC (oldest→newest); take the tail and reverse for newest-first.
+  const latest = all.slice(-latestLimit).reverse();
+
+  return {
+    backend: _backendKind,
+    dbName: PING_DB_NAME,
+    total: all.length,
+    pending,
+    synced,
+    capped,
+    tracking,
+    latest,
+  };
 }

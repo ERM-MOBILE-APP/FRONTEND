@@ -20,8 +20,18 @@
  * already in progress.
  */
 
-import { listPendingPings, listAllPingsSince, markPingSynced, markPingFailed, getPendingCount } from './pingStore';
+import {
+  listPendingPings,
+  listAllPingsSince,
+  markPingSynced,
+  markPingFailed,
+  getPendingCount,
+  deleteSyncedPingsInRange,
+  getTrackingState,
+  isUploadAllowedNow,
+} from './pingStore';
 import { attendanceAPI } from './api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -69,13 +79,20 @@ export async function flushPendingPings(reason: string = 'manual'): Promise<{ se
           // The 4th sig accepts an override options bag on some codepaths;
           // ignoring extras keeps this compatible with the current signature.
         );
-        // Any 2xx (including accepted:false / duplicate-bucket) means the
-        // server has this row. Mark synced locally.
-        if (res && (res.status === undefined || res.status >= 200) && res.status < 300) {
+        // #433 — Only count a row as SYNCED when the server actually STORED
+        // it. A 200 with accepted:false (accuracy-gated / burst-guarded /
+        // server bucket collision) does NOT mean the ping is in Mongo, so we
+        // must NOT mark it synced — that would flag an unstored row as
+        // safe-to-delete. Real success or a genuine duplicate-bucket (already
+        // in Mongo) count as stored; anything else stays pending for the
+        // batch reconciliation to ship.
+        const d: any = (res as any)?.data || {};
+        const stored = d.ok === true && (d.accepted !== false || d.reason === 'duplicate-bucket');
+        if (stored) {
           if (row.localId) await markPingSynced(row.localId);
           sent += 1;
         } else {
-          if (row.localId) await markPingFailed(row.localId, `status=${res?.status}`);
+          if (row.localId) await markPingFailed(row.localId, `not-stored:${d.reason || res?.status}`);
           failed += 1;
         }
       } catch (err: any) {
@@ -107,6 +124,22 @@ export function startPingSyncListener(): () => void {
   if (_listenerAttached) return () => {};
   _listenerAttached = true;
 
+  // #430 — STRICT upload gate for the always-on background sync listener.
+  // Uploads are permitted ONLY while the employee is checked OUT — this is
+  // the leftover-batch retry path for a checkout whose upload failed. While
+  // the employee is checked in, SQLite is the sole source of truth and NO
+  // ping is uploaded; every tick below no-ops. The single sanctioned
+  // upload during a session's lifecycle is finalCheckoutSyncAndCleanup(),
+  // which is NOT routed through this gate.
+  const flushIfCheckedOut = async (reason: string) => {
+    try { if (!(await isUploadAllowedNow())) { return; } } catch { return; }
+    flushPendingPings(reason).catch(() => {});
+  };
+  const syncIfCheckedOut = async (reason: string) => {
+    try { if (!(await isUploadAllowedNow())) { return; } } catch { return; }
+    syncMissingPingsFromLocal(reason).catch(() => {});
+  };
+
   let unsub: (() => void) | null = null;
   let periodic: any = null;
   let wasConnected = true;
@@ -120,13 +153,15 @@ export function startPingSyncListener(): () => void {
     unsub = NetInfo.addEventListener((state: any) => {
       const online = !!(state?.isConnected && state?.isInternetReachable !== false);
       if (online && !wasConnected) {
-        console.log('[pingSync] connectivity restored — flushing queue');
-        flushPendingPings('netinfo-restore').catch(() => {});
+        // #430 — Only retries leftover pings while checked OUT (no-op
+        // during a working session).
+        console.log('[pingSync] connectivity restored — flushing queue (if checked out)');
+        flushIfCheckedOut('netinfo-restore');
         // #416 — Also run the batch missing-pings sync on restore.
         // Belt-and-braces: if the per-row flush missed anything (bg-task
         // pings that never went through the SQLite queue historically),
         // the batch endpoint will pick them up.
-        syncMissingPingsFromLocal('netinfo-restore').catch(() => {});
+        syncIfCheckedOut('netinfo-restore');
       }
       wasConnected = online;
     });
@@ -140,22 +175,30 @@ export function startPingSyncListener(): () => void {
   // (idempotent, dedups server-side) so any ping that slipped through
   // the per-row flush eventually reaches the DB.
   periodic = setInterval(() => {
-    flushPendingPings('periodic').catch(() => {});
+    flushIfCheckedOut('periodic');
   }, 60_000);
   const missingPingsTimer = setInterval(() => {
-    syncMissingPingsFromLocal('periodic-5min').catch(() => {});
+    syncIfCheckedOut('periodic-5min');
   }, 5 * 60_000);
 
   // One-shot flush on registration so cold-boot doesn't wait for the
-  // first NetInfo event.
-  flushPendingPings('startup').catch(() => {});
-  // #416 — Also run one-shot missing-pings sync on startup.
-  syncMissingPingsFromLocal('startup').catch(() => {});
+  // first NetInfo event. #430 — gated: only retries leftover pings when
+  // the employee is checked out.
+  flushIfCheckedOut('startup');
+  // #416 — Also run one-shot missing-pings sync on startup (gated).
+  syncIfCheckedOut('startup');
 
   return () => {
     _listenerAttached = false;
     if (unsub) try { unsub(); } catch {}
     if (periodic) clearInterval(periodic);
+    // #427 — CRITICAL. The 5-min missing-pings timer was leaking on
+    // every logout. It kept firing forever, each tick POSTing to
+    // /location-pings/missing-pings with a wiped token. Every response
+    // interceptor 401 → forceLogout → race with the new user's login
+    // in progress. On repeat logins this doubled up: two timers, two
+    // 401s per cycle. Explicit clear closes the leak permanently.
+    if (missingPingsTimer) clearInterval(missingPingsTimer);
   };
 }
 
@@ -165,7 +208,7 @@ export function lastFlushAt(): number { return _lastFlushAt; }
 // #416 — Batch reconciliation with the missing-pings endpoint
 // ─────────────────────────────────────────────────────────────────────
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// AsyncStorage already imported at the top of this file.
 
 /** Format an epoch ms into "YYYY-MM-DD" and "HH:mm:ss" in IST (Asia/Kolkata). */
 function toIstDateAndTime(ms: number): { date: string; localTime: string } {
@@ -220,14 +263,19 @@ export async function syncMissingPingsFromLocal(reason: string = 'manual'): Prom
   }
   _syncMissingInFlight = true;
   try {
-    // Step 1 — Read every locally-stored ping in the last 3 days (both
+    // Step 1 — Read every locally-stored ping in the last 30 days (both
     // `pending` AND `synced`). We ship them all to the server so the
     // backend can detect gaps a previous realtime POST may have missed
-    // (Render mid-flight process kill, brief connectivity flap, etc.)
-    // and heal them. The backend dedups by (user, date, bucket) so
-    // sending synced rows is safe — they land as `alreadyExisted`.
-    const threeDaysAgo = Date.now() - 3 * 24 * 3600 * 1000;
-    let rows = await listAllPingsSince(threeDaysAgo);
+    // (Render mid-flight process kill, brief connectivity flap, or a row a
+    // live POST optimistically marked 'synced' but the server never actually
+    // stored) and heal them. The backend dedups by (user, date, bucket) so
+    // re-sending synced rows is safe — already-stored ones land as
+    // `alreadyExisted`, genuinely-missing ones get INSERTED.
+    // #433 — Widened 3d → 30d so it matches the checkout/reconcile delete
+    // window: a row must be re-verified (re-shipped) before it can ever be
+    // deleted, even from a session left un-checked-out for weeks.
+    const windowStart = Date.now() - 30 * 24 * 3600 * 1000;
+    let rows = await listAllPingsSince(windowStart);
     // Belt-and-braces: if the backend fallback returned nothing (e.g.
     // AsyncStorage-only mode), still send the pending queue.
     if (rows.length === 0) {
@@ -269,6 +317,8 @@ export async function syncMissingPingsFromLocal(reason: string = 'manual'): Prom
         speed:        r.speed ?? null,
         isStationary: r.isStationary === true,
         bucket:       r.bucket,
+        // #434 — Mark rows uploaded from the device's local SQLite store.
+        source:       'sqlite',
       };
     });
 
@@ -322,4 +372,493 @@ export async function syncMissingPingsFromLocal(reason: string = 'manual'): Prom
   } finally {
     _syncMissingInFlight = false;
   }
+}
+
+/**
+ * #420 — CHECKOUT FINAL-SYNC + SAFE PER-SESSION CLEANUP.
+ *
+ * HR requirement (Jul 2026):
+ *   • SQLite is the source of truth WHILE the employee is checked in.
+ *     Every 2-min ping lands there first, POSTs to the server, and is
+ *     flipped to `synced` once the server 2xx-confirms receipt.
+ *   • ON CHECKOUT the app MUST run one last reconciliation sync so any
+ *     ping still stuck as `pending` (bg-task tick that lost network,
+ *     Render 5xx, cold-start 401, etc.) reaches the server before the
+ *     shift closes.
+ *   • ONLY after the server confirms every ping is stored may the client
+ *     delete those confirmed rows from SQLite. Pending rows STAY — they
+ *     retry on their own next connectivity restore.
+ *   • The delete is SCOPED to the current session: rows recorded between
+ *     the last checkInAt and now. A future check-in's pings must not be
+ *     touched (in the unusual case someone races the buttons).
+ *   • If the sync fails / is interrupted / device is offline → nothing
+ *     is deleted. All rows remain in SQLite and will be retried by the
+ *     periodic sync listener or the next cold-boot resume.
+ *   • Only after the cleanup phase succeeds (or is explicitly skipped
+ *     because sync failed) do we stop background location tracking.
+ *
+ * The caller is responsible for stopping the FG/BG task after this
+ * function returns `status: 'Success'` (or after logging & retaining
+ * data on `status: 'Failed'`). This split keeps the sync concern
+ * separate from the OS-service teardown concern.
+ *
+ * Detailed logs are emitted at every step so HR / on-call can trace
+ * exactly what happened on any given checkout.
+ */
+export async function finalCheckoutSyncAndCleanup(sessionStartMsHint?: number): Promise<{
+  status: 'Success' | 'Failed' | 'PartialFailure';
+  pendingBefore: number;
+  uploaded: number;
+  alreadyExisted: number;
+  markedSynced: number;
+  deletedFromLocal: number;
+  retainedForRetry: number;
+  errorReason?: string;
+  sessionFromMs: number;
+  sessionToMs: number;
+}> {
+  const sessionToMs = Date.now();
+
+  // Step 0 — Log checkout initiated.
+  console.log(`[checkout-sync] ⇢ Checkout initiated at ${new Date(sessionToMs).toISOString()}`);
+
+  // Step 1 — Resolve the session window. Prefer the caller's hint (the
+  // Home screen knows the exact checkInAt of the session being closed).
+  // Fallback: read the persisted tracking state. Ultimate fallback: use
+  // 24 h ago so we still cover any reasonable single-day session.
+  let sessionFromMs = 0;
+  if (Number.isFinite(sessionStartMsHint) && (sessionStartMsHint as number) > 0) {
+    sessionFromMs = sessionStartMsHint as number;
+  } else {
+    try {
+      const st = await getTrackingState();
+      if (st && st.checkInAt) sessionFromMs = Number(st.checkInAt) || 0;
+    } catch { /* non-fatal */ }
+  }
+  if (!Number.isFinite(sessionFromMs) || sessionFromMs <= 0) {
+    sessionFromMs = sessionToMs - 24 * 3600 * 1000;
+  }
+  // Guard: if session range is inverted (clock skew, wrong hint), fall
+  // back to the safe 24-h window rather than deleting nothing.
+  if (sessionFromMs >= sessionToMs) sessionFromMs = sessionToMs - 24 * 3600 * 1000;
+
+  console.log(
+    `[checkout-sync] session window: ` +
+    `${new Date(sessionFromMs).toISOString()} → ${new Date(sessionToMs).toISOString()}`
+  );
+
+  // Step 2 — Count pending pings BEFORE we do anything, so we can log
+  // exactly how many rows were still owed to the server at checkout.
+  let pendingBefore = 0;
+  try { pendingBefore = await getPendingCount(); } catch {}
+  console.log(`[checkout-sync] pending pings found in SQLite = ${pendingBefore}`);
+
+  // Step 3 — Upload every pending ping to MongoDB, RETRYING until the
+  // local pending count reaches 0 or we exhaust the attempt budget. The
+  // batch endpoint is idempotent (server dedups by bucket), so re-sending
+  // is always safe. Each attempt ships the full local view and marks
+  // server-confirmed rows synced; a row only stays pending if the server
+  // did NOT confirm its bucket that round.
+  //
+  // Bounded here (won't block checkout forever). Any rows still pending
+  // after the budget are RETAINED — the checked-out background sync
+  // listener keeps retrying them on every 60s tick / connectivity restore
+  // until they all land, so nothing is ever lost.
+  console.log(`[checkout-sync] ⇢ Upload started — retrying until every pending ping is synced`);
+  const MAX_ATTEMPTS = 5;
+  const BACKOFF_MS = [0, 1500, 3000, 5000, 8000];
+  let syncRes: Awaited<ReturnType<typeof syncMissingPingsFromLocal>> | null = null;
+  let pendingNow = pendingBefore;
+  let attempt = 0;
+  let lastError = '';
+
+  while (attempt < MAX_ATTEMPTS) {
+    if (BACKOFF_MS[attempt]) await sleep(BACKOFF_MS[attempt]);
+    attempt += 1;
+    console.log(`[checkout-sync] ⇢ Upload attempt ${attempt}/${MAX_ATTEMPTS} (pending=${pendingNow})`);
+    try {
+      syncRes = await syncMissingPingsFromLocal('checkout-final');
+    } catch (err: any) {
+      lastError = err?.message || String(err || 'unknown');
+      console.log(`[checkout-sync] ✘ attempt ${attempt} threw: ${lastError} — will retry`);
+      continue;
+    }
+    // Re-measure the authoritative pending count after this attempt.
+    try { pendingNow = await getPendingCount(); } catch {}
+    if (syncRes.status === 'Success' && pendingNow === 0) {
+      console.log(`[checkout-sync] ✔ every pending ping synced on attempt ${attempt}`);
+      break;
+    }
+    console.log(
+      `[checkout-sync] attempt ${attempt} incomplete — status=${syncRes?.status} ` +
+      `uploaded=${syncRes?.inserted ?? 0} existing=${syncRes?.alreadyExisted ?? 0} ` +
+      `stillPending=${pendingNow} — retrying`
+    );
+  }
+
+  // If we never got any usable server response, retain everything and let
+  // the background retry loop (checked-out only) finish the job later.
+  if (!syncRes) {
+    console.log(`[checkout-sync] ✘ Upload failed after ${MAX_ATTEMPTS} attempts — retaining ALL ${pendingNow} local row(s) for retry.`);
+    return {
+      status: 'Failed',
+      pendingBefore,
+      uploaded: 0,
+      alreadyExisted: 0,
+      markedSynced: 0,
+      deletedFromLocal: 0,
+      retainedForRetry: pendingNow,
+      errorReason: lastError || 'upload-failed-all-attempts',
+      sessionFromMs,
+      sessionToMs,
+    };
+  }
+
+  // Got a response. Log the spec-mandated counts.
+  //   • uploaded          = rows the server just INSERTed              (syncRes.inserted)
+  //   • storedInMongo     = rows the server CONFIRMS it holds for this
+  //                         batch = inserted + already-existed         (serverConfirmed)
+  const serverConfirmed = syncRes.inserted + syncRes.alreadyExisted;
+  console.log(`[checkout-sync] ▸ Upload started`);
+  console.log(`[checkout-sync] ▸ Pings uploaded (newly inserted)      = ${syncRes.inserted}`);
+  console.log(`[checkout-sync] ▸ Pings confirmed stored in MongoDB    = ${serverConfirmed} (inserted ${syncRes.inserted} + alreadyExisted ${syncRes.alreadyExisted})`);
+
+  // ─── Step 4: VERIFY BEFORE DELETING (spec requirements 4 + 5) ───────
+  // All-or-nothing gate. We only delete local rows if EVERY ping that was
+  // pending before checkout is now server-confirmed. We measure that two
+  // independent ways and require BOTH to agree:
+  //   (a) the mark-synced loop flipped at least `pendingBefore` rows, and
+  //   (b) a fresh SQLite pending count is now 0.
+  // If either check fails → DELETE NOTHING and retain every row for retry.
+  let pendingAfterSync = pendingBefore;
+  try { pendingAfterSync = await getPendingCount(); } catch {}
+
+  const countsMatch    = pendingAfterSync === 0 && syncRes.markedSynced >= pendingBefore;
+  const verificationOk = syncRes.status === 'Success' && countsMatch;
+
+  console.log(
+    `[checkout-sync] ▸ Verification (SQLite vs MongoDB): ` +
+    `pendingBefore=${pendingBefore}, serverConfirmed=${serverConfirmed}, ` +
+    `markedSynced=${syncRes.markedSynced}, pendingAfter=${pendingAfterSync} → ` +
+    `${verificationOk ? 'PASS ✅ (safe to delete)' : 'FAIL ❌ (retain all)'}`
+  );
+
+  if (!verificationOk) {
+    // Spec #5 — counts don't match / not every ping confirmed. Delete
+    // NOTHING; keep all pending pings in SQLite for a future retry
+    // (which runs only while checked out).
+    console.log(
+      `[checkout-sync] ✘ Verification FAILED — NOT deleting any local records. ` +
+      `${pendingAfterSync} ping(s) retained in SQLite for retry.`
+    );
+    console.log(`[checkout-sync] ▸ Remaining records in SQLite after cleanup = ${pendingAfterSync}`);
+    return {
+      status: 'PartialFailure',
+      pendingBefore,
+      uploaded: syncRes.inserted,
+      alreadyExisted: syncRes.alreadyExisted,
+      markedSynced: syncRes.markedSynced,
+      deletedFromLocal: 0,
+      retainedForRetry: pendingAfterSync,
+      errorReason: 'verification-mismatch',
+      sessionFromMs,
+      sessionToMs,
+    };
+  }
+
+  // Verification passed — every pending ping is confirmed in MongoDB.
+  // Now (and ONLY now) delete this session's synced rows from SQLite.
+  let deletedFromLocal = 0;
+  try {
+    deletedFromLocal = await deleteSyncedPingsInRange(sessionFromMs, sessionToMs);
+    console.log(`[checkout-sync] ✔ Local records deleted = ${deletedFromLocal} row(s) purged from session window`);
+  } catch (err: any) {
+    const reason = err?.message || String(err || 'unknown');
+    console.log(`[checkout-sync] ⚠ Local delete failed (non-fatal): ${reason}`);
+    console.log(`[checkout-sync] rows will be purged by purgeSyncedOlderThanDays on a later cycle`);
+    let remaining = 0;
+    try { remaining = await getPendingCount(); } catch {}
+    return {
+      status: 'PartialFailure',
+      pendingBefore,
+      uploaded: syncRes.inserted,
+      alreadyExisted: syncRes.alreadyExisted,
+      markedSynced: syncRes.markedSynced,
+      deletedFromLocal: 0,
+      retainedForRetry: remaining,
+      errorReason: 'delete-failed: ' + reason,
+      sessionFromMs,
+      sessionToMs,
+    };
+  }
+
+  let remainingAfter = 0;
+  try { remainingAfter = await getPendingCount(); } catch {}
+  console.log(`[checkout-sync] ▸ Remaining records in SQLite after cleanup = ${remainingAfter}`);
+  console.log(
+    `[checkout-sync] ✔ Checkout sync complete: ` +
+    `storedBefore=${pendingBefore} uploaded=${syncRes.inserted} ` +
+    `confirmedInMongo=${serverConfirmed} deletedFromLocal=${deletedFromLocal} ` +
+    `remaining=${remainingAfter}`
+  );
+
+  return {
+    status: 'Success',
+    pendingBefore,
+    uploaded: syncRes.inserted,
+    alreadyExisted: syncRes.alreadyExisted,
+    markedSynced: syncRes.markedSynced,
+    deletedFromLocal,
+    retainedForRetry: remainingAfter,
+    sessionFromMs,
+    sessionToMs,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// #432 — PREVIOUS-SESSION RECONCILIATION
+//
+// Handles pings left behind by a session that was never manually checked
+// out (e.g. employee forgot to check out on July 15). Called from CHECKED-
+// OUT contexts — app startup, login, and immediately BEFORE a new tracking
+// session starts — so it's always safe to upload + delete here.
+//
+// Contract:
+//   • If pending pings exist → upload them (retrying until synced),
+//     verify against MongoDB, and delete ONLY server-confirmed rows.
+//   • If none pending but old SYNCED rows are lingering → purge them
+//     (already in MongoDB, so lossless) so local storage doesn't grow
+//     without bound.
+//   • On any failure, everything is retained and retried later — no data
+//     is ever deleted before MongoDB confirms it.
+// ─────────────────────────────────────────────────────────────────────
+export async function reconcilePreviousSessions(reason: string = 'startup'): Promise<{
+  status: 'Success' | 'Failed' | 'PartialFailure' | 'Idle';
+  pending: number;
+  uploaded: number;
+  deleted: number;
+  retained: number;
+}> {
+  try {
+    const pending = await getPendingCount();
+    if (pending > 0) {
+      // Ownership guard — only upload pings that belong to the CURRENTLY
+      // logged-in user. The batch endpoint attributes rows by the caller's
+      // JWT, so uploading a previous user's leftover pings under a new
+      // user's token would misattribute them. If they belong to someone
+      // else, retain them untouched (they'll upload when their owner logs
+      // back in) rather than mis-sending or dropping them.
+      let currentEmp = '';
+      try {
+        const raw = await AsyncStorage.getItem('user');
+        if (raw) { const u = JSON.parse(raw); currentEmp = String(u?.employeeId || u?.userId || '').toUpperCase(); }
+      } catch {}
+      let sampleEmp = '';
+      try { const s = (await listPendingPings(1))[0]; sampleEmp = String(s?.employeeId || '').toUpperCase(); } catch {}
+      if (currentEmp && sampleEmp && sampleEmp !== currentEmp) {
+        console.warn(`[reconcile:${reason}] ${pending} pending ping(s) belong to ${sampleEmp} but current user is ${currentEmp} — NOT uploading (ownership mismatch); retained for their owner.`);
+        return { status: 'Idle', pending, uploaded: 0, deleted: 0, retained: pending };
+      }
+    }
+    // Is there anything at all in local storage to reconcile (pending OR
+    // lingering synced rows from a prior session)?
+    let total = 0;
+    try { total = (await listAllPingsSince(0)).length; } catch { total = pending; }
+    if (total === 0) {
+      return { status: 'Success', pending: 0, uploaded: 0, deleted: 0, retained: 0 };
+    }
+
+    console.log(`[reconcile:${reason}] ${pending} pending + ${Math.max(0, total - pending)} synced local row(s) — diff + verify against MongoDB before any delete`);
+    // #434 — Use the explicit fetch-diff-upload-verify flow: fetch what Mongo
+    // already has, upload only the missing rows (tagged source:'sqlite',
+    // oldest→newest), re-fetch to verify every local ping exists in Mongo,
+    // and delete ONLY after that verify. Wide 30-day window covers a session
+    // left un-checked-out for weeks. Falls back to the batch reconcile if the
+    // /mine endpoint isn't deployed. Nothing is deleted before it's in Mongo.
+    const r = await checkoutSyncWithDiffAndVerify(Date.now() - 30 * 24 * 3600 * 1000);
+    console.log(
+      `[reconcile:${reason}] result: status=${r.status} uploaded=${r.uploaded} ` +
+      `deleted=${r.deletedFromLocal} retained=${r.retainedForRetry}`
+    );
+    return { status: r.status, pending, uploaded: r.uploaded, deleted: r.deletedFromLocal, retained: r.retainedForRetry };
+  } catch (e: any) {
+    console.warn(`[reconcile:${reason}] failed (data retained for retry):`, e?.message || e);
+    let retained = 0;
+    try { retained = await getPendingCount(); } catch {}
+    return { status: 'Failed', pending: retained, uploaded: 0, deleted: 0, retained };
+  }
+}
+
+/**
+ * #432 — Purge SYNCED rows recorded BEFORE the current session started.
+ * Used from the checked-IN cold-boot resume path, where we must NOT upload
+ * or touch the active session's pending rows, but we DO want to clear out a
+ * previous session's already-uploaded (synced) rows so they don't linger.
+ * Pending rows and current-session rows (recorded >= sessionStartMs) are
+ * never touched.
+ */
+export async function purgePreviousSyncedBefore(sessionStartMs: number, reason: string = 'resume'): Promise<number> {
+  try {
+    if (!Number.isFinite(sessionStartMs) || sessionStartMs <= 0) return 0;
+    const n = await deleteSyncedPingsInRange(0, Math.max(0, sessionStartMs - 1));
+    if (n > 0) console.log(`[reconcile:${reason}] purged ${n} synced ping(s) from previous session(s) (before current check-in)`);
+    return n;
+  } catch (e: any) {
+    console.warn(`[reconcile:${reason}] purge-previous-synced failed:`, e?.message || e);
+    return 0;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// #434 — CHECK-OUT SYNC WITH EXPLICIT MONGO DIFF + VERIFY
+//
+// The exact HR-requested flow:
+//   1. FETCH the employee's existing ping buckets from MongoDB.
+//   2. COMPARE with the local SQLite rows for this session → find the ones
+//      MISSING in MongoDB.
+//   3. UPLOAD only the missing rows, OLDEST → NEWEST, tagged source:'sqlite'.
+//   4. RE-FETCH from MongoDB and VERIFY every local ping now exists there.
+//   5. Only after a clean verify, DELETE those rows from SQLite.
+//   6. If anything fails / verify is incomplete → delete NOTHING, retain, and
+//      RETRY (bounded here; the checked-out background listener + next open
+//      keep retrying after).
+//
+// Guarantees: zero data loss (delete only after MongoDB confirms every row),
+// no duplicates (server bucket dedup + we upload only what's missing),
+// chronological order (missing rows sorted by recorded_at ASC).
+//
+// Falls back to the batch reconcile (finalCheckoutSyncAndCleanup) if the
+// /location-pings/mine endpoint isn't available yet (backend not redeployed).
+// ─────────────────────────────────────────────────────────────────────
+export async function checkoutSyncWithDiffAndVerify(sessionStartMsHint?: number): Promise<{
+  status: 'Success' | 'Failed' | 'PartialFailure';
+  localCount: number;
+  missingBefore: number;
+  uploaded: number;
+  deletedFromLocal: number;
+  retainedForRetry: number;
+  usedFallback?: boolean;
+  errorReason?: string;
+}> {
+  const toMs = Date.now();
+  let fromMs = 0;
+  if (Number.isFinite(sessionStartMsHint) && (sessionStartMsHint as number) > 0) {
+    fromMs = sessionStartMsHint as number;
+  } else {
+    try { const st = await getTrackingState(); if (st?.checkInAt) fromMs = Number(st.checkInAt) || 0; } catch {}
+  }
+  if (!Number.isFinite(fromMs) || fromMs <= 0 || fromMs >= toMs) fromMs = toMs - 24 * 3600 * 1000;
+
+  console.log(`[checkout-diff] ⇢ Check-Out sync started (window ${new Date(fromMs).toISOString()} → ${new Date(toMs).toISOString()})`);
+
+  // Read the local rows for this session (recorded within the window).
+  const cutoffHi = toMs + 5 * 60 * 1000; // small grace for a lagging final tick
+  let localRows = (await listAllPingsSince(fromMs)).filter(r => r.recordedAt <= cutoffHi);
+  const localCount = localRows.length;
+  if (localCount === 0) {
+    console.log('[checkout-diff] no local rows in session window — nothing to sync');
+    return { status: 'Success', localCount: 0, missingBefore: 0, uploaded: 0, deletedFromLocal: 0, retainedForRetry: 0 };
+  }
+  const localBuckets = localRows.map(r => r.bucket);
+
+  let employeeId = '';
+  try { const raw = await AsyncStorage.getItem('user'); if (raw) { const u = JSON.parse(raw); employeeId = u?.employeeId || u?.userId || ''; } } catch {}
+
+  const fromISO = new Date(fromMs).toISOString();
+  const toISO   = new Date(cutoffHi).toISOString();
+
+  // Fetch the set of buckets MongoDB already has for this user+window.
+  const fetchMongoBuckets = async (): Promise<Set<number>> => {
+    const res: any = await attendanceAPI.getMyPingBuckets(fromISO, toISO);
+    const body = res?.data || {};
+    if (!body?.success || !Array.isArray(body.buckets)) throw new Error('bad-response');
+    return new Set(body.buckets.map(Number));
+  };
+
+  // Step 1 — Fetch existing from Mongo (fallback if endpoint not deployed).
+  let mongoBuckets: Set<number>;
+  try {
+    mongoBuckets = await fetchMongoBuckets();
+    console.log(`[checkout-diff] Mongo already has ${mongoBuckets.size} ping(s) in window; local has ${localCount}`);
+  } catch (e: any) {
+    console.log('[checkout-diff] /mine endpoint unavailable — falling back to batch reconcile:', e?.message || e);
+    const r = await finalCheckoutSyncAndCleanup(fromMs);
+    return {
+      status: r.status === 'Success' ? 'Success' : (r.status === 'PartialFailure' ? 'PartialFailure' : 'Failed'),
+      localCount, missingBefore: r.pendingBefore, uploaded: r.uploaded,
+      deletedFromLocal: r.deletedFromLocal, retainedForRetry: r.retainedForRetry,
+      usedFallback: true, errorReason: r.errorReason,
+    };
+  }
+
+  const missingBefore = localBuckets.filter(b => !mongoBuckets.has(b)).length;
+
+  const MAX = 5;
+  const BACKOFF = [0, 1500, 3000, 5000, 8000];
+  let attempt = 0;
+  let lastErr = '';
+  let uploadedTotal = 0;
+
+  while (attempt < MAX) {
+    if (BACKOFF[attempt]) await sleep(BACKOFF[attempt]);
+    attempt += 1;
+
+    // Step 2 — DIFF: local rows whose bucket isn't in Mongo, OLDEST → NEWEST.
+    const missingRows = localRows
+      .filter(r => !mongoBuckets.has(r.bucket))
+      .sort((a, b) => a.recordedAt - b.recordedAt);
+    console.log(`[checkout-diff] attempt ${attempt}/${MAX}: local=${localCount} inMongo=${localCount - missingRows.length} missing=${missingRows.length}`);
+
+    // Step 3 — UPLOAD only the missing ones, oldest first, tagged source.
+    if (missingRows.length > 0) {
+      const payload = missingRows.map(r => {
+        const { date, localTime } = toIstDateAndTime(r.recordedAt);
+        return {
+          employeeId: r.employeeId || employeeId,
+          date, localTime,
+          latitude: r.lat, longitude: r.lng,
+          accuracy: r.accuracy ?? null, speed: r.speed ?? null,
+          isStationary: r.isStationary === true,
+          bucket: r.bucket,
+          source: 'sqlite',
+        };
+      });
+      try {
+        const up: any = await attendanceAPI.syncMissingPings(payload);
+        uploadedTotal += Number(up?.data?.inserted) || 0;
+        console.log(`[checkout-diff] uploaded ${up?.data?.inserted ?? '?'} / ${missingRows.length} missing (oldest→newest)`);
+      } catch (e: any) {
+        lastErr = e?.message || String(e);
+        console.log(`[checkout-diff] upload attempt ${attempt} failed: ${lastErr} — retrying`);
+        continue;
+      }
+    }
+
+    // Step 4 — RE-FETCH + VERIFY every local ping now exists in Mongo.
+    try { mongoBuckets = await fetchMongoBuckets(); }
+    catch (e: any) { lastErr = e?.message || String(e); console.log(`[checkout-diff] verify fetch failed: ${lastErr} — retrying`); continue; }
+
+    const stillMissing = localBuckets.filter(b => !mongoBuckets.has(b));
+    if (stillMissing.length === 0) {
+      // Step 5 — VERIFIED. Mark synced + delete this session's rows.
+      for (const r of localRows) { if (r.localId) { try { await markPingSynced(r.localId); } catch {} } }
+      let deleted = 0;
+      try {
+        deleted = await deleteSyncedPingsInRange(fromMs, Date.now());
+      } catch (e: any) {
+        let retained = 0; try { retained = await getPendingCount(); } catch {}
+        console.log('[checkout-diff] ⚠ verified but local delete failed:', e?.message || e);
+        return { status: 'PartialFailure', localCount, missingBefore, uploaded: uploadedTotal, deletedFromLocal: 0, retainedForRetry: retained, errorReason: 'delete-failed' };
+      }
+      console.log(`[checkout-diff] ✔ VERIFIED all ${localCount} ping(s) exist in MongoDB — deleted ${deleted} local row(s). Zero data loss.`);
+      return { status: 'Success', localCount, missingBefore, uploaded: uploadedTotal, deletedFromLocal: deleted, retainedForRetry: 0 };
+    }
+
+    console.log(`[checkout-diff] attempt ${attempt}: ${stillMissing.length} ping(s) still not in Mongo — retrying`);
+  }
+
+  // Exhausted retries — DELETE NOTHING, retain everything for later retry.
+  let retained = 0; try { retained = await getPendingCount(); } catch {}
+  console.log(`[checkout-diff] ✘ Could not verify all pings after ${MAX} attempts — retaining ALL local rows for retry.`);
+  return { status: 'Failed', localCount, missingBefore, uploaded: uploadedTotal, deletedFromLocal: 0, retainedForRetry: retained || localCount, errorReason: lastErr || 'verify-incomplete' };
 }

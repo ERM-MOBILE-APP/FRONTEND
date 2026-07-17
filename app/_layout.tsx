@@ -105,9 +105,21 @@ if (typeof globalThis !== 'undefined') {
  */
 class RootErrorBoundary extends React.Component<
   { children: React.ReactNode },
-  { error: Error | null }
+  { error: Error | null; resetKey: number; retryCount: number }
 > {
-  state = { error: null as Error | null };
+  // #427 — resetKey forces a full subtree remount on Reload. Without it
+  // `handleReload` only cleared state.error and re-rendered THE SAME
+  // failing tree — if the crash was caused by stale global state (a
+  // dead AppState listener, an already-torn-down animation, a null
+  // reducer state), the same render threw again, Hermes went into a
+  // fast reflow/throw/reflow loop, and Android SIGTERMed the app.
+  //
+  // Bumping resetKey remounts every descendant with a fresh key so
+  // effects run again, refs are re-created, and any stale in-memory
+  // context is cleared. retryCount caps recovery at 3 attempts — after
+  // that the boundary shows a "please close and reopen" screen instead
+  // of trying to heal itself.
+  state = { error: null as Error | null, resetKey: 0, retryCount: 0 };
 
   static getDerivedStateFromError(error: Error) {
     return { error };
@@ -122,29 +134,42 @@ class RootErrorBoundary extends React.Component<
   }
 
   handleReload = () => {
-    this.setState({ error: null });
+    // #427 — Bump resetKey to force a full remount + increment retry cap.
+    this.setState((s) => ({
+      error: null,
+      resetKey: s.resetKey + 1,
+      retryCount: s.retryCount + 1,
+    }));
   };
 
   render() {
     if (this.state.error) {
+      const exceededRetries = this.state.retryCount >= 3;
       return (
         <View style={errorStyles.container}>
-          <Text style={errorStyles.title}>Something went wrong</Text>
+          <Text style={errorStyles.title}>
+            {exceededRetries ? 'App needs a restart' : 'Something went wrong'}
+          </Text>
           <Text style={errorStyles.subtitle}>
-            The app hit an unexpected error. Tap below to recover.
+            {exceededRetries
+              ? 'We tried to recover automatically but the same error keeps happening. Please close the app fully and reopen it. If it continues, contact IT.'
+              : 'The app hit an unexpected error. Tap below to recover.'}
           </Text>
           <ScrollView style={errorStyles.detailBox}>
             <Text style={errorStyles.detail} selectable>
               {this.state.error.message || String(this.state.error)}
             </Text>
           </ScrollView>
-          <TouchableOpacity style={errorStyles.btn} onPress={this.handleReload}>
-            <Text style={errorStyles.btnText}>Reload app</Text>
-          </TouchableOpacity>
+          {!exceededRetries && (
+            <TouchableOpacity style={errorStyles.btn} onPress={this.handleReload}>
+              <Text style={errorStyles.btnText}>Reload app</Text>
+            </TouchableOpacity>
+          )}
         </View>
       );
     }
-    return this.props.children;
+    // #427 — Keyed Fragment so the subtree fully remounts on each recovery.
+    return <React.Fragment key={this.state.resetKey}>{this.props.children}</React.Fragment>;
   }
 }
 
@@ -171,20 +196,6 @@ export default function RootLayout() {
         />
         <Stack.Screen
           name="(auth)/new-password"
-          options={{ presentation: 'card', animation: 'slide_from_right' }}
-        />
-        <Stack.Screen
-          name="(auth)/success"
-          options={{
-            presentation: 'card',
-            animation: 'fade',
-            gestureEnabled: false,
-          }}
-        />
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="notifications" options={{ presentation: 'card' }} />
-        <Stack.Screen
-          name="complaint"
           options={{ presentation: 'card', animation: 'slide_from_right' }}
         />
         <Stack.Screen
