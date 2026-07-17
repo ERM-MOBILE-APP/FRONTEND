@@ -731,7 +731,15 @@ export default function LeaveScreen() {
             </Text>
           </View>
         ) : (
-          history.map((l) => <HistoryCard key={l._id} item={l} />)
+          history.map((l) => (
+            <HistoryCard
+              key={l._id}
+              item={l}
+              formatDisplay={formatDisplay}
+              formatTimeAmPm={formatTimeAmPm}
+              formatRange={formatRange}
+            />
+          ))
         )}
       </ScrollView>
 
@@ -969,8 +977,21 @@ export default function LeaveScreen() {
     </SafeAreaView>
     </ScreenErrorBoundary>
   );;
+}
 
-  function HistoryCard({ item }: { item: LeaveItem }) {
+// #440 — Hoisted to MODULE SCOPE. It used to be declared INSIDE LeaveScreen,
+// so it got a brand-new function identity on every render → React saw a
+// different component TYPE each time and UNMOUNTED + REMOUNTED every history
+// row on any parent re-render (e.g. every keystroke in the reason inputs, or
+// every `submitting` toggle) → the history list flickered/blinked. As a stable
+// module-level component it now only re-renders on prop change, never remounts.
+// The pure date/time formatters are passed in as props.
+function HistoryCard({ item, formatDisplay, formatTimeAmPm, formatRange }: {
+  item: LeaveItem;
+  formatDisplay: (iso: string) => string;
+  formatTimeAmPm: (t: string) => string;
+  formatRange: (s?: string, e?: string) => string;
+}) {
     const statusConf: Record<LeaveStatus, { badge: string; edge: string; text: string }> = {
       approved: { badge: '#4CAF50', edge: '#4CAF50', text: 'Approved' },
       pending: { badge: '#FFA726', edge: '#FFA726', text: 'Pending' },
@@ -1090,7 +1111,6 @@ export default function LeaveScreen() {
       </View>
     );
   }
-}
 
 const GREEN = '#4CAF50';
 

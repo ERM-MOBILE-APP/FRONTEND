@@ -32,7 +32,12 @@ const BASE_URL =
   'https://backend-9rtc.onrender.com';
 
 const TASK_ID   = 'tesco-erm-tracking';
-const PING_INTERVAL_MS   = 60 * 1000;   // 2 minutes — HR spec
+// #439 — was 60s but labelled "2 minutes". At 60s this primary FGS woke the
+// GPS TWICE per 2-min bucket (the extra tick just deduped), doubling battery
+// + CPU + heat over an 8-hour shift and drawing more attention from OEM
+// battery-killers — the exact thing that SIGKILLs the service. Now a true
+// 120s to match the HR spec and the expo-task cadence.
+const PING_INTERVAL_MS   = 120 * 1000;  // 2 minutes — HR spec
 const CLIENT_BURST_MS    = 110 * 1000;   // must be > 100s server dedup
 const GPS_TIMEOUT_MS     = 15 * 1000;    // per-request max wait for a fix
 const OFFLINE_QUEUE_KEY  = 'erm-bg-ping-queue-v1';
@@ -236,7 +241,16 @@ async function readPositionOnce(): Promise<{ lat: number; lng: number; accuracy:
   if (!RNGeolocation) return null;
   return new Promise((resolve) => {
     let done = false;
-    const finish = (v: any) => { if (!done) { done = true; resolve(v); } };
+    // #438 — Capture and CLEAR the safety timeout when the GPS callback wins,
+    // instead of leaving a ~16 s timer pending on every read. Over an 8-hour
+    // shift (one read / 2 min) that was hundreds of live timers accumulating.
+    let safetyTimer: any = null;
+    const finish = (v: any) => {
+      if (done) return;
+      done = true;
+      if (safetyTimer) { try { clearTimeout(safetyTimer); } catch {} safetyTimer = null; }
+      resolve(v);
+    };
     try {
       RNGeolocation.getCurrentPosition(
         (pos: any) => finish({
@@ -257,8 +271,8 @@ async function readPositionOnce(): Promise<{ lat: number; lng: number; accuracy:
         }
       );
     } catch { finish(null); }
-    // hard safety timeout
-    setTimeout(() => finish(null), GPS_TIMEOUT_MS + 1_000);
+    // hard safety timeout (cleared by finish() when GPS resolves first)
+    safetyTimer = setTimeout(() => finish(null), GPS_TIMEOUT_MS + 1_000);
   });
 }
 
@@ -413,6 +427,16 @@ async function trackingTask(_taskData: any): Promise<void> {
   console.warn("started trackingTask — alive:", state.alive);
   while (state.alive) {
     try {
+      // #439 — Write the shared heartbeat each tick. This FGS is the PRIMARY
+      // tracker (#405), but previously only the expo-task path refreshed the
+      // heartbeat — so the foreground guardian's staleness check watched the
+      // wrong system and could tear down/restart a perfectly healthy service
+      // (or miss that the primary had died). Refreshing it here means "the
+      // primary tracker just ran" is recorded too.
+      // NOTE: value is an ISO string to match locationTask.writeHeartbeat()
+      // (getLastHeartbeat parses it via new Date(raw)).
+      try { await AsyncStorage.setItem('erm-bg-task-last-heartbeat', new Date().toISOString()); } catch {}
+
       const token = (await AsyncStorage.getItem('token')) || '';
       if (!token) {
         await sleep(PING_INTERVAL_MS);
@@ -452,7 +476,10 @@ async function trackingTask(_taskData: any): Promise<void> {
         }
       }
       if (filtered) {
-        await postPing(token, { ...filtered, recordedAt: new Date().toLocaleString() });
+        // #439 — ISO, not toLocaleString(): the backend parses recordedAt to
+        // bucket the point by capture time; a locale string ("7/17/2026,
+        // 3:04:00 PM") parses ambiguously or fails and mis-stamps the point.
+        await postPing(token, { ...filtered, recordedAt: new Date().toISOString() });
       }
     } catch (e: any) {
       // Absolute swallow. The task MUST stay alive.

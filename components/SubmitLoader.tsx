@@ -59,24 +59,16 @@ export default function SubmitLoader({
   const rotateRef = useRef(new Animated.Value(0)).current;
   const pulseRef  = useRef(new Animated.Value(0)).current;
 
-  // #311 — Hold the Modal open for ~60 ms AFTER the parent flips
-  // `visible` to false. That gives this loader's fade-out animation
-  // time to finish before the parent screen's SuccessModal starts
-  // its fade-in, which is exactly the Android WindowManager z-order
-  // race that caused the lingering "flicker right after submit"
-  // reports. Same trick used by #299 for the check-in/out modals.
-  const [actuallyVisible, setActuallyVisible] = React.useState(visible);
+  // #438 — REPLACED the old 220 ms "hold-open" hack. Holding this Modal open
+  // AFTER `visible` went false actually FORCED it to overlap the parent
+  // screen's SuccessModal (which mounts the instant submit succeeds) — two
+  // transparent `animationType="fade"` Modals animating together is the exact
+  // Android WindowManager z-order race that crashes the bridge. Instead we
+  // now (a) drive the Modal directly from `visible` (dismisses immediately,
+  // so the overlap window is ~0) and (b) use `animationType="none"` so there
+  // is no fade animation left to race with the SuccessModal's fade-in.
   useEffect(() => {
-    if (visible) {
-      setActuallyVisible(true);
-      return;
-    }
-    const t = setTimeout(() => setActuallyVisible(false), 220);
-    return () => clearTimeout(t);
-  }, [visible]);
-
-  useEffect(() => {
-    if (!actuallyVisible) return;
+    if (!visible) return;
     const rotate = Animated.loop(
       Animated.timing(rotateRef, {
         toValue: 1,
@@ -106,7 +98,7 @@ export default function SubmitLoader({
     // refs are stable for the component lifetime — don't add them to deps,
     // it caused the effect to re-run spuriously on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actuallyVisible]);
+  }, [visible]);
 
   // Derive a paler halo + a mid ring shade from the accent so callers
   // only have to specify one colour for the whole loader.
@@ -121,9 +113,9 @@ export default function SubmitLoader({
 
   return (
     <Modal
-      visible={actuallyVisible}
+      visible={visible}
       transparent
-      animationType="fade"
+      animationType="none"
       statusBarTranslucent
       onRequestClose={() => { /* swallow back-press while busy */ }}
     >

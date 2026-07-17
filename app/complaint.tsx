@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -33,6 +33,9 @@ export default function ComplaintScreen() {
   const [priority, setPriority]       = useState<Priority>('low');
   const [description, setDescription] = useState('');
   const [submitting, setSubmitting]   = useState(false);
+  // #440 — mounted guard for the submit request (hardware-back mid-flight).
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
   const subjectValid = subject.trim().length > 0;
   const canSubmit = useMemo(
@@ -65,7 +68,7 @@ export default function ComplaintScreen() {
         err?.response?.data?.message || 'Please try again in a moment.'
       );
     } finally {
-      setSubmitting(false);
+      if (mountedRef.current) setSubmitting(false);
     }
   };
 

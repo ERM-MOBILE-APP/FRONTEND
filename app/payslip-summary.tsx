@@ -58,15 +58,20 @@ export default function PayslipSummaryScreen() {
   const [error, setError]     = useState('');
 
   useEffect(() => {
+    // #440 — mounted guard: a Render cold start can take 30-60s; if the user
+    // taps Back before this resolves, the setState calls would land on an
+    // unmounted component (Hermes/Android SIGTERM risk).
+    let cancelled = false;
     if (!id) {
       setError('Missing payslip id');
       setLoading(false);
       return;
     }
     payslipAPI.getById(String(id))
-      .then((r) => setData(r.data))
-      .catch((e) => setError(e?.response?.data?.message || 'Could not load payslip'))
-      .finally(() => setLoading(false));
+      .then((r) => { if (!cancelled) setData(r.data); })
+      .catch((e) => { if (!cancelled) setError(e?.response?.data?.message || 'Could not load payslip'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [id]);
 
   if (loading) {
@@ -132,6 +137,12 @@ export default function PayslipSummaryScreen() {
 
   const earningsTotal   = data.totalGross || 0;
   const deductionsTotal = data.totalDeductions || 0;
+  // #440 — Default to {} so a processed payslip whose payload is missing (or
+  // renames) `earnings`/`deductions` can't throw `undefined is not an object`
+  // DURING RENDER. This screen is not wrapped in a ScreenErrorBoundary, so
+  // that throw would bubble to the root boundary and tear down the whole app.
+  const earnings: any   = data.earnings   || {};
+  const deductions: any = data.deductions || {};
 
   return (
     <SafeAreaView edges={['top']} style={styles.safe}>
@@ -182,18 +193,18 @@ export default function PayslipSummaryScreen() {
         {/* Earning Details */}
         <Text style={styles.sectionHeading}>Earning Details</Text>
         <View style={styles.detailCard}>
-          <DetailRow label="Basic"                 value={data.earnings.basicSalary} />
-          <DetailRow label="House Rent Allowance"  value={data.earnings.hraAllowance} />
-          <DetailRow label="Conveyance Allowance"  value={data.earnings.performanceBonus} />
-          <DetailRow label="Earned Leave"          value={data.earnings.otherEarnings} last />
+          <DetailRow label="Basic"                 value={earnings.basicSalary} />
+          <DetailRow label="House Rent Allowance"  value={earnings.hraAllowance} />
+          <DetailRow label="Conveyance Allowance"  value={earnings.performanceBonus} />
+          <DetailRow label="Earned Leave"          value={earnings.otherEarnings} last />
         </View>
 
         {/* Deductions */}
         <Text style={styles.sectionHeading}>Deductions</Text>
         <View style={styles.detailCard}>
-          <DetailRow label="EPF"              value={data.deductions.providentFund} />
-          <DetailRow label="Professional Tax" value={data.deductions.incomeTax} />
-          <DetailRow label="PF"               value={data.deductions.healthInsurance} last />
+          <DetailRow label="EPF"              value={deductions.providentFund} />
+          <DetailRow label="Professional Tax" value={deductions.incomeTax} />
+          <DetailRow label="PF"               value={deductions.healthInsurance} last />
         </View>
 
         {/* Action buttons.

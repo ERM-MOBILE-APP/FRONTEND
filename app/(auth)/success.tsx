@@ -60,9 +60,17 @@ function GridBackground() {
 // ---------- Success Screen ----------
 export default function SuccessScreen() {
   const handleGoToLogin = async () => {
-    // clear any cached session so user must re-login with new password
-    await AsyncStorage.multiRemove(['token', 'user']);
-    router.replace('/(auth)/login');
+    // #440 — Guard the storage clear: a rejecting multiRemove would become an
+    // unhandled promise rejection (Android SIGTERM risk) AND skip navigation.
+    // Navigate in `finally` so the user always gets to login.
+    try {
+      // clear any cached session so user must re-login with new password
+      await AsyncStorage.multiRemove(['token', 'user']);
+    } catch (e: any) {
+      console.warn('[success] session clear failed (non-fatal):', e?.message || e);
+    } finally {
+      try { router.replace('/(auth)/login'); } catch {}
+    }
   };
 
   return (

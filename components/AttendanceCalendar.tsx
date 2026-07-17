@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -30,6 +30,13 @@ type Props = { refreshKey?: number };
 export default function AttendanceCalendar({ refreshKey = 0 }: Props) {
   const [cursor, setCursor] = useState(new Date());
   const [data, setData] = useState<Record<string, Status>>({});
+  // #440 — mounted guard: swiping away / unmounting during the cold-start
+  // getMonthly() fetch must not setState on a torn-down component.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -41,9 +48,9 @@ export default function AttendanceCalendar({ refreshKey = 0 }: Props) {
       (res.data || []).forEach((r: any) => {
         map[r.date] = r.status;
       });
-      setData(map);
+      if (mountedRef.current) setData(map);
     } catch {
-      setData({});
+      if (mountedRef.current) setData({});
     }
   }, [cursor]);
 

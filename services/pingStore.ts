@@ -453,8 +453,18 @@ function makeAsyncStorageBackend(): Backend {
   return {
     async init() {
       // Nothing to bootstrap — AsyncStorage is always ready.
-      const raw = await AsyncStorage.getItem(AS_PENDING_KEY);
-      const rows: PingRow[] = raw ? JSON.parse(raw) : [];
+      // #438 — Guard the parse: a single corrupted `erm-ping-queue-v1` value
+      // must not throw out of init() (which would poison _initPromise).
+      let rows: PingRow[] = [];
+      try {
+        const raw = await AsyncStorage.getItem(AS_PENDING_KEY);
+        rows = raw ? JSON.parse(raw) : [];
+        if (!Array.isArray(rows)) rows = [];
+      } catch (e: any) {
+        console.warn('[pingStore] corrupt pending queue — resetting:', e?.message || e);
+        rows = [];
+        try { await AsyncStorage.removeItem(AS_PENDING_KEY); } catch {}
+      }
       // Recompute sequence so new inserts don't collide.
       for (const r of rows) if (r.localId && r.localId > seq) seq = r.localId;
     },
@@ -614,16 +624,48 @@ function normaliseState(raw: any): TrackingState {
 export async function initPingStore(): Promise<void> {
   if (_initPromise) return _initPromise;
   _initPromise = (async () => {
-    _backend = selectBackend();
-    await _backend.init();
-    console.log('[pingStore] ready');
+    try {
+      _backend = selectBackend();
+      await _backend.init();
+      console.log('[pingStore] ready');
+    } catch (e: any) {
+      // #438 — Do NOT leave a REJECTED promise cached: `_initPromise` would
+      // be returned forever and every later ensure() would re-reject,
+      // permanently poisoning the store for the process lifetime. Reset it so
+      // the next call can retry a fresh init (e.g. after a transient locked-DB
+      // or corrupted-key error). If SQLite init itself failed, fall back to
+      // the AsyncStorage backend so pings can still be buffered.
+      console.warn('[pingStore] init failed, will retry on next use:', e?.message || e);
+      _initPromise = null;
+      // One-shot fallback to the AsyncStorage backend (no native module) so
+      // pings can still be buffered even if SQLite init failed.
+      try {
+        _backend = makeAsyncStorageBackend();
+        await _backend.init();
+        console.log('[pingStore] recovered on AsyncStorage backend');
+        return;
+      } catch (e2: any) {
+        console.warn('[pingStore] AsyncStorage fallback also failed:', e2?.message || e2);
+        _backend = null;
+      }
+      throw e;
+    }
   })();
   return _initPromise;
 }
 
 async function ensure(): Promise<Backend> {
-  if (!_backend) await initPingStore();
-  return _backend!;
+  if (!_backend) {
+    try { await initPingStore(); }
+    catch { /* init already logged; return whatever backend we have (may retry next call) */ }
+  }
+  if (!_backend) {
+    // Last-resort: never return undefined (callers do _backend!). Use the
+    // AsyncStorage backend which needs no native module.
+    _backend = makeAsyncStorageBackend();
+    try { await _backend.init(); } catch {}
+  }
+  return _backend;
 }
 
 /** Compute the 2-min bucket from a ms epoch. */

@@ -245,7 +245,7 @@ function AnnouncementScreenInner() {
                       const sizeLbl = att.size ? ` (${Math.round(att.size / 1024)} KB)` : '';
                       if (isImage) {
                         return (
-                          <View key={i} style={{ gap: 6 }}>
+                          <View key={att.url || att.name || `att-${i}`} style={{ gap: 6 }}>
                             <Image
                               source={{ uri: src }}
                               style={{ width: '100%', height: 180, borderRadius: 8, backgroundColor: '#F1F5F9' }}
@@ -261,7 +261,7 @@ function AnnouncementScreenInner() {
                         );
                       }
                       return (
-                        <View key={i} style={styles.attRow}>
+                        <View key={att.url || att.name || `att-${i}`} style={styles.attRow}>
                           <Text style={styles.attName} numberOfLines={1}>
                             📎 {att.name || 'Attachment'}{sizeLbl}
                           </Text>

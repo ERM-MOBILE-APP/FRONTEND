@@ -98,7 +98,6 @@ type Announcement = {
 function PremiumLoader({ variant }: { variant: 'in' | 'out' }) {
   const rotateRef = React.useRef(new Animated.Value(0)).current;
   const pulseRef  = React.useRef(new Animated.Value(0)).current;
-  const dotsRef   = React.useRef(new Animated.Value(0)).current;
 
   React.useEffect(() => {
     const rotate = Animated.loop(
@@ -110,10 +109,11 @@ function PremiumLoader({ variant }: { variant: 'in' | 'out' }) {
         Animated.timing(pulseRef, { toValue: 0, duration: 900, easing: Easing.in(Easing.quad),  useNativeDriver: true }),
       ])
     );
-    const dots = Animated.loop(
-      Animated.timing(dotsRef, { toValue: 3, duration: 1350, easing: Easing.linear, useNativeDriver: false })
-    );
-    rotate.start(); pulse.start(); dots.start();
+    // #438 — Removed the old `dots` loop: it ran with useNativeDriver:false
+    // (JS thread, every frame) but drove nothing — the three loader dots are
+    // static Views. Dropping it frees the JS thread during the exact moment
+    // (GPS + network wait) it's busiest, so the loader stays smooth.
+    rotate.start(); pulse.start();
     return () => {
       // #311 — Guard cleanup. On Android 9/10 the native Animated view
       // can be torn down before this cleanup runs (rapid mount/unmount
@@ -123,10 +123,8 @@ function PremiumLoader({ variant }: { variant: 'in' | 'out' }) {
       // self-catches so the crash chain stops here.
       try { rotate.stop();  } catch { /* native view gone — non-fatal */ }
       try { pulse.stop();   } catch { /* same */ }
-      try { dots.stop();    } catch { /* same */ }
       try { rotateRef.setValue(0); } catch { /* same */ }
       try { pulseRef.setValue(0);  } catch { /* same */ }
-      try { dotsRef.setValue(0);   } catch { /* same */ }
     };
   }, []);
 
@@ -320,6 +318,14 @@ export default function HomeScreen() {
   // hasn't propagated yet) and keeps the local "back to working" state
   // so the button stays as "Check Out" instead of flipping back.
   const resumeAtRef = useRef(0);
+  // #437 — Timestamp of the last check-in/out tap, for re-entry debounce.
+  const lastActionAtRef = useRef(0);
+  // #438 — Declared here (early) so the data-loaders below can guard their
+  // setState against a torn-down component. Toggled by an effect further down.
+  const mountedRef = useRef(true);
+  // #438 — Ensures the mount data-load and the first focus data-load don't
+  // both fire on open (which double-repaints the screen = flicker).
+  const didInitialLoadRef = useRef(false);
   // #340 — Freeze the loader copy/color to the user's INTENT for the
   // full duration of actionBusy=true. Prevents the "1-sec Checking
   // you out" flash during a Check In Again tap (which optimistically
@@ -356,6 +362,7 @@ export default function HomeScreen() {
         res?.data?.unread      ??
         0
       );
+      if (!mountedRef.current) return;
       setUnreadCount(Number.isFinite(n) ? n : 0);
     } catch {
       // Network error — leave whatever the previous value was.
@@ -403,6 +410,7 @@ export default function HomeScreen() {
       // client optimistically added the current session on Check Out
       // before the server responded), keep the max so the timer never
       // rolls back visibly.
+      if (!mountedRef.current) return;
       setToday(prev => {
         // #339 Resume-window guard: within 30 s of the user tapping
         // Check In Again, treat local state as truth for checkIn /
@@ -478,6 +486,7 @@ export default function HomeScreen() {
       // check-in state out of nothing. Either way, preserving prev is
       // safe here because the ownership guard above already ensured
       // prev belongs to the current user.
+      if (!mountedRef.current) return;
       setToday(prev => ({ shiftName: 'General Shift', ...prev }));
     }
   }, []);
@@ -487,6 +496,7 @@ export default function HomeScreen() {
       const res = await announcementAPI.list();
       // Always trust the server — set whatever it returned (even if empty)
       // so deleted announcements actually disappear.
+      if (!mountedRef.current) return;
       setAnnouncements(Array.isArray(res?.data) ? res.data : []);
     } catch {
       // network/server error → leave the current list alone
@@ -761,6 +771,15 @@ export default function HomeScreen() {
   // pick up new HR posts as soon as the user returns to the Home tab.
   useFocusEffect(
     useCallback(() => {
+      // #438 — Skip the FIRST focus: it coincides with mount, whose own
+      // effect already runs these three loaders. Running them twice on open
+      // produced two staggered repaints of the attendance card + announcement
+      // list (the "flicker on open"). The mount effect sets didInitialLoadRef;
+      // we only re-poll on SUBSEQUENT focuses (tab switches / returns).
+      if (!didInitialLoadRef.current) {
+        didInitialLoadRef.current = true;
+        return;
+      }
       Promise.all([
         refreshUnread(),
         refreshToday(),
@@ -1374,7 +1393,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
   // its 8 s timeout). Without this gate the callback's final setState /
   // attendanceAPI.setPresence calls happen against a torn-down component,
   // and Hermes on Android 9/10 has been observed to SIGTERM the bridge.
-  const mountedRef = useRef(true);
+  // mountedRef declared earlier (#438). Just wire its lifecycle here.
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
@@ -1539,6 +1558,11 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
 
   const handleCheckPress = async () => {
     if (actionBusy) return;
+    // #437 — Debounce re-entry. After the loader dismisses there is a brief
+    // window before the success modal covers the button; block a second tap
+    // during it so a double-tap can't fire a duplicate check-in/out.
+    if (Date.now() - lastActionAtRef.current < 1500) return;
+    lastActionAtRef.current = Date.now();
     // #394 — Belt-and-braces guard: if the day is already complete
     // (checked in AND out today), never allow another tap-through.
     // The button is hidden in JSX (see !dayComplete gate below), but
@@ -1628,21 +1652,39 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
           checkInResp?.data?.record?.firstCheckIn ||
           checkInResp?.data?.firstCheckIn ||
           null;
-        let optimisticToday: TodayData = {};
-        setToday(prev => {
-          optimisticToday = {
-            ...prev,
-            checkIn: serverCheckIn,
-            checkOut: null,
-            firstCheckIn: serverFirst || prev.firstCheckIn || serverCheckIn,
-            isOnBreak: false,
-          };
-          return optimisticToday;
-        });
-        // Persist immediately so a crash-restart restores Check-Out button.
-        // We use a small delay so optimisticToday is set by the setState call above.
+        // ── (a+b) OPTIMISTIC BUTTON-FLIP + SUCCESS MODAL, in the SAME tick.
+        //
+        // #437 — The button turns blue "Check Out" the instant
+        // `today.checkIn` is set. If we flip it NOW, the loader dismisses a
+        // moment before the success modal appears (260 ms later), so the blue
+        // "Check Out" box flashes on screen while Check In is still finishing.
+        // Flipping the state INSIDE the same timeout that shows the success
+        // modal reveals the blue button UNDER the modal — so it's never
+        // visible during the loader→modal transition gap. (SQLite check-in
+        // state is still persisted immediately via markCheckIn() below, so
+        // crash-recovery is unaffected.)
+        //
+        // The 260 ms delay itself is unchanged (#299/#424): it keeps the
+        // loader's fade-out from overlapping the success modal's fade-in,
+        // which crashed the native bridge on Android 9/10.
+        //
+        // Capture the time NOW so the displayed time is the tap moment.
+        const checkInTime = formatLiveTime(new Date());
         setTimeout(() => {
-          // #423 — Stamp ownership on optimistic check-in cache too.
+          if (!mountedRef.current) return;   // don't render on a dead component
+          let optimisticToday: TodayData = {};
+          setToday(prev => {
+            optimisticToday = {
+              ...prev,
+              checkIn: serverCheckIn,
+              checkOut: null,
+              firstCheckIn: serverFirst || prev.firstCheckIn || serverCheckIn,
+              isOnBreak: false,
+            };
+            return optimisticToday;
+          });
+          // #423 — Persist (with ownership) so a crash-restart restores the
+          // Check-Out button.
           AsyncStorage.getItem('user').then((u) => {
             let ownerId: string | null = null;
             try {
@@ -1654,32 +1696,6 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
               JSON.stringify({ ...optimisticToday, __ownerId: ownerId })
             );
           }).catch(() => {});
-        }, 0);
-
-        // ── (b) SUCCESS MODAL — fired AFTER the loader has had a frame
-        //         to fade out (#299). Two transparent <Modal> components
-        //         with animationType="fade" visible in the SAME render
-        //         tick trigger an Android WindowManager z-order race on
-        //         Android 9/10 that can SIGTERM the native bridge; the
-        //         user sees the app vanish 200-400 ms after a successful
-        //         check-in. Deferring this until the next macrotask lets
-        //         the PremiumLoader's fade-out complete first.
-        //
-        //         Capture the time NOW (not inside the setTimeout) so the
-        //         displayed time is the actual moment the user tapped,
-        //         not 60 ms later.
-        const checkInTime = formatLiveTime(new Date());
-        // #424 — INCREASED 60 ms → 260 ms.
-        //
-        // At 60 ms the SubmitLoader modal was still mid-fade-out (Android
-        // uses ~200 ms transparent-modal fade), and the success modal
-        // mounted on top of it. Two <Modal animationType="fade"> instances
-        // visible simultaneously = the "vanish + crash" symptom users
-        // reported on check-in. 260 ms is safely past the fade window so
-        // the loader has fully unmounted before the success modal starts
-        // its own animation.
-        setTimeout(() => {
-          if (!mountedRef.current) return;   // don't render on a dead component
           try { setCheckResult({ kind: 'in', time: checkInTime }); }
           catch (e: any) { console.warn('[handleCheckPress] setCheckResult failed:', e?.message || e); }
         }, 260);
@@ -1687,20 +1703,18 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
         // ── (c) SIDE-EFFECTS — each in its own guard. None of these
         //         can prevent the success modal from showing or stop
         //         the user from interacting with the app.
-        try { await attendanceAPI.setPresence('active'); } catch {}
-        // #432 — PROCESS THE PREVIOUS SESSION BEFORE STARTING THIS ONE.
-        // If a prior session was never checked out, its pings are still in
-        // SQLite. We are still checked out at this point (markCheckIn below
-        // hasn't run yet), so the upload gate is open: upload + verify those
-        // pending pings and delete only the server-confirmed rows now. The new
-        // tracking session must not start on top of stale pending data. On
-        // failure they're retained and retried — never lost, never deleted
-        // before MongoDB confirms them.
-        try {
-          await reconcilePreviousSessions('pre-checkin');
-        } catch (e: any) {
-          console.warn('[handleCheckPress] pre-session reconcile failed (retained for retry):', e?.message || e);
-        }
+        // #436 — Fire-and-forget so Check In completes instantly (Render
+        // cold-starts can make setPresence slow).
+        attendanceAPI.setPresence('active').catch(() => {});
+        // #432/#436 — Process any PREVIOUS un-checked-out session's pings in
+        // the BACKGROUND (upload + verify + delete-only-confirmed). This used
+        // to be awaited, which blocked Check In for seconds. Those pings stay
+        // safe in SQLite and are also reconciled on app open and at the next
+        // checkout, so running it in the background loses nothing — it just
+        // no longer blocks the tap.
+        reconcilePreviousSessions('pre-checkin').catch((e: any) =>
+          console.warn('[handleCheckPress] bg pre-session reconcile failed (retained for retry):', e?.message || e)
+        );
         // #409 — Persist check-in state to SQLite so cold-boot resume
         // knows we're checked in even before the /attendance/today
         // round-trip returns. This is the belt-and-braces backup for
@@ -1983,31 +1997,23 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
           return Number.isFinite(t) && t > 0 ? t : undefined;
         })();
         try { await markCheckOut(); } catch {}
-        let _checkoutSyncResult: any = null;
-        try {
-          // #434 — Explicit fetch-from-Mongo → diff → upload-only-missing
-          // (oldest→newest, tagged source:'sqlite') → re-fetch → verify →
-          // delete-only-after-verified. Retries internally; retains all on
-          // failure. Falls back to the batch reconcile if the /mine endpoint
-          // isn't deployed yet.
-          _checkoutSyncResult = await checkoutSyncWithDiffAndVerify(_sessionStartHintMs);
-          console.log('[checkout-diff] result:', JSON.stringify(_checkoutSyncResult));
-        } catch (e: any) {
-          console.log('[checkout-diff] ✘ orchestrator threw — retaining ALL local rows:', e?.message || e);
-        }
-        // #420 — Stop bg tracking AFTER the sync/cleanup phase. We stop
-        // in both success and failure paths, because the alternative
-        // (leaving the OS location service running until the next app
-        // launch) would drain battery and spam pings that no longer
-        // have a checked-in session to belong to. On failure, the
-        // pending SQLite rows persist and are retried by the sync
-        // listener when the network recovers.
+        // #436 — Stop bg tracking IMMEDIATELY so Check Out completes fast.
+        // (Both are quick, local operations.)
         try {
           stopContinuousTracking('user check-out');
           console.log('[checkout-sync] ✔ Background location tracking stopped');
         } catch (e: any) {
           console.warn('[handleCheckPress] stopContinuousTracking failed:', e?.message || e);
         }
+        // #434/#436 — Upload + verify + delete-only-after-verified runs in the
+        // BACKGROUND now (was awaited, which blocked Check Out for seconds due
+        // to network round-trips + the retry/backoff loop). SQLite is the
+        // source of truth: pings stay put until they're uploaded AND verified
+        // in MongoDB, so if the app is closed before this finishes, the next
+        // app open / next checkout reconciles them. Nothing is lost.
+        checkoutSyncWithDiffAndVerify(_sessionStartHintMs)
+          .then((r) => console.log('[checkout-diff] result:', JSON.stringify(r)))
+          .catch((e: any) => console.log('[checkout-diff] background sync error:', e?.message || e));
       } else {
         const doneTime = formatLiveTime(new Date());
         // #424 — Same 60→260 ms fix (see check-in branch).
@@ -2354,8 +2360,14 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
           pulsing accent ring, a branded action icon, and polished
           typography so a GPS-cold-start wait feels intentional and
           professional rather than a frozen UI. */}
+      {/* #438 — STATE-EXCLUSIVE with the result modal below. Two transparent
+          `animationType="fade"` Modals visible in the same tick trigger an
+          Android WindowManager z-order race that SIGTERMs the bridge. The old
+          code relied on a 260 ms timer to separate them, which raced on slow
+          devices. Gating the loader on `!checkResult` guarantees they are
+          NEVER both visible, closing the crash at the state level. */}
       <Modal
-        visible={actionBusy}
+        visible={actionBusy && !checkResult}
         transparent
         animationType="fade"
         statusBarTranslucent

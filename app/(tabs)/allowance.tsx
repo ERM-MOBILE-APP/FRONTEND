@@ -355,12 +355,16 @@ export default function AllowanceScreen() {
       }
       const km = haversineKm(a, b);
       const amt = Math.round(km * PETROL_RATE_PER_KM);
+      // #440 — calculate() is also fired from a debounced effect; if the user
+      // leaves the tab while the geocode fetch is in flight, don't setState on
+      // a torn-down component.
+      if (!mountedRef.current) return;
       setDistance(String(km));
       setAmount(String(amt));
     } catch {
       Alert.alert('Calculation failed', 'Could not look up the route. Enter the distance manually.');
     } finally {
-      setCalculating(false);
+      if (mountedRef.current) setCalculating(false);
     }
   };
 

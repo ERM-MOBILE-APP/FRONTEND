@@ -109,6 +109,13 @@ export async function flushPendingPings(reason: string = 'manual'): Promise<{ se
     const remaining = await getPendingCount();
     console.log(`[pingSync] flush done — sent=${sent} failed=${failed} remaining=${remaining}`);
     return { sent, failed, remaining };
+  } catch (e: any) {
+    // #438 — Never let a store/read rejection escape this exported function
+    // (callers may await it bare → unhandled rejection → Android crash).
+    console.warn('[pingSync] flush error (swallowed):', e?.message || e);
+    let remaining = 0;
+    try { remaining = await getPendingCount(); } catch {}
+    return { sent, failed, remaining };
   } finally {
     _flushing = false;
   }
@@ -396,6 +403,11 @@ export async function syncMissingPingsFromLocal(reason: string = 'manual'): Prom
       missing:           missingCount,
       dbName,
     };
+  } catch (e: any) {
+    // #438 — Swallow any store/network rejection so this exported function
+    // never rejects into a bare-awaiting caller (unhandled rejection guard).
+    console.warn('[missing-pings] error (swallowed):', e?.message || e);
+    return { status: 'Failed', totalLocal: 0, totalReceived: 0, alreadyExisted: 0, inserted: 0, duplicatesSkipped: 0, markedSynced: 0 };
   } finally {
     _syncMissingInFlight = false;
   }

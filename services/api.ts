@@ -79,8 +79,15 @@ const api = axios.create({
 });
 
 api.interceptors.request.use(async (config) => {
-  const token = await AsyncStorage.getItem('token');
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  // #438 — Guard AsyncStorage: a rejecting getItem() would turn EVERY API
+  // call into a rejected promise before it even hits the network, surfacing
+  // as unhandled rejections across screens. Degrade to a token-less request.
+  try {
+    const token = await AsyncStorage.getItem('token');
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+  } catch (e: any) {
+    console.warn('[api] token read failed — sending request without auth header:', e?.message || e);
+  }
   console.log('[API REQ]', config.method?.toUpperCase(), config.baseURL + (config.url || ''));
   return config;
 });

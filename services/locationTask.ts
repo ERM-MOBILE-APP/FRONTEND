@@ -779,33 +779,48 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
   //
   // Highest accuracy stays (pure GPS ±5-10 m) so the pin doesn't jitter
   // on the map when employees are stationary.
-  await appendEvent('start', 'startLocationUpdatesAsync invoked');
-  await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-    accuracy:         Location.Accuracy.Highest,
-    timeInterval:     120 * 1000,
-    distanceInterval: 0,
-    showsBackgroundLocationIndicator: true,
-    pausesUpdatesAutomatically:       false,
-    activityType:                     Location.ActivityType.OtherNavigation,
-    deferredUpdatesInterval:          0,
-    deferredUpdatesDistance:          0,
-    mayShowUserSettingsDialog:        true,
-    foregroundService: Platform.OS === 'android' ? {
-      // Sticky notification keeps the foreground service alive even
-      // through Doze and app-swipe-away on most Android OEMs.
-      notificationTitle: 'Tesco ERM · Live tracking active',
-      notificationBody:  'Sharing your location with HR until you check out. Do not swipe away.',
-      notificationColor: '#4CAF50',
-      // killServiceOnDestroy: false — keep the foreground service alive
-      // even if the user swipes the task away from "Recent apps". The OS
-      // will resurrect the background task callback on the next location
-      // delivery. (Defaults to false in expo-location ≥ 16, but we set
-      // it explicitly so a future default-change doesn't silently break.)
-      killServiceOnDestroy: false,
-    } : undefined,
-  });
-  console.log('[bg-location] background updates started');
-  return true;
+  // #438 — CRITICAL: wrap the actual OS-service start in try/catch. On
+  // Android 14+ startLocationUpdatesAsync frequently REJECTS ("foreground
+  // service of type location not allowed", "cannot start FGS from
+  // background", missing runtime permission). This function is contracted to
+  // return a boolean, and several callers `await` it without their own
+  // try/catch — an escaping rejection here becomes an unhandled promise
+  // rejection, which Hermes can turn into a hard app crash on Android. On any
+  // failure we log, record the diagnostic event, and return false (tracking
+  // degrades to the FG timer + the parallel bg-actions service).
+  try {
+    await appendEvent('start', 'startLocationUpdatesAsync invoked');
+    await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+      accuracy:         Location.Accuracy.Highest,
+      timeInterval:     120 * 1000,
+      distanceInterval: 0,
+      showsBackgroundLocationIndicator: true,
+      pausesUpdatesAutomatically:       false,
+      activityType:                     Location.ActivityType.OtherNavigation,
+      deferredUpdatesInterval:          0,
+      deferredUpdatesDistance:          0,
+      mayShowUserSettingsDialog:        true,
+      foregroundService: Platform.OS === 'android' ? {
+        // Sticky notification keeps the foreground service alive even
+        // through Doze and app-swipe-away on most Android OEMs.
+        notificationTitle: 'Tesco ERM · Live tracking active',
+        notificationBody:  'Sharing your location with HR until you check out. Do not swipe away.',
+        notificationColor: '#4CAF50',
+        // killServiceOnDestroy: false — keep the foreground service alive
+        // even if the user swipes the task away from "Recent apps". The OS
+        // will resurrect the background task callback on the next location
+        // delivery. (Defaults to false in expo-location ≥ 16, but we set
+        // it explicitly so a future default-change doesn't silently break.)
+        killServiceOnDestroy: false,
+      } : undefined,
+    });
+    console.log('[bg-location] background updates started');
+    return true;
+  } catch (e: any) {
+    console.warn('[bg-location] startLocationUpdatesAsync failed:', e?.message || e);
+    try { await appendEvent('error', 'startLocationUpdatesAsync: ' + (e?.message || String(e))); } catch {}
+    return false;
+  }
 }
 
 /**

@@ -63,6 +63,13 @@ export default function SideDrawer({ visible, onClose, user }: Props) {
   // and designation shown here are identical to what the Profile screen
   // shows — no chance of the two drifting apart because of stale cache.
   const [profile, setProfile] = useState<{ name?: string; designation?: string; photoUrl?: string }>({});
+  // #440 — mounted guard so the cold-start getProfile() fetch can't setState
+  // on a torn-down drawer.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const loadProfile = useCallback(async () => {
     // 1. Paint immediately from AsyncStorage so the drawer never flashes
@@ -71,7 +78,7 @@ export default function SideDrawer({ visible, onClose, user }: Props) {
       const cached = await AsyncStorage.getItem('user');
       if (cached) {
         const p = JSON.parse(cached);
-        setProfile((cur) => ({ ...cur, ...p }));
+        if (mountedRef.current) setProfile((cur) => ({ ...cur, ...p }));
       }
     } catch {/* ignore */}
 
@@ -80,7 +87,7 @@ export default function SideDrawer({ visible, onClose, user }: Props) {
     try {
       const res  = await profileAPI.getProfile();
       const data = res?.data || {};
-      setProfile({
+      if (mountedRef.current) setProfile({
         name:        data.name,
         designation: data.designation,
         photoUrl:    data.photoUrl,
