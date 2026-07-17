@@ -80,11 +80,20 @@ export default function PingDebugScreen() {
     try {
       const r = await syncMissingPingsFromLocal('manual-verify');
       if (mountedRef.current) {
-        setVerifyMsg(
-          r.status === 'Success'
-            ? `Done. Newly inserted into MongoDB: ${r.inserted}. Already there: ${r.alreadyExisted}. Confirmed: ${r.markedSynced}.`
-            : `Sync ${r.status}. Uploaded ${r.inserted}, existing ${r.alreadyExisted}. Check connection and retry.`
-        );
+        if (r.status === 'Success') {
+          // #435 — Show GROUND TRUTH: what the server re-read from the DB.
+          const stored = (typeof r.storedInDb === 'number') ? r.storedInDb : r.markedSynced;
+          const miss = (typeof r.missing === 'number') ? r.missing : 0;
+          setVerifyMsg(
+            `Server DB: "${r.dbName || '?'}".  Sent ${r.totalReceived}, ` +
+            `actually stored in DB: ${stored}, still missing: ${miss}. ` +
+            (miss > 0
+              ? `⚠ ${miss} ping(s) did NOT persist — kept locally for retry.`
+              : `✔ All present in MongoDB.`)
+          );
+        } else {
+          setVerifyMsg(`Sync ${r.status}. Check connection and retry.`);
+        }
       }
       await load();
     } catch (e: any) {

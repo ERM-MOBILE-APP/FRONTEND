@@ -256,6 +256,9 @@ export async function syncMissingPingsFromLocal(reason: string = 'manual'): Prom
   inserted: number;
   duplicatesSkipped: number;
   markedSynced: number;
+  storedInDb?: number;   // #435 — ground-truth count actually present in MongoDB
+  missing?: number;      // #435 — shipped buckets NOT found in MongoDB
+  dbName?: string;       // #435 — which database the backend is connected to
 }> {
   if (_syncMissingInFlight) {
     console.log(`[missing-pings] ${reason}: already running — skipping`);
@@ -281,6 +284,30 @@ export async function syncMissingPingsFromLocal(reason: string = 'manual'): Prom
     if (rows.length === 0) {
       rows = await listPendingPings(1000);
     }
+
+    // Resolve the current logged-in employeeId FIRST (needed for the
+    // ownership filter below and for the payload).
+    let employeeId = '';
+    try {
+      const raw = await AsyncStorage.getItem('user');
+      if (raw) { const u = JSON.parse(raw); employeeId = String(u?.employeeId || u?.userId || ''); }
+    } catch { /* non-fatal */ }
+
+    // #435 — OWNERSHIP FILTER. The device's SQLite can hold a PREVIOUS
+    // user's un-uploaded pings (login preserves them so they aren't lost).
+    // The batch endpoint attributes every uploaded row to the CALLER's
+    // account, so shipping another employee's rows would misattribute them
+    // (e.g. TES080's pings ending up under TES003). Ship ONLY the current
+    // employee's rows; other employees' rows stay put for their real owner
+    // to upload when they log back in.
+    if (employeeId) {
+      const before = rows.length;
+      rows = rows.filter(r => String(r.employeeId || '').toUpperCase() === employeeId.toUpperCase());
+      if (rows.length !== before) {
+        console.log(`[missing-pings] ${reason}: ownership filter — shipping ${rows.length}/${before} row(s) for ${employeeId} (skipped other employees')`);
+      }
+    }
+
     const totalLocal = rows.length;
     const pendingCount = rows.filter(r => r.status !== 'synced').length;
     console.log(
@@ -290,16 +317,6 @@ export async function syncMissingPingsFromLocal(reason: string = 'manual'): Prom
     if (totalLocal === 0) {
       return { status: 'Success', totalLocal: 0, totalReceived: 0, alreadyExisted: 0, inserted: 0, duplicatesSkipped: 0, markedSynced: 0 };
     }
-
-    // Step 2 — Resolve employeeId from AsyncStorage `user` object.
-    let employeeId = '';
-    try {
-      const raw = await AsyncStorage.getItem('user');
-      if (raw) {
-        const u = JSON.parse(raw);
-        employeeId = u?.employeeId || u?.userId || '';
-      }
-    } catch { /* non-fatal */ }
 
     // Step 3 — Build the payload. Each ping carries the fields the
     // endpoint expects: employeeId + date + localTime + latitude +
@@ -352,12 +369,18 @@ export async function syncMissingPingsFromLocal(reason: string = 'manual'): Prom
       }
     }
 
+    // #435 — Ground-truth fields from the server's fresh DB re-read.
+    const storedInDb = Number(body.storedInDb);
+    const missingCount = Array.isArray(body.missingBuckets) ? body.missingBuckets.length : undefined;
+    const dbName = typeof body.dbName === 'string' ? body.dbName : '';
+
     console.log(
       `[missing-pings] ${reason}: DONE ` +
       `local=${totalLocal} received=${body.totalReceived ?? '?'} ` +
       `existing=${body.alreadyExisted ?? 0} uploaded=${body.inserted ?? 0} ` +
-      `dup-skipped=${body.duplicatesSkipped ?? 0} marked-synced=${markedSynced} ` +
-      `status=Success`
+      `storedInDb=${Number.isFinite(storedInDb) ? storedInDb : '?'} ` +
+      `missing=${missingCount ?? '?'} db=${dbName || '?'} ` +
+      `marked-synced=${markedSynced} status=Success`
     );
 
     return {
@@ -368,6 +391,9 @@ export async function syncMissingPingsFromLocal(reason: string = 'manual'): Prom
       inserted:          Number(body.inserted) || 0,
       duplicatesSkipped: Number(body.duplicatesSkipped) || 0,
       markedSynced,
+      storedInDb:        Number.isFinite(storedInDb) ? storedInDb : undefined,
+      missing:           missingCount,
+      dbName,
     };
   } finally {
     _syncMissingInFlight = false;
@@ -751,18 +777,22 @@ export async function checkoutSyncWithDiffAndVerify(sessionStartMsHint?: number)
 
   console.log(`[checkout-diff] ⇢ Check-Out sync started (window ${new Date(fromMs).toISOString()} → ${new Date(toMs).toISOString()})`);
 
+  let employeeId = '';
+  try { const raw = await AsyncStorage.getItem('user'); if (raw) { const u = JSON.parse(raw); employeeId = String(u?.employeeId || u?.userId || ''); } } catch {}
+
   // Read the local rows for this session (recorded within the window).
   const cutoffHi = toMs + 5 * 60 * 1000; // small grace for a lagging final tick
   let localRows = (await listAllPingsSince(fromMs)).filter(r => r.recordedAt <= cutoffHi);
+  // #435 — OWNERSHIP FILTER: only this employee's rows (see syncMissingPingsFromLocal).
+  if (employeeId) {
+    localRows = localRows.filter(r => String(r.employeeId || '').toUpperCase() === employeeId.toUpperCase());
+  }
   const localCount = localRows.length;
   if (localCount === 0) {
-    console.log('[checkout-diff] no local rows in session window — nothing to sync');
+    console.log('[checkout-diff] no local rows for this employee in session window — nothing to sync');
     return { status: 'Success', localCount: 0, missingBefore: 0, uploaded: 0, deletedFromLocal: 0, retainedForRetry: 0 };
   }
   const localBuckets = localRows.map(r => r.bucket);
-
-  let employeeId = '';
-  try { const raw = await AsyncStorage.getItem('user'); if (raw) { const u = JSON.parse(raw); employeeId = u?.employeeId || u?.userId || ''; } } catch {}
 
   const fromISO = new Date(fromMs).toISOString();
   const toISO   = new Date(cutoffHi).toISOString();
