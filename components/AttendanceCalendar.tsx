@@ -91,6 +91,14 @@ export default function AttendanceCalendar({ refreshKey = 0 }: Props) {
     cells.push({ day: nextDay, current: false, key: `next-${nextDay}` });
     nextDay++;
   }
+  // #447 — Render as explicit 7-day week rows. width:`${100/7}%` (14.2857…%)
+  // rounds up per cell in React Native, so 7 cells wrapped to 6 per row and
+  // every date shifted a column (Sunday fell off the grid). flex:1 cells in
+  // per-week rows guarantee 7 aligned columns.
+  const weeks: (typeof cells)[] = [];
+  for (let i = 0; i < cells.length; i += 7) {
+    weeks.push(cells.slice(i, i + 7));
+  }
 
   const pad = (n: number) => String(n).padStart(2, '0');
   const monthName = cursor.toLocaleString('default', { month: 'long' });
@@ -145,7 +153,9 @@ export default function AttendanceCalendar({ refreshKey = 0 }: Props) {
       </View>
 
       <View style={styles.grid}>
-        {cells.map(({ day, current, key }) => {
+        {weeks.map((week, wi) => (
+        <View key={`week-${wi}`} style={styles.week}>
+        {week.map(({ day, current, key }) => {
           const dateStr = current
             ? `${year}-${pad(month + 1)}-${pad(day)}`
             : '';
@@ -184,6 +194,8 @@ export default function AttendanceCalendar({ refreshKey = 0 }: Props) {
             </View>
           );
         })}
+        </View>
+        ))}
       </View>
 
       <View style={styles.legend}>
@@ -248,9 +260,10 @@ const styles = StyleSheet.create({
     color: '#7A7A7A',
     fontWeight: '600',
   },
-  grid: { flexDirection: 'row', flexWrap: 'wrap' },
+  grid: {},
+  week: { flexDirection: 'row' },
   cell: {
-    width: `${100 / 7}%`,
+    flex: 1,
     alignItems: 'center',
     paddingVertical: 4,
   },

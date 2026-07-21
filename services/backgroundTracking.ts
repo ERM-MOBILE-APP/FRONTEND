@@ -22,10 +22,22 @@ try {
   BackgroundService = require('react-native-background-actions').default;
 } catch { /* not linked yet — startTracking will no-op with warning */ }
 
-let RNGeolocation: any;
-try {
-  RNGeolocation = require('react-native-geolocation-service').default;
-} catch { /* not linked yet — startTracking will no-op with warning */ }
+// #444 — CRITICAL CRASH FIX. We previously read GPS via
+// react-native-geolocation-service (com.agontuk.RNFusedLocation). That library
+// was compiled when Google Play Services' FusedLocationProviderClient was a
+// CLASS, but expo-location@19 pulls in a newer Play Services where it's an
+// INTERFACE. The moment this path called getCurrentPosition() the app died
+// natively with:
+//   FATAL EXCEPTION: mqt_v_native
+//   java.lang.IncompatibleClassChangeError: Found interface
+//   com.google.android.gms.location.FusedLocationProviderClient, but class was
+//   expected  → Process ...tescoerm has died
+// That native crash is UNCATCHABLE from JS (it kills the whole process on the
+// native module thread), which is exactly why the app "exited by itself within
+// a minute" right after tracking started. Fix: drop that library entirely and
+// read GPS through expo-location, which is already used everywhere else in the
+// app and is built against the SAME Play Services version — no class conflict.
+import * as Location from 'expo-location';
 
 const BASE_URL =
   (process.env.EXPO_PUBLIC_API_URL as string | undefined) ||
@@ -236,44 +248,36 @@ async function drainQueue(token: string): Promise<void> {
   if (drained > 0) console.log('[bg-track] drained', drained, 'queued pings');
 }
 
-// ── GPS read via react-native-geolocation-service ────────────────
+// ── GPS read via expo-location (crash-safe; see #444 above) ──────
 async function readPositionOnce(): Promise<{ lat: number; lng: number; accuracy: number | null; speed: number | null } | null> {
-  if (!RNGeolocation) return null;
-  return new Promise((resolve) => {
-    let done = false;
-    // #438 — Capture and CLEAR the safety timeout when the GPS callback wins,
-    // instead of leaving a ~16 s timer pending on every read. Over an 8-hour
-    // shift (one read / 2 min) that was hundreds of live timers accumulating.
-    let safetyTimer: any = null;
-    const finish = (v: any) => {
-      if (done) return;
-      done = true;
-      if (safetyTimer) { try { clearTimeout(safetyTimer); } catch {} safetyTimer = null; }
-      resolve(v);
-    };
+  if (!Location || typeof Location.getCurrentPositionAsync !== 'function') return null;
+  // Race the real fix against a hard safety timeout so a stuck GPS read can
+  // never hang the tracking tick. Whichever settles first wins; everything is
+  // wrapped so a throw/rejection resolves to null instead of bubbling up as an
+  // unhandled rejection.
+  const readFix = (async () => {
     try {
-      RNGeolocation.getCurrentPosition(
-        (pos: any) => finish({
-          lat:      pos?.coords?.latitude,
-          lng:      pos?.coords?.longitude,
-          accuracy: typeof pos?.coords?.accuracy === 'number' ? pos.coords.accuracy : null,
-          speed:    typeof pos?.coords?.speed    === 'number' ? pos.coords.speed    : null,
-        }),
-        () => finish(null),
-        {
-          enableHighAccuracy: true,
-          timeout: GPS_TIMEOUT_MS,
-          maximumAge: 30_000,
-          distanceFilter: 0,
-          forceRequestLocation: true,
-          forceLocationManager: false,
-          showLocationDialog: true,
-        }
-      );
-    } catch { finish(null); }
-    // hard safety timeout (cleared by finish() when GPS resolves first)
-    safetyTimer = setTimeout(() => finish(null), GPS_TIMEOUT_MS + 1_000);
-  });
+      const pos: any = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+      return {
+        lat:      pos?.coords?.latitude,
+        lng:      pos?.coords?.longitude,
+        accuracy: typeof pos?.coords?.accuracy === 'number' ? pos.coords.accuracy : null,
+        speed:    typeof pos?.coords?.speed    === 'number' ? pos.coords.speed    : null,
+      };
+    } catch {
+      return null;
+    }
+  })();
+  const timeout = new Promise<null>((resolve) =>
+    setTimeout(() => resolve(null), GPS_TIMEOUT_MS + 1_000)
+  );
+  try {
+    return await Promise.race([readFix, timeout]);
+  } catch {
+    return null;
+  }
 }
 
 // ── POST helper with burst guard + queue-on-failure ──────────────
@@ -514,7 +518,7 @@ const options = {
 
 /** Start the background-actions foreground service. */
 export async function startBackgroundTracking(): Promise<boolean> {
-  if (!BackgroundService || !RNGeolocation) {
+  if (!BackgroundService || !Location || typeof Location.getCurrentPositionAsync !== 'function') {
     console.log('Tracking not available — native libs not linked');
     return false;
   }
@@ -558,24 +562,52 @@ export function isBackgroundTrackingRunning(): boolean {
   } catch { return false; }
 }
 
-/** Request Android runtime permissions the task needs. Safe on iOS. */
+// #445 — FLICKER / "app exits" ROOT CAUSE. This function was calling
+// PermissionsAndroid.request() unconditionally on every invocation. On
+// cold-boot resume it runs, opens the OS GrantPermissionsActivity dialog,
+// which STEALS FOCUS from our app → that focus change re-renders the home
+// screen → the mount effect re-fires → this runs again → another dialog →
+// focus stolen again … an infinite ping-pong between our window and
+// com.google.android.permissioncontroller, seen in logcat as 15+ focus
+// switches in 2 seconds. To the user that is exactly "continuous flicker /
+// the app throws me out". TWO guards below break the loop for good:
+//   1. _permInFlight — if a request is already running, return the SAME
+//      promise instead of opening a second dialog (kills concurrent storms).
+//   2. check() BEFORE request() — an already-granted permission never
+//      re-opens a dialog, so steady state is silent.
+let _permInFlight: Promise<'granted' | 'denied' | 'never_ask'> | null = null;
+
 export async function requestTrackingPermissions(): Promise<'granted' | 'denied' | 'never_ask'> {
   if (Platform.OS !== 'android') return 'granted';
+  if (_permInFlight) return _permInFlight;         // dedupe concurrent callers
+  _permInFlight = (async (): Promise<'granted' | 'denied' | 'never_ask'> => {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { PermissionsAndroid } = require('react-native');
-    const fg = await PermissionsAndroid.request(
-      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-      { title: 'Location', message: 'Tesco ERM needs location access to record your live work status.', buttonPositive: 'Allow' }
-    );
+    // check() first — if already granted, DON'T open a dialog (this is what
+    // stops the re-prompt loop once the user has granted once).
+    const fineAlready = await PermissionsAndroid.check(
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+    ).catch(() => false);
+    const fg = fineAlready
+      ? PermissionsAndroid.RESULTS.GRANTED
+      : await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          { title: 'Location', message: 'Tesco ERM needs location access to record your live work status.', buttonPositive: 'Allow' }
+        );
     if (fg !== PermissionsAndroid.RESULTS.GRANTED) {
       return fg === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN ? 'never_ask' : 'denied';
     }
     try {
-      const bg = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
-        { title: 'Background location', message: 'Allow all the time so HR can see your live status while the app is closed.', buttonPositive: 'Allow' }
-      );
+      const bgAlready = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION
+      ).catch(() => false);
+      const bg = bgAlready
+        ? PermissionsAndroid.RESULTS.GRANTED
+        : await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+            { title: 'Background location', message: 'Allow all the time so HR can see your live status while the app is closed.', buttonPositive: 'Allow' }
+          );
       if (bg !== PermissionsAndroid.RESULTS.GRANTED) return 'denied';
     } catch { /* not required on Android < 10 */ }
     // #421 — CRITICAL FIX. Without POST_NOTIFICATIONS on Android 13+ the
@@ -584,14 +616,19 @@ export async function requestTrackingPermissions(): Promise<'granted' | 'denied'
     // reason bg tracking was dying the moment the app went to background.
     try {
       if (PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS) {
-        const notif = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-          {
-            title: 'Notification',
-            message: 'Tesco ERM needs to show a small notification while tracking so Android does not stop location updates.',
-            buttonPositive: 'Allow',
-          }
-        );
+        const notifAlready = await PermissionsAndroid.check(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+        ).catch(() => false);
+        const notif = notifAlready
+          ? PermissionsAndroid.RESULTS.GRANTED
+          : await PermissionsAndroid.request(
+              PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+              {
+                title: 'Notification',
+                message: 'Tesco ERM needs to show a small notification while tracking so Android does not stop location updates.',
+                buttonPositive: 'Allow',
+              }
+            );
         if (notif !== PermissionsAndroid.RESULTS.GRANTED) {
           console.warn('[permissions] POST_NOTIFICATIONS denied — FGS may be killed by Android after ~10s');
         }
@@ -620,4 +657,13 @@ export async function requestTrackingPermissions(): Promise<'granted' | 'denied'
     } catch { /* expo-notifications not installed — fallback to r-n-b-a default */ }
     return 'granted';
   } catch { return 'denied'; }
+  })();
+  try {
+    return await _permInFlight;
+  } finally {
+    // Release the in-flight lock so a genuine later re-check (e.g. user
+    // toggled the permission in Settings and came back) can run again — but
+    // by then check() short-circuits granted perms, so no dialog storm.
+    _permInFlight = null;
+  }
 }

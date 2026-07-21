@@ -78,8 +78,7 @@
         }
       ],
       "expo-font",
-      "expo-sqlite",
-      "./plugins/withRnbaForegroundServiceType"
+      "expo-sqlite"
     ],
     "extra": {
       "router": {},

@@ -173,6 +173,50 @@ class RootErrorBoundary extends React.Component<
   }
 }
 
+// #443 — LAST-CRASH SURFACER. The crash guards above persist every crash to
+// `erm-last-crash-v1`, but nothing ever showed it — so a crash-then-reopen
+// looked silent. This banner reads that record on launch and displays the
+// label + message + first stack lines on EVERY screen, so the exact cause of
+// an "app exits by itself" is visible without needing adb/logcat. Dismissible;
+// "Clear" wipes it. Reading/rendering is fully guarded so the banner itself
+// can never crash the app.
+function LastCrashBanner() {
+  const [crash, setCrash] = React.useState<any>(null);
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(LAST_CRASH_KEY);
+        if (raw && alive) setCrash(JSON.parse(raw));
+      } catch { /* ignore */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+  if (!crash) return null;
+  return (
+    <View style={crashBannerStyles.wrap} pointerEvents="box-none">
+      <View style={crashBannerStyles.card}>
+        <Text style={crashBannerStyles.title}>⚠ Last crash captured</Text>
+        <ScrollView style={{ maxHeight: 160 }}>
+          <Text selectable style={crashBannerStyles.body}>
+            {String(crash?.label || 'crash')} — {String(crash?.msg || '')}
+            {crash?.ts ? `\n@ ${crash.ts}` : ''}
+            {crash?.stack ? `\n\n${String(crash.stack).slice(0, 700)}` : ''}
+          </Text>
+        </ScrollView>
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8 }}>
+          <TouchableOpacity
+            onPress={() => { AsyncStorage.removeItem(LAST_CRASH_KEY).catch(() => {}); setCrash(null); }}
+            style={crashBannerStyles.btn}
+          >
+            <Text style={crashBannerStyles.btnText}>Dismiss</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 export default function RootLayout() {
   // Signal to the API layer that expo-router's navigator is mounted and
   // router.replace() can now be called safely. Without this, a background
@@ -184,6 +228,7 @@ export default function RootLayout() {
 
   return (
     <RootErrorBoundary>
+      <LastCrashBanner />
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(auth)/login" />
         <Stack.Screen
@@ -252,5 +297,48 @@ const errorStyles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
     fontSize: 15,
+  },
+});
+
+// #443 — Last-crash banner styles. Rendered as a top overlay so it appears
+// above whatever screen the user lands on. box-none wrap lets touches pass
+// through everywhere except the card itself.
+const crashBannerStyles = StyleSheet.create({
+  wrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 9999,
+    elevation: 9999,
+    paddingTop: 40,
+    paddingHorizontal: 10,
+  },
+  card: {
+    backgroundColor: '#7F1D1D',
+    borderRadius: 10,
+    padding: 12,
+  },
+  title: {
+    color: '#FFF',
+    fontWeight: '700',
+    fontSize: 13,
+    marginBottom: 6,
+  },
+  body: {
+    color: '#FEE2E2',
+    fontSize: 11,
+    fontFamily: 'Courier',
+  },
+  btn: {
+    backgroundColor: '#FCA5A5',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  btnText: {
+    color: '#7F1D1D',
+    fontWeight: '700',
+    fontSize: 12,
   },
 });

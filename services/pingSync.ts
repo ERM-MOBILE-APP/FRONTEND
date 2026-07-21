@@ -39,6 +39,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 let _flushing = false;
 let _lastFlushAt = 0;
 let _listenerAttached = false;
+// #450 — re-entrancy guard for the automatic 10-minute "Verify & Upload".
+let _autoVerifying = false;
 
 // Max rows to send per drain cycle. Kept modest so the network
 // interceptor's retry backoff doesn't monopolise the queue.
@@ -189,6 +191,45 @@ export function startPingSyncListener(): () => void {
     syncIfCheckedOut('periodic-5min');
   }, 5 * 60_000);
 
+  // #450 — AUTOMATIC "Verify & Upload to MongoDB", every 10 minutes.
+  //
+  // This replaces the need for the user to tap the ping-debug "Verify &
+  // upload to MongoDB now" button. It calls the EXACT SAME function that
+  // button calls — verifyAndHealAgainstMongo() — so the verification and
+  // upload logic is completely unchanged; only the trigger is new.
+  //
+  // Why it satisfies the requirements:
+  //   • No user interaction — fired by this interval.
+  //   • No duplicates — verifyAndHealAgainstMongo diffs local pings against
+  //     what's already in MongoDB (by 2-min bucket) and uploads ONLY the
+  //     missing buckets; the server also enforces a unique (user,date,bucket)
+  //     index, so re-running it is fully idempotent.
+  //   • Verify-first / upload-only-missing — that is exactly what the
+  //     function already does (fetch Mongo buckets → diff → upload missing →
+  //     re-read to verify).
+  //
+  // Runs whenever the JS runtime is alive: foreground, and — because the
+  // location foreground-service keeps JS running — while the app is minimized
+  // or the screen is locked. It cannot run after a force-stop (OS limit);
+  // Check-Out sync + next-open reconcile backstop that case.
+  const AUTO_VERIFY_MS = 10 * 60_000;
+  const runAutoVerify = async () => {
+    if (_autoVerifying) return;                 // never overlap a slow run
+    try {
+      const token = await AsyncStorage.getItem('token');
+      if (!token) return;                       // logged out — nothing to sync
+    } catch { return; }
+    _autoVerifying = true;
+    try {
+      await verifyAndHealAgainstMongo('auto-10min');
+    } catch (e: any) {
+      console.log('[pingSync] auto verify-and-heal failed:', e?.message || e);
+    } finally {
+      _autoVerifying = false;
+    }
+  };
+  const verifyHealTimer = setInterval(() => { runAutoVerify(); }, AUTO_VERIFY_MS);
+
   // One-shot flush on registration so cold-boot doesn't wait for the
   // first NetInfo event. #430 — gated: only retries leftover pings when
   // the employee is checked out.
@@ -207,6 +248,9 @@ export function startPingSyncListener(): () => void {
     // in progress. On repeat logins this doubled up: two timers, two
     // 401s per cycle. Explicit clear closes the leak permanently.
     if (missingPingsTimer) clearInterval(missingPingsTimer);
+    // #450 — clear the automatic 10-minute verify-and-heal timer too, so it
+    // doesn't leak across logout/login like the missing-pings timer used to.
+    if (verifyHealTimer) clearInterval(verifyHealTimer);
   };
 }
 

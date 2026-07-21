@@ -325,6 +325,18 @@ export default function AttendanceScreen() {
   while (cells.length % 7 !== 0) {
     cells.push({ day: 0, current: false, key: `trail-${cells.length}` });
   }
+  // #447 — Chunk into explicit 7-day week rows. Previously every cell used
+  // width:`${100/7}%` inside one flex-wrap container. That percentage is a
+  // long-repeating decimal (14.285714…%) which React Native rounds UP per
+  // cell, so 7 cells no longer fit on one line and the grid wrapped at SIX
+  // per row — pushing Sunday off the grid and shifting every date one column
+  // left (July 5 rendered under Monday instead of Sunday). Rendering each
+  // week as its own row of flex:1 cells guarantees exactly 7 equal columns
+  // that line up with the Mon–Sun header, so dates land on the correct day.
+  const weeks: (typeof cells)[] = [];
+  for (let i = 0; i < cells.length; i += 7) {
+    weeks.push(cells.slice(i, i + 7));
+  }
 
   const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -478,7 +490,9 @@ export default function AttendanceScreen() {
           </View>
 
           <View style={styles.grid}>
-            {cells.map(({ day, current, key }) => {
+            {weeks.map((week, wi) => (
+            <View key={`week-${wi}`} style={styles.week}>
+            {week.map(({ day, current, key }) => {
               // Empty placeholder cell (leading offset or trailing
               // padding to complete the final row). Render an empty
               // <View> so the grid stays a perfect 7-column track.
@@ -554,6 +568,8 @@ export default function AttendanceScreen() {
                 </View>
               );
             })}
+            </View>
+            ))}
           </View>
 
           <View style={styles.legendRow}>
@@ -1061,7 +1077,6 @@ const styles = StyleSheet.create({
   },
   daysRow: {
     flexDirection: 'row',
-    paddingHorizontal: 4,
     marginBottom: 4,
   },
   dayLabel: {
@@ -1071,9 +1086,12 @@ const styles = StyleSheet.create({
     color: '#7A7A7A',
     fontWeight: '600',
   },
-  grid: { flexDirection: 'row', flexWrap: 'wrap' },
+  // #447 — grid is now a vertical stack of week rows; each week is a row of
+  // 7 flex:1 cells so columns are always equal and aligned with the header.
+  grid: {},
+  week: { flexDirection: 'row' },
   cell: {
-    width: `${100 / 7}%`,
+    flex: 1,
     alignItems: 'center',
     paddingVertical: 4,
   },

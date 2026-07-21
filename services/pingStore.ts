@@ -746,32 +746,28 @@ export async function markLastPingAt(atMs: number = Date.now()): Promise<void> {
 }
 
 /**
- * #430 — STRICT "SQLite is the source of truth during the shift" policy.
+ * #449 — LIVE TRACKING (reverses the earlier "upload only at Check Out" rule).
  *
- * HR requirement (Jul 2026, final): location pings must NEVER be uploaded
- * while the employee is checked in. Every ping is written to SQLite only;
- * the SINGLE upload to MongoDB happens at Check Out via
- * finalCheckoutSyncAndCleanup(). Leftover pings from a checkout whose
- * upload failed may be retried in the background — but ONLY while the
- * employee is checked OUT (so we still never touch the network during a
- * working session).
+ * New HR requirement: the employee's location must be visible in HRMS in REAL
+ * TIME during the shift — not only after Check Out. So uploading is now allowed
+ * at all times and this gate returns true.
+ *
+ * This does NOT weaken the no-data-loss guarantee. The pipeline is still:
+ *   1. Every ping is written to SQLite FIRST (savePendingPing) — source of truth.
+ *   2. The collection path then uploads it live; on success it's marked 'synced'.
+ *   3. If the upload fails (offline / server down) the row stays 'pending' and
+ *      is retried by the pingSync listener (on reconnect + on a periodic timer).
+ *   4. Check Out still runs finalCheckoutSyncAndCleanup() as a final safety net
+ *      to sweep up any stragglers.
+ * Net effect: live visibility during the shift AND the same guarantee that no
+ * ping is ever lost.
  *
  * This helper is the ONE gate every collection/sync path consults before
- * hitting the network:
- *   • true  → not checked in → uploading is allowed (checkout / leftover retry)
- *   • false → checked in (working) → store to SQLite only, do NOT upload
- *
- * Fails CLOSED: if the tracking state can't be read we assume "working"
- * and refuse to upload, so a corrupt/missing state can never cause an
- * accidental mid-shift upload. The checkout flow reconciles regardless.
+ * hitting the network. It now returns true unconditionally (live upload).
+ * The former "store-to-SQLite-only" branches in each caller simply never run.
  */
 export async function isUploadAllowedNow(): Promise<boolean> {
-  try {
-    const st = await getTrackingState();
-    return !st?.checkedIn;
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 /**

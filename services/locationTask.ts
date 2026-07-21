@@ -2,7 +2,7 @@
 import * as TaskManager from 'expo-task-manager';
 import * as Location    from 'expo-location';
 import AsyncStorage     from '@react-native-async-storage/async-storage';
-import { Platform }     from 'react-native';
+import { Platform, AppState } from 'react-native';
 // #419 — SQLite save-then-send from the bg-task path. Previously only the
 // FG-timer POST route (services/api.ts) persisted to SQLite; the bg-task
 // posted directly and left no local trace, so the missing-pings sync
@@ -421,6 +421,13 @@ async function drainQueue(token: string): Promise<void> {
   if (drained > 0) console.log('[bg-location] drained', drained, 'pings; remaining', remaining.length);
 }
 
+// #442 — Wrap the top-level defineTask CALL itself. app/_layout.tsx imports
+// this module at app launch, so if expo-task-manager is missing/unlinked in a
+// given build and `defineTask` throws synchronously, it would crash the whole
+// app at startup (before any UI or the error boundary exists). Guarding it
+// lets the app boot even in that edge case — tracking simply won't register.
+try {
+if (TaskManager && typeof TaskManager.defineTask === 'function') {
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   // ═══════════════════════════════════════════════════════════════════
   // CRASH GUARD — ROOT CAUSE OF "APP EXITS UNEXPECTEDLY" (#279 Jun 2026)
@@ -679,6 +686,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // the callback with a clean stack.
   }
 });
+}
+} catch (e: any) {
+  // Never let task registration crash app startup.
+  console.warn('[bg-location] defineTask registration failed (non-fatal):', e?.message || e);
+}
 
 /**
  * Start the background location task. Call this from the foreground after
@@ -691,7 +703,39 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
  *   • foreground "When in Use" permission (already requested at check-in)
  *   • "Always" permission (requested lazily here for Android Q+ / iOS)
  */
+// #448 — In-flight guard so rapid/parallel callers (cold-boot resume, the
+// guardian, foreground-resume) don't each open a background-permission dialog
+// or race a duplicate startLocationUpdatesAsync. Concurrent callers share the
+// same promise. This, plus the check-first + foreground guards below, is what
+// killed the 408-dialog flicker loop and the repeated
+// "Foreground service cannot be started when the application is in the
+// background" rejections.
+let _bgStartInFlight: Promise<boolean> | null = null;
+
 export async function startBackgroundLocationUpdates(): Promise<boolean> {
+  if (_bgStartInFlight) return _bgStartInFlight;
+  _bgStartInFlight = _startBackgroundLocationUpdatesInner();
+  try {
+    return await _bgStartInFlight;
+  } finally {
+    _bgStartInFlight = null;
+  }
+}
+
+async function _startBackgroundLocationUpdatesInner(): Promise<boolean> {
+  // #448 — HARD FOREGROUND GATE. Android 12+ forbids starting a foreground
+  // service while the app is in the background — expo-location rejects with
+  // "Foreground service cannot be started when the application is in the
+  // background". Attempting it anyway (from the guardian/retry loop) just
+  // fails, so the task never registers, so the guardian retries, so it
+  // requests background permission again → the OS dialog reopens → the app is
+  // pushed to "background" again → repeat (the 408-dialog loop). If we're not
+  // actively foregrounded, DON'T try: bail quietly. It will be (re)started the
+  // next time the app is genuinely in the foreground.
+  if (Platform.OS === 'android' && AppState.currentState !== 'active') {
+    console.log('[bg-location] deferred — app not foregrounded (cannot start FGS from background)');
+    return false;
+  }
   // #405 — PARALLEL-TRACKER POLICY (supersedes #391 single-tracker guard).
   //
   // We now run BOTH bg systems in parallel for maximum resilience:
@@ -719,9 +763,26 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
   try {
     const fg = await Location.getForegroundPermissionsAsync();
     if (fg.status !== 'granted') return false;
-    const bg = await Location.requestBackgroundPermissionsAsync();
-    if (bg.status !== 'granted') {
-      console.warn('[bg-location] background permission denied — only foreground pings will fire, so HR will see "Location off" within ~20 min of the user backgrounding the app.');
+    // #448 — CHECK BEFORE PROMPTING. This used to call
+    // requestBackgroundPermissionsAsync() unconditionally on EVERY invocation,
+    // so every guardian/retry tick reopened the "Allow all the time" dialog —
+    // 408 dialogs in one capture, the flicker/exit loop. Now: read the current
+    // status first; only open the OS dialog when it's genuinely still
+    // askable ('undetermined'). If already granted → proceed silently. If the
+    // user has denied it → do NOT nag on a loop; degrade to foreground pings
+    // and let them enable "Allow all the time" from Settings later.
+    const bgCurrent = await Location.getBackgroundPermissionsAsync().catch(() => null);
+    if (bgCurrent && bgCurrent.status === 'granted') {
+      // already granted — no dialog
+    } else if (bgCurrent && bgCurrent.canAskAgain !== false && bgCurrent.status === 'undetermined') {
+      const bg = await Location.requestBackgroundPermissionsAsync();
+      if (bg.status !== 'granted') {
+        console.warn('[bg-location] background permission not granted — foreground pings only.');
+        return false;
+      }
+    } else {
+      // denied / cannot-ask-again — do not loop the dialog.
+      console.warn('[bg-location] background permission unavailable (denied or not askable) — foreground pings only.');
       return false;
     }
   } catch (e: any) {
@@ -791,7 +852,13 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
   try {
     await appendEvent('start', 'startLocationUpdatesAsync invoked');
     await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-      accuracy:         Location.Accuracy.Highest,
+      // #452 — Was Accuracy.Highest (pure GPS). Indoors, pure GPS often never
+      // locks, so the OS delivered few or NO background updates and whole
+      // stretches of a shift recorded nothing. Accuracy.High still uses GPS
+      // but lets the fused provider assist with Wi-Fi/cell, so updates keep
+      // arriving indoors. Precision is still protected downstream: filterFix()
+      // swaps in the stored anchor for any fix coarser than the 30 m gate.
+      accuracy:         Location.Accuracy.High,
       timeInterval:     120 * 1000,
       distanceInterval: 0,
       showsBackgroundLocationIndicator: true,
@@ -1020,6 +1087,13 @@ export async function stopBackgroundLocationUpdates(reason: string = 'manual'): 
  */
 export async function reviveBackgroundLocationUpdates(reason: string): Promise<boolean> {
   try {
+    // #448 — Never tear down the running task while backgrounded. The restart
+    // below can only succeed in the foreground (Android 12+ FGS rule), so if
+    // we stop-then-fail we'd KILL a perfectly good background task and leave
+    // tracking dead until the next foreground. Bail out untouched instead.
+    if (Platform.OS === 'android' && AppState.currentState !== 'active') {
+      return false;
+    }
     await appendEvent('revive', 'starting revival: ' + reason);
     // Force stop first — handles the zombie-task case.
     try {

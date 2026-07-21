@@ -306,6 +306,14 @@ const LiveWorkedHours = memo(function LiveWorkedHours({
   );
 });
 
+// #445 — Process-level one-shot guard for the cold-boot resume block. The
+// mount effect can re-fire (its deps are the refresh callbacks, and the
+// permission dialog stealing focus forces re-renders). Without this, the
+// permission request + tracker start ran on every re-fire, producing the
+// GrantPermissionsActivity flicker loop. This flag ensures that heavy,
+// dialog-opening resume work runs AT MOST ONCE per app process.
+let _coldBootResumeStarted = false;
+
 export default function HomeScreen() {
   const [user, setUser] = useState<any>(null);
   // nowRef: mutable reference to the current Date, updated by LiveClock
@@ -710,21 +718,30 @@ export default function HomeScreen() {
             // "app just crashed after check-in". Better to skip the
             // start silently and let the user grant the permission the
             // next time they tap Check In.
-            try {
-              const permResult = await requestTrackingPermissions().catch(() => 'denied' as const);
-              if (permResult === 'granted') {
-                await startBackgroundTracking().catch(() => {});
-              } else {
-                console.warn('[cold-boot resume] tracking permissions not granted (' + permResult + ') — skipping FGS start');
+            // #445 — Run the permission request + native tracker starts AT
+            // MOST ONCE per app process. Re-running them was what re-opened
+            // the OS permission dialog on every focus-triggered re-render,
+            // creating the flicker/"app exits" loop. The permission function
+            // is itself now check-first + de-duped, but this guard also stops
+            // the loop in the DENIED case (where check() stays false).
+            if (!_coldBootResumeStarted) {
+              _coldBootResumeStarted = true;
+              // #446 — Ask for permissions ONCE, then start ONLY the
+              // expo-location background service. react-native-background-
+              // actions was removed (its FGS crashed on Android 14+/SDK 36).
+              try {
+                await requestTrackingPermissions().catch(() => 'denied' as const);
+              } catch (e: any) {
+                console.warn('[cold-boot resume] permission request failed:', e?.message || e);
               }
-            } catch (e: any) {
-              console.warn('[cold-boot resume] startBackgroundTracking failed:', e?.message || e);
-            }
-            // Secondary: expo-task-manager OS-scheduled callback.
-            try {
-              await startBackgroundLocationUpdates().catch(() => {});
-            } catch (e: any) {
-              console.warn('[cold-boot resume] startBackgroundLocationUpdates failed:', e?.message || e);
+              // expo-location OS-scheduled background location service.
+              try {
+                await startBackgroundLocationUpdates().catch(() => {});
+              } catch (e: any) {
+                console.warn('[cold-boot resume] startBackgroundLocationUpdates failed:', e?.message || e);
+              }
+            } else {
+              console.log('[cold-boot resume] permissions/trackers already started this process — skipping re-request');
             }
             // Foreground guardian + AppState re-check.
             try { startTracking(); } catch (e: any) {
@@ -1082,25 +1099,51 @@ export default function HomeScreen() {
         // ±50–80 m error, which made every foreground ping drift on the
         // map. Indoor / urban-canyon worst case still falls back to
         // last-known if Highest takes too long.
+        // #452 — NO-MISSED-PINGS FIX. Previously this made ONE attempt at
+        // Accuracy.Highest (pure GPS) and, if that failed, only accepted a
+        // cached fix that was already ≤50 m accurate. Indoors — where pure GPS
+        // cannot lock — both failed and the tick returned early, logging
+        // "no fix available this cycle — skipping ping". Confirmed in a live
+        // logcat: `fix = null` / "Current location is unavailable", and NOT a
+        // single ping was recorded for the whole session. That directly
+        // violates the "no missed pings" requirement.
+        //
+        // New ladder — try progressively easier sources and only give up if
+        // ALL of them fail:
+        //   1. Highest (pure GPS)  — best precision outdoors.
+        //   2. Balanced            — uses Wi-Fi/cell, which DOES resolve
+        //                            indoors where pure GPS returns nothing.
+        //   3. Last-known, ANY accuracy, up to 15 min old.
+        // A coarse ping is far better than a missing one: filterFix() already
+        // substitutes the stored anchor when accuracy is worse than the 30 m
+        // gate, so precision is still protected downstream.
         let fix: Location.LocationObject | null = null;
         try {
           fix = await Promise.race([
             Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 6000)),
           ]) as Location.LocationObject | null;
         } catch { fix = null; }
         if (!fix) {
-          // Fallback — accept a cached fix up to 5 minutes old, but
-          // require it to already be at least 50m accurate (anything
-          // coarser would just get rejected by the filter anyway).
+          // Tier 2 — Balanced resolves indoors via Wi-Fi/cell triangulation.
+          try {
+            fix = await Promise.race([
+              Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+            ]) as Location.LocationObject | null;
+          } catch { fix = null; }
+        }
+        if (!fix) {
+          // Tier 3 — any cached fix, no accuracy floor. Dropping
+          // requiredAccuracy is deliberate: a 100 m cached point still proves
+          // the employee was on site, whereas skipping records nothing at all.
           fix = await Location.getLastKnownPositionAsync({
-            maxAge: 5 * 60 * 1000,
-            requiredAccuracy: 50,
+            maxAge: 15 * 60 * 1000,
           }).catch(() => null);
         }
         if (!fix) {
           console.warn(
-  `[tracking] ${new Date().toLocaleString()} - no fix available this cycle — skipping ping`
+  `[tracking] ${new Date().toLocaleString()} - no fix from GPS, network, or cache this cycle — skipping ping`
 );
           return;
         }
@@ -1234,33 +1277,18 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
           await reviveBackgroundLocationUpdates('guardian: heartbeat stale');
         }
 
-        // #421 — CRITICAL FIX. The guardian used to only check the
-        // expo-task-manager path. But the PRIMARY tracker in #405 is the
-        // react-native-background-actions FGS, and that's the one OEMs
-        // (Xiaomi/Oppo/Vivo/Realme) actually SIGKILL first. Without this
-        // check, the FGS could stay dead for the entire rest of the
-        // shift while the OS quietly reported the expo-task-manager task
-        // as "alive" (because OEMs sometimes lie about foreground service
-        // state until reboot).
-        //
-        // Check it AFTER the expo path so a shared revive-in-flight state
-        // doesn't collide with itself.
-        try {
-          const fgsAlive = isBackgroundTrackingRunning();
-          if (!fgsAlive) {
-            console.warn(
-              `[tracking] ${new Date().toLocaleString()} - r-n-b-a FGS is dead — restarting`
-            );
-            const ok = await startBackgroundTracking().catch(() => false);
-            if (ok) {
-              console.log('[tracking] r-n-b-a FGS restart succeeded');
-            } else {
-              console.warn('[tracking] r-n-b-a FGS restart failed — will retry next guardian tick');
-            }
-          }
-        } catch (fgsErr: any) {
-          console.warn('[tracking] r-n-b-a FGS revive attempt errored:', fgsErr?.message || fgsErr);
-        }
+        // #446 — react-native-background-actions has been REMOVED. On
+        // Android 14+/targetSDK 36 its foreground service started with an
+        // invalid service type (InvalidForegroundServiceTypeException:
+        // "Starting FGS with type none has been prohibited"), which crashed
+        // the app the instant this guardian tried to (re)start it — and the
+        // guardian's own retry loop turned that into "crashed too many times,
+        // killing" (a hard crash/exit/flicker loop). Background tracking now
+        // relies solely on expo-location's foreground service
+        // (LocationTaskService), which the OS reported as "Allowed" because
+        // Expo declares its foregroundServiceType correctly. The revive above
+        // (reviveBackgroundLocationUpdates) already keeps that path alive, so
+        // no second FGS to babysit here.
       } catch (err: any) {
         console.warn('[tracking] guardian error:', err?.message || err);
       }
