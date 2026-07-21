@@ -105,7 +105,10 @@ const STATUS_DOT: Record<string, string> = {
  * halfday: green + purple, because they did come in, just for half a day.
  */
 function dotsForStatus(status: string | undefined): string[] {
-  switch (status) {
+  // #453 — normalise first: a day HR edited in HRMS can arrive as
+  // 'On Time' / 'Half Day', which previously fell through to `default`
+  // and drew NO dot on the calendar for that day.
+  switch (normalizeStatus(status)) {
     case 'present':    return [STATUS_DOT.present];
     case 'late':       return [STATUS_DOT.present, STATUS_DOT.late];
     case 'halfday':    return [STATUS_DOT.present, STATUS_DOT.halfday];
@@ -1019,6 +1022,34 @@ function StatCard({ color, label, value }: { color: string; label: string; value
   );
 }
 
+// #453 — Cross-system status normaliser (client-side safety net).
+//
+// ERM and HRMS share one Mongo cluster but use different vocabularies:
+//   ERM  : present | late | absent | permission | halfday | leave
+//   HRMS : 'On Time' | 'Late' | 'Absent' | 'Half Day'  (capitalised)
+// HRMS's mark-status also writes into its own Attendance collection, so a
+// day HR edited could come back as 'On Time' / 'Half Day'. That missed the
+// lowercase lookup below and rendered a grey "—" badge — which is exactly
+// what appeared on the days HR had changed (e.g. Jul 11, Jul 13).
+//
+// The backend now normalises too, but doing it here as well means HR-edited
+// days display correctly IMMEDIATELY, without waiting for a backend deploy,
+// and stay correct against any legacy rows already stored in HRMS wording.
+const STATUS_ALIASES: Record<string, string> = {
+  'on time': 'present', 'ontime': 'present', 'on-time': 'present',
+  'present': 'present',
+  'late': 'late',
+  'absent': 'absent',
+  'leave': 'leave', 'on leave': 'leave',
+  'permission': 'permission',
+  'half day': 'halfday', 'half-day': 'halfday', 'halfday': 'halfday',
+};
+function normalizeStatus(s: any): string {
+  const key = String(s ?? '').trim().toLowerCase();
+  if (!key) return '';
+  return STATUS_ALIASES[key] || key;
+}
+
 function StatusBadge({ status }: { status: Status }) {
   const map: Record<string, { bg: string; fg: string; text: string }> = {
     present:    { bg: '#4CAF50', fg: '#FFFFFF', text: 'Present' },
@@ -1028,7 +1059,8 @@ function StatusBadge({ status }: { status: Status }) {
     halfday:    { bg: '#9C27B0', fg: '#FFFFFF', text: 'Half day' },
     leave:      { bg: '#E96A66', fg: '#FFFFFF', text: 'Leave' },
   };
-  const conf = (status && map[status]) || { bg: '#BDBDBD', fg: '#FFFFFF', text: '—' };
+  const key = normalizeStatus(status);
+  const conf = (key && map[key]) || { bg: '#BDBDBD', fg: '#FFFFFF', text: '—' };
   return (
     <View style={[styles.badge, { backgroundColor: conf.bg }]}>
       <Text style={[styles.badgeText, { color: conf.fg }]}>{conf.text}</Text>

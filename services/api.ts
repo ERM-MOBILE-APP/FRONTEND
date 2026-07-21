@@ -582,9 +582,19 @@ export const announcementAPI = {
   markAllRead: ()           => api.patch('/announcement/read-all'),
 };
 
+// #454 — ROUTE PATH FIX: was '/notifications' (plural), backend mounts
+// '/api/notification' (SINGULAR — see backend src/app.js). Every call 404'd
+// with "Cannot GET /api/notifications/unread-count" (visible on every app
+// open in logcat), so the bell badge never updated and the employee never
+// saw HR's changes.
+//
+// This is why an HR attendance override appeared to "not send a
+// notification": the backend DOES create it (adminMarkStatus calls
+// notify(userRef, …)), the row is written to MongoDB — the app simply could
+// never read it back off the wrong URL.
 export const notificationAPI = {
-  list:       (params?: { limit?: number }) => api.get('/notifications', { params }),
-  markAsRead: (id: string) => api.patch(`/notifications/${id}/read`),
-  markAllRead: () => api.patch('/notifications/read-all'),
-  unreadCount: () => api.get('/notifications/unread-count'),
+  list:       (params?: { limit?: number }) => api.get('/notification', { params }),
+  markAsRead: (id: string) => api.patch(`/notification/${id}/read`),
+  markAllRead: () => api.patch('/notification/read-all'),
+  unreadCount: () => api.get('/notification/unread-count'),
 };
