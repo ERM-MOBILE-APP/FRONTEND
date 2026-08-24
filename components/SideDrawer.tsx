@@ -13,7 +13,7 @@ import {
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { profileAPI } from '../services/api';
+import { profileAPI, getManagerFlagCached, refreshManagerFlag } from '../services/api';
 
 type Props = {
   visible: boolean;
@@ -63,6 +63,10 @@ export default function SideDrawer({ visible, onClose, user }: Props) {
   // and designation shown here are identical to what the Profile screen
   // shows — no chance of the two drifting apart because of stale cache.
   const [profile, setProfile] = useState<{ name?: string; designation?: string; photoUrl?: string }>({});
+  // Whether to show the "Manager" menu entry. Paints from the cached flag
+  // instantly, then re-checks /manager/me in the background when the drawer
+  // opens (so a freshly-promoted manager sees it without re-login).
+  const [isManager, setIsManager] = useState(false);
   // #440 — mounted guard so the cold-start getProfile() fetch can't setState
   // on a torn-down drawer.
   const mountedRef = useRef(true);
@@ -108,7 +112,12 @@ export default function SideDrawer({ visible, onClose, user }: Props) {
       duration: 250,
       useNativeDriver: true,
     }).start();
-    if (visible) loadProfile();
+    if (visible) {
+      loadProfile();
+      // Manager flag: cached first (instant), then refresh from the API.
+      getManagerFlagCached().then((v) => { if (mountedRef.current) setIsManager(v); });
+      refreshManagerFlag().then((v) => { if (mountedRef.current) setIsManager(v); }).catch(() => {});
+    }
   }, [visible, slide, loadProfile]);
 
   const go = (route: string) => {
@@ -117,6 +126,13 @@ export default function SideDrawer({ visible, onClose, user }: Props) {
   };
 
   const menu: MenuItem[] = [
+    // Manager entry — only for users with a team / manager role. Routes to
+    // the dedicated Manager section (approvals, team, tracking, reports).
+    ...(isManager ? [{
+      label: 'Manager',
+      icon: <MaterialCommunityIcons name="shield-account-outline" size={20} color="#2E7D32" />,
+      route: '/manager',
+    } as MenuItem] : []),
     {
       label: 'Profile',
       icon: <Ionicons name="person-outline" size={20} color="#1A1A1A" />,

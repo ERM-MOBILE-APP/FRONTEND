@@ -9,6 +9,11 @@ import { markNavReady } from '../services/api';
 // react-native-background-actions is not linked in a particular build.
 // The primary tracking is now via services/backgroundTracking.ts (#384).
 import '../services/locationTask';
+// #458 — Import bgGeo at startup so Transistorsoft's HEADLESS task is
+// registered at bundle load (required for tracking to continue after the app
+// is terminated / swiped away). Guarded internally — no-ops if the native
+// module isn't linked yet.
+import '../services/bgGeo';
 
 // Persist the last crash detail so when the user reopens the app we
 // can show them what blew up. Otherwise crashes look completely

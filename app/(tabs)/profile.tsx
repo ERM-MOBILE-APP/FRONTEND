@@ -13,7 +13,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { profileAPI, attendanceAPI } from '../../services/api';
-import { stopBackgroundLocationUpdates } from '../../services/locationTask';
+// #458 — background tracker moved to Transistorsoft RNBG (services/bgGeo).
+import { stopBackgroundLocationUpdates } from '../../services/bgGeo';
 // #384 — Also stop the react-native-background-actions tracker on logout.
 import { stopBackgroundTracking } from '../../services/backgroundTracking';
 // #415 — Per-user wipe: clear SQLite tracking_state + pending pings +

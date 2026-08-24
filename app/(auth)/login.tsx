@@ -17,7 +17,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { authAPI, wakeBackend } from '../../services/api';
+import { authAPI, wakeBackend, refreshManagerFlag } from '../../services/api';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -170,6 +170,11 @@ export default function LoginScreen() {
       } else {
         await AsyncStorage.removeItem('rememberedEmail');
       }
+      // Detect manager role in the background so the Home card + drawer
+      // "Manager" entry can appear. Fire-and-forget — never blocks the
+      // navigation into the app, and failures (cold start / not-yet-
+      // deployed backend) just leave the flag unset.
+      refreshManagerFlag().catch(() => {});
       router.replace('/(tabs)/');
     } catch (err: any) {
       // #400 — Show the ACTUAL reason for the failure so HR can act on

@@ -37,10 +37,20 @@ import {
   requestTrackingPermissions,
   isBackgroundTrackingRunning,   // #421 — guardian uses this to detect FGS SIGKILL
 } from '../../services/backgroundTracking';
+// #458 — Background tracker is now Transistorsoft react-native-background-
+// geolocation. These three functions keep the SAME names/signatures they had
+// in locationTask.ts, so every existing call site (check-in start, cold-boot
+// resume, guardian revive, check-out stop, logout) works unchanged — only the
+// import source moved. The ping pipeline downstream (SQLite save + pingSync
+// upload) is identical.
 import {
   startBackgroundLocationUpdates,
   stopBackgroundLocationUpdates,
   reviveBackgroundLocationUpdates,
+  maybeMidnightAutoCheckout,
+} from '../../services/bgGeo';
+// OEM battery/auto-start helpers + foreground diagnostics stay in locationTask.
+import {
   requestBatteryOptimizationExemption,
   openOemAutostartSettings,
   getOemLabel,
@@ -663,6 +673,21 @@ export default function HomeScreen() {
         try {
           const raw = await AsyncStorage.getItem('token');
           if (!raw) return; // logged out — nothing to resume
+          // #463 — MIDNIGHT AUTO-CHECKOUT (restart path). If the phone's own
+          // tracking session crossed IST midnight while the app was closed
+          // (employee forgot to check out), finalize it here FIRST: upload +
+          // verify 100% of pings, then stop tracking. If the sync isn't fully
+          // confirmed it returns 'retry' and leaves the session open so the
+          // resume below keeps tracking and retries. Runs off the phone's own
+          // tracking_state, so it works even though today()'s server view has
+          // already rolled to a new (not-checked-in) day.
+          try {
+            const mid = await maybeMidnightAutoCheckout('cold-boot');
+            if (mid === 'done') {
+              console.log('[cold-boot] previous shift auto-closed at midnight — not resuming tracking');
+              return; // session closed; wait for the next manual Check In
+            }
+          } catch { /* non-fatal — fall through to normal resume */ }
           // refreshToday has already populated the today state; check the ref.
           // We can't read state here (stale closure), so re-check via API for freshness.
           const res = await attendanceAPI.today().catch(() => null);

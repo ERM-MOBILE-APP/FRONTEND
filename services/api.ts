@@ -55,7 +55,7 @@ async function forceLogout(reason: string) {
       const { wipeUserScopedTracking } = require('./pingStore');
       await wipeUserScopedTracking();
     } catch { /* pingStore not ready — the identity multiRemove below still helps */ }
-    await AsyncStorage.multiRemove(['token', 'user', 'userId', 'erm-today-v1']).catch(() => {});
+    await AsyncStorage.multiRemove(['token', 'user', 'userId', 'erm-today-v1', 'erm-is-manager']).catch(() => {});
     // Defer navigation so we never call router.replace() inside a
     // render cycle or response-interceptor callback.
     setTimeout(() => {
@@ -598,3 +598,87 @@ export const notificationAPI = {
   markAllRead: () => api.patch('/notification/read-all'),
   unreadCount: () => api.get('/notification/unread-count'),
 };
+
+// ── Manager surface ───────────────────────────────────────────────────
+// Team-scoped reads + approvals. Mirrors the ERM Web /api/manager routes;
+// backend resolves the caller's team from the `assignedTo` field and
+// 403-guards any write on a request outside the team. A non-manager (no
+// subordinates) gets empty arrays everywhere and cannot act on anyone.
+export const managerAPI = {
+  /** "Am I a manager?" → { isManager, teamSize, signals, directoryName } */
+  me:   () => api.get('/manager/me'),
+  /** The manager's direct-report list. */
+  team: () => api.get('/manager/team'),
+
+  /** Leave + permission requests filed by the team. */
+  leaves: (params?: { status?: string; month?: number; year?: number }) =>
+    api.get('/manager/leaves', { params }),
+  /** Approve/reject a leave/permission request. */
+  actLeave: (id: string, managerStatus: 'Approved' | 'Rejected') =>
+    api.patch(`/manager/leaves/${id}`, { managerStatus }),
+
+  /** Allowance claims (petrol vs travel via ?type=). */
+  allowances: (params?: { type?: 'travel' | 'petrol'; status?: string }) =>
+    api.get('/manager/allowances', { params }),
+  /** Approve (optionally partial) / reject an allowance claim. */
+  actAllowance: (
+    id: string,
+    managerStatus: 'Approved' | 'Rejected',
+    payload?: { approvedAmount?: number; rejectedAmount?: number; amountComment?: string },
+  ) => api.patch(`/manager/allowances/${id}`, { managerStatus, ...(payload || {}) }),
+
+  /** Team attendance for a single date. */
+  attendance: (date?: string) =>
+    api.get('/manager/attendance', { params: date ? { date } : {} }),
+  /** Per-team-member monthly attendance summary (drives Reports). */
+  attendanceSummary: (params?: { month?: number; year?: number }) =>
+    api.get('/manager/attendance-summary', { params }),
+  /** Latest GPS position per team member (Live Tracking). */
+  liveLocations: () => api.get('/manager/live-locations'),
+
+  /** Attendance regularisation queue for the team. */
+  attendanceRequests: (params?: { status?: string }) =>
+    api.get('/manager/attendance-requests', { params }),
+  actAttendanceRequest: (id: string, status: 'approved' | 'rejected', managerComment?: string) =>
+    api.patch(`/manager/attendance-requests/${id}`, { status, managerComment }),
+
+  /** Team-scoped announcements. */
+  postAnnouncement: (data: { title: string; body: string; category?: string }) =>
+    api.post('/manager/announcements', data),
+  myAnnouncements: () => api.get('/manager/announcements'),
+  deleteAnnouncement: (id: string) => api.delete(`/manager/announcements/${id}`),
+};
+
+// ── Manager-flag cache ────────────────────────────────────────────────
+// The app has no global auth store — every screen reads AsyncStorage. We
+// cache the manager flag under 'erm-is-manager' so the Home card / drawer
+// item can render instantly on open, then refresh from /manager/me in the
+// background. refreshManagerFlag() is called after login and on Home focus.
+const MANAGER_FLAG_KEY = 'erm-is-manager';
+
+export async function refreshManagerFlag(): Promise<boolean> {
+  try {
+    const res = await managerAPI.me();
+    const isManager = !!res?.data?.isManager;
+    try { await AsyncStorage.setItem(MANAGER_FLAG_KEY, isManager ? '1' : '0'); } catch {}
+    return isManager;
+  } catch (e: any) {
+    // Network / cold-start / 404 (backend not yet deployed) → don't flip
+    // an existing cached value; just report the cached state.
+    console.log('[refreshManagerFlag] failed:', e?.response?.status || e?.message);
+    return await getManagerFlagCached();
+  }
+}
+
+export async function getManagerFlagCached(): Promise<boolean> {
+  try {
+    const v = await AsyncStorage.getItem(MANAGER_FLAG_KEY);
+    return v === '1';
+  } catch {
+    return false;
+  }
+}
+
+export async function clearManagerFlag(): Promise<void> {
+  try { await AsyncStorage.removeItem(MANAGER_FLAG_KEY); } catch {}
+}

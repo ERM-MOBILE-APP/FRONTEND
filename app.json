@@ -78,7 +78,15 @@
         }
       ],
       "expo-font",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "react-native-background-geolocation",
+        {
+          "license": "YOUR_TRANSISTORSOFT_ANDROID_LICENSE_KEY"
+        }
+      ],
+      "react-native-background-fetch",
+      "./plugins/withPlayServicesLocationPin"
     ],
     "extra": {
       "router": {},
