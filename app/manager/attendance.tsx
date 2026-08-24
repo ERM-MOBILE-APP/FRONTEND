@@ -21,11 +21,21 @@ const empName = (r: any) => r?.name || 'Employee';
  * permission / half-day counts + total worked hours, from
  * /api/manager/attendance-summary (same numbers HRMS shows).
  */
+// #474 — ERM went live 2026-07-01. Reports can't go earlier than this.
+const ERM_START = { year: 2026, month: 7 }; // ERM_START_DATE = 2026-07-01
+const beforeErmStart = (m: number, y: number) =>
+  (y < ERM_START.year) || (y === ERM_START.year && m < ERM_START.month);
+
 function TeamAttendance() {
   const insets = useSafeAreaInsets();
   const now = new Date();
-  const [month, setMonth] = useState(now.getMonth() + 1); // 1-12
-  const [year, setYear] = useState(now.getFullYear());
+  // Default to the current month, but never earlier than the ERM start.
+  const startMonth = beforeErmStart(now.getMonth() + 1, now.getFullYear())
+    ? ERM_START.month : now.getMonth() + 1;
+  const startYear = beforeErmStart(now.getMonth() + 1, now.getFullYear())
+    ? ERM_START.year : now.getFullYear();
+  const [month, setMonth] = useState(startMonth); // 1-12
+  const [year, setYear] = useState(startYear);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [items, setItems] = useState<any[]>([]);
@@ -58,12 +68,16 @@ function TeamAttendance() {
     const n = new Date();
     const isFuture = (y > n.getFullYear()) || (y === n.getFullYear() && m > n.getMonth() + 1);
     if (isFuture) return;
+    // #474 — never navigate before the ERM start month (July 2026).
+    if (beforeErmStart(m, y)) return;
     setMonth(m); setYear(y);
   };
 
-  // Whether the currently-viewed month is the present month (→ hide "next").
+  // Whether the currently-viewed month is the present month (→ disable "next").
   const atCurrentMonth =
     year === new Date().getFullYear() && month === new Date().getMonth() + 1;
+  // Whether we're at the ERM start month (→ disable "prev").
+  const atStartMonth = year === ERM_START.year && month === ERM_START.month;
 
   // Team totals.
   const totals = items.reduce(
@@ -83,8 +97,12 @@ function TeamAttendance() {
 
       {/* Month stepper */}
       <View style={styles.monthBar}>
-        <TouchableOpacity onPress={() => stepMonth(-1)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <Ionicons name="chevron-back" size={22} color={MC.green} />
+        <TouchableOpacity
+          onPress={() => stepMonth(-1)}
+          disabled={atStartMonth}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="chevron-back" size={22} color={atStartMonth ? '#CBD5E1' : MC.green} />
         </TouchableOpacity>
         <Text style={styles.monthText}>{MONTHS[month - 1]} {year}</Text>
         <TouchableOpacity
