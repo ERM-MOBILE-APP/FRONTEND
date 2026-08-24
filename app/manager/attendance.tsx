@@ -8,6 +8,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import { ManagerHeader, Card, Loading, EmptyState, MC } from '../../components/manager/ManagerUI';
 import { managerAPI } from '../../services/api';
@@ -21,6 +22,7 @@ const empName = (r: any) => r?.name || 'Employee';
  * /api/manager/attendance-summary (same numbers HRMS shows).
  */
 function TeamAttendance() {
+  const insets = useSafeAreaInsets();
   const now = new Date();
   const [month, setMonth] = useState(now.getMonth() + 1); // 1-12
   const [year, setYear] = useState(now.getFullYear());
@@ -86,7 +88,7 @@ function TeamAttendance() {
         <Loading label="Loading attendance…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: 32 }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {!!err && (

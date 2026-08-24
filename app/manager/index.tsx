@@ -8,6 +8,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import { ManagerHeader, Card, MC, Loading } from '../../components/manager/ManagerUI';
@@ -20,6 +21,7 @@ import { managerAPI } from '../../services/api';
  * fetched live from /api/manager/* — nothing hardcoded.
  */
 function ManagerHome() {
+  const insets = useSafeAreaInsets();
   const [loading, setLoading]   = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [managerName, setManagerName] = useState('');
@@ -65,12 +67,21 @@ function ManagerHome() {
 
   const sections = [
     {
+      key: 'team',
+      title: 'Team Members',
+      desc: teamSize ? `${teamSize} people report to you` : 'Your assigned team',
+      icon: <Ionicons name="people-outline" size={24} color="#fff" />,
+      color: '#0EA5E9',
+      badge: 0,
+      route: '/manager/team',
+    },
+    {
       key: 'approvals',
       title: 'Approvals',
-      desc: 'Leave, permission & allowance requests',
+      desc: 'Leave, permission, allowance & attendance requests',
       icon: <MaterialCommunityIcons name="clipboard-check-outline" size={24} color="#fff" />,
       color: MC.green,
-      badge: counts.leaves + counts.allowances,
+      badge: counts.leaves + counts.allowances + counts.attnReqs,
       route: '/manager/approvals',
     },
     {
@@ -90,15 +101,6 @@ function ManagerHome() {
       color: '#7C3AED',
       badge: 0,
       route: '/manager/tracking',
-    },
-    {
-      key: 'requests',
-      title: 'Attendance Requests',
-      desc: 'Regularisation requests to review',
-      icon: <MaterialCommunityIcons name="clock-alert-outline" size={24} color="#fff" />,
-      color: '#B7791F',
-      badge: counts.attnReqs,
-      route: '/manager/approvals?tab=attnreq',
     },
     {
       key: 'announcements',
@@ -122,20 +124,36 @@ function ManagerHome() {
         <Loading label="Loading your team…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: 32 }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
-          {/* Team summary strip */}
+          {/* Team summary strip — both halves are tappable. */}
           <Card style={styles.summaryCard}>
-            <View style={styles.summaryItem}>
+            <TouchableOpacity
+              style={styles.summaryItem}
+              activeOpacity={0.7}
+              onPress={() => router.push('/manager/team')}
+            >
               <Text style={styles.summaryNum}>{teamSize}</Text>
               <Text style={styles.summaryLabel}>Team members</Text>
-            </View>
+              <View style={styles.summaryHintRow}>
+                <Text style={styles.summaryHint}>View list</Text>
+                <Ionicons name="chevron-forward" size={12} color={MC.sub} />
+              </View>
+            </TouchableOpacity>
             <View style={styles.summaryDivider} />
-            <View style={styles.summaryItem}>
+            <TouchableOpacity
+              style={styles.summaryItem}
+              activeOpacity={0.7}
+              onPress={() => router.push('/manager/approvals')}
+            >
               <Text style={[styles.summaryNum, { color: MC.amber }]}>{counts.leaves + counts.allowances + counts.attnReqs}</Text>
               <Text style={styles.summaryLabel}>Pending actions</Text>
-            </View>
+              <View style={styles.summaryHintRow}>
+                <Text style={styles.summaryHint}>Review now</Text>
+                <Ionicons name="chevron-forward" size={12} color={MC.sub} />
+              </View>
+            </TouchableOpacity>
           </Card>
 
           {!!err && (
@@ -190,6 +208,8 @@ const styles = StyleSheet.create({
   summaryDivider: { width: 1, height: 36, backgroundColor: MC.border },
   summaryNum: { fontSize: 26, fontWeight: '800', color: MC.green },
   summaryLabel: { fontSize: 12, color: MC.sub, marginTop: 2 },
+  summaryHintRow: { flexDirection: 'row', alignItems: 'center', gap: 2, marginTop: 4 },
+  summaryHint: { fontSize: 11, color: MC.sub, fontWeight: '600' },
 
   navCard: { flexDirection: 'row', alignItems: 'center' },
   navIcon: {

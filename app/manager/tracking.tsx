@@ -10,6 +10,8 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Location from 'expo-location';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import { ManagerHeader, Card, Pill, Loading, EmptyState, MC } from '../../components/manager/ManagerUI';
@@ -28,8 +30,10 @@ function statusTone(s?: string): 'green' | 'amber' | 'red' | 'blue' | 'gray' {
 function agoLabel(iso?: string) {
   if (!iso) return 'No signal';
   const ms = Date.now() - new Date(iso).getTime();
-  if (!isFinite(ms) || ms < 0) return '—';
-  const min = Math.floor(ms / 60000);
+  if (!isFinite(ms)) return '—';
+  // Clamp small negative skew (phone clock vs server clock) to 0 so the
+  // "updated" line reads "Just now" instead of a confusing dash.
+  const min = Math.floor(Math.max(0, ms) / 60000);
   if (min < 1) return 'Just now';
   if (min < 60) return `${min} min ago`;
   const h = Math.floor(min / 60);
@@ -44,26 +48,59 @@ function agoLabel(iso?: string) {
  * in-app map SDK / API key needed).
  */
 function LiveTracking() {
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [rows, setRows] = useState<any[]>([]);
   const [err, setErr] = useState('');
   const [updatedAt, setUpdatedAt] = useState<string>('');
   const timerRef = useRef<any>(null);
+  // Reverse-geocoded check-in place per employee id. Keyed cache so we
+  // never geocode the same coordinate twice (check-in place is fixed for
+  // the day). coordKeyRef remembers which coord we already resolved.
+  const [places, setPlaces] = useState<Record<string, string>>({});
+  const coordKeyRef = useRef<Record<string, string>>({});
+
+  const resolvePlaces = useCallback(async (list: any[]) => {
+    for (const r of list) {
+      const lat = r.checkInLat, lng = r.checkInLng;
+      if (lat == null || lng == null) continue;
+      const id = String(r._id);
+      const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+      if (coordKeyRef.current[id] === key) continue; // already resolved
+      coordKeyRef.current[id] = key;
+      try {
+        const hits = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+        const h: any = hits && hits[0];
+        if (h) {
+          const label = [h.name, h.street, h.district || h.subregion, h.city]
+            .filter(Boolean)
+            .filter((v, i, a) => a.indexOf(v) === i) // de-dupe
+            .slice(0, 2)
+            .join(', ');
+          setPlaces((cur) => ({ ...cur, [id]: label || `${lat.toFixed(4)}, ${lng.toFixed(4)}` }));
+        }
+      } catch {
+        setPlaces((cur) => ({ ...cur, [id]: `${lat.toFixed(4)}, ${lng.toFixed(4)}` }));
+      }
+    }
+  }, []);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setErr('');
     try {
       const res = await managerAPI.liveLocations();
-      setRows(res?.data?.data || []);
+      const list = res?.data?.data || [];
+      setRows(list);
       setUpdatedAt(res?.data?.generatedAt || new Date().toISOString());
+      resolvePlaces(list);
     } catch (e: any) {
       if (!silent) setErr(e?.response?.data?.message || e?.message || 'Could not load locations.');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [resolvePlaces]);
 
   // Load on focus + poll every 30s; stop when unfocused.
   useFocusEffect(
@@ -102,7 +139,7 @@ function LiveTracking() {
         <Loading label="Locating your team…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: 32 }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {!!err && (
@@ -129,6 +166,15 @@ function LiveTracking() {
                     <Pill label={(r.status || 'offline').toUpperCase()} tone={statusTone(r.status)} />
                   </View>
 
+                  {(r.checkInLat != null && r.checkInLng != null) && (
+                    <View style={styles.placeRow}>
+                      <Ionicons name="pin-outline" size={14} color={MC.green} />
+                      <Text style={styles.placeText} numberOfLines={2}>
+                        Checked in at {places[String(r._id)] || 'locating…'}
+                      </Text>
+                    </View>
+                  )}
+
                   <View style={styles.metaRow}>
                     <View style={styles.metaItem}>
                       <Ionicons name="time-outline" size={14} color={MC.sub} />
@@ -154,9 +200,9 @@ function LiveTracking() {
                     disabled={!hasFix}
                     activeOpacity={0.85}
                   >
-                    <Ionicons name="map-outline" size={16} color={hasFix ? MC.green : '#B7B7B7'} />
+                    <Ionicons name="navigate-outline" size={16} color={hasFix ? MC.green : '#B7B7B7'} />
                     <Text style={[styles.mapBtnText, !hasFix && { color: '#B7B7B7' }]}>
-                      {hasFix ? 'Open in Maps' : 'No location yet'}
+                      {hasFix ? 'Open live location in Maps' : 'No location yet'}
                     </Text>
                   </TouchableOpacity>
                 </Card>
@@ -196,6 +242,8 @@ const styles = StyleSheet.create({
   dot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 },
   name: { fontSize: 14.5, fontWeight: '800', color: MC.text },
   sub: { fontSize: 11.5, color: MC.sub, marginTop: 1 },
+  placeRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 5, marginTop: 10 },
+  placeText: { flex: 1, fontSize: 12.5, color: MC.text, fontWeight: '600' },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 10 },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaText: { fontSize: 12, color: MC.sub },

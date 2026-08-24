@@ -108,7 +108,7 @@ export default function PayslipSummaryScreen() {
   const isReady = statusLower === 'processed' || statusLower === 'uploaded';
   if (!isReady) {
     return (
-      <SafeAreaView edges={['top']} style={styles.safe}>
+      <SafeAreaView edges={['top', 'bottom']} style={styles.safe}>
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.backBtn}
@@ -145,7 +145,7 @@ export default function PayslipSummaryScreen() {
   const deductions: any = data.deductions || {};
 
   return (
-    <SafeAreaView edges={['top']} style={styles.safe}>
+    <SafeAreaView edges={['top', 'bottom']} style={styles.safe}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity

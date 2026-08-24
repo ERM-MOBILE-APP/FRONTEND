@@ -18,7 +18,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 
 export const MC = {
-  green:      '#2E7D32',
+  green:      '#2E7D32',   // accent (icons, buttons, text) — matches Home accents
+  header:     '#4CAF50',   // header band — matches the Home screen green exactly
   greenDark:  '#1F6A1E',
   primary:    '#4CAF50',
   bg:         '#F4F6F8',
@@ -49,7 +50,7 @@ export function ManagerHeader({
 }) {
   return (
     <View style={styles.header}>
-      <StatusBar barStyle="light-content" backgroundColor={MC.green} />
+      <StatusBar barStyle="light-content" backgroundColor={MC.header} />
       <TouchableOpacity
         onPress={() => (onBack ? onBack() : router.back())}
         hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -121,15 +122,18 @@ export function Segmented({
   options,
   value,
   onChange,
+  counts,
 }: {
   options: { key: string; label: string }[];
   value: string;
   onChange: (k: string) => void;
+  counts?: Record<string, number>;
 }) {
   return (
     <View style={styles.segment}>
       {options.map((o) => {
         const active = o.key === value;
+        const n = counts ? counts[o.key] || 0 : 0;
         return (
           <TouchableOpacity
             key={o.key}
@@ -137,7 +141,14 @@ export function Segmented({
             onPress={() => onChange(o.key)}
             activeOpacity={0.8}
           >
-            <Text style={[styles.segText, active && styles.segTextActive]} numberOfLines={1}>{o.label}</Text>
+            <View style={styles.segRow}>
+              <Text style={[styles.segText, active && styles.segTextActive]} numberOfLines={1}>{o.label}</Text>
+              {n > 0 && (
+                <View style={styles.segBadge}>
+                  <Text style={styles.segBadgeText}>{n > 99 ? '99+' : n}</Text>
+                </View>
+              )}
+            </View>
           </TouchableOpacity>
         );
       })}
@@ -151,7 +162,7 @@ export const managerStyles = StyleSheet.create({
 
 const styles = StyleSheet.create({
   header: {
-    backgroundColor: MC.green,
+    backgroundColor: MC.header,
     paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 8 : 52,
     paddingBottom: 16,
     paddingHorizontal: 12,
@@ -193,6 +204,9 @@ const styles = StyleSheet.create({
   },
   segItem: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
   segItemActive: { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 4, elevation: 1 },
+  segRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   segText: { fontSize: 12.5, fontWeight: '600', color: MC.sub },
   segTextActive: { color: MC.green, fontWeight: '800' },
+  segBadge: { minWidth: 17, height: 17, borderRadius: 9, backgroundColor: MC.red, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  segBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
 });

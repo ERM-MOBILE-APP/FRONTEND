@@ -14,6 +14,7 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import { ManagerHeader, Card, Loading, EmptyState, MC } from '../../components/manager/ManagerUI';
 import { managerAPI } from '../../services/api';
@@ -33,6 +34,7 @@ function fmtDate(v: any) {
  * ONLY the manager's direct team sees (backend scopes by audienceUserIds).
  */
 function ManagerAnnouncements() {
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [items, setItems] = useState<any[]>([]);
@@ -116,7 +118,7 @@ function ManagerAnnouncements() {
         <Loading label="Loading announcements…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: 32 }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {!!err && (

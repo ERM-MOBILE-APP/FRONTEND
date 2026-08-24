@@ -13,6 +13,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import {
@@ -31,12 +32,15 @@ function Approvals() {
   const initialTab: TabKey =
     params?.tab === 'attnreq' ? 'attnreq' : params?.tab === 'allowance' ? 'allowance' : 'leave';
 
+  const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<TabKey>(initialTab);
   const [allowanceType, setAllowanceType] = useState<'petrol' | 'travel'>('petrol');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [items, setItems] = useState<any[]>([]);
   const [err, setErr] = useState('');
+  // Pending counts per tab (requests the manager hasn't acted on yet).
+  const [counts, setCounts] = useState({ leave: 0, allowance: 0, attnreq: 0 });
 
   // Action modal state.
   const [action, setAction] = useState<{
@@ -66,9 +70,30 @@ function Approvals() {
     }
   }, [tab, allowanceType]);
 
-  React.useEffect(() => { load(); }, [load]);
+  // Pending counts across ALL tabs (so each tab shows its own badge even
+  // when it's not the active tab). "Pending" = not yet acted on by the
+  // manager (managerStatus empty).
+  const loadCounts = useCallback(async () => {
+    try {
+      const [lv, tv, pt, ar] = await Promise.all([
+        managerAPI.leaves(),
+        managerAPI.allowances({ type: 'travel' }),
+        managerAPI.allowances({ type: 'petrol' }),
+        managerAPI.attendanceRequests(),
+      ]);
+      const pend = (arr: any[]) => (arr || []).filter((x) => !x.managerStatus).length;
+      setCounts({
+        leave: pend(lv?.data?.items),
+        allowance: pend(tv?.data?.items) + pend(pt?.data?.items),
+        attnreq: pend(ar?.data?.items),
+      });
+    } catch { /* counts are best-effort */ }
+  }, []);
 
-  const onRefresh = () => { setRefreshing(true); load(); };
+  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => { loadCounts(); }, [loadCounts]);
+
+  const onRefresh = () => { setRefreshing(true); load(); loadCounts(); };
 
   const openAction = (row: any, mode: 'Approved' | 'Rejected') => {
     setComment('');
@@ -106,6 +131,7 @@ function Approvals() {
       setAction(null);
       setComment('');
       setAmount('');
+      loadCounts(); // refresh the tab badges after acting
     } catch (e: any) {
       setErr(e?.response?.data?.message || e?.message || 'Action failed. Please try again.');
     } finally {
@@ -126,7 +152,7 @@ function Approvals() {
     <View style={styles.screen}>
       <ManagerHeader title="Approvals" subtitle="Review your team's requests" />
 
-      <Segmented options={tabs} value={tab} onChange={(k) => setTab(k as TabKey)} />
+      <Segmented options={tabs} value={tab} onChange={(k) => setTab(k as TabKey)} counts={counts} />
 
       {tab === 'allowance' && (
         <View style={styles.subToggleRow}>
@@ -154,7 +180,7 @@ function Approvals() {
         <Loading label="Loading requests…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: 32 }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {!!err && (
@@ -333,16 +359,21 @@ function RequestCard({
           </TouchableOpacity>
         </View>
       ) : (
-        <View style={styles.actedRow}>
-          <Ionicons
-            name={row.managerStatus === 'Approved' ? 'checkmark-circle' : 'close-circle'}
-            size={16}
-            color={row.managerStatus === 'Approved' ? MC.green : MC.red}
-          />
-          <Text style={styles.actedText}>
-            {row.managerStatus} by you{row.managerStatusBy ? '' : ''}
-          </Text>
-        </View>
+        (() => {
+          const approved = String(row.managerStatus || '').toLowerCase().includes('approv');
+          return (
+            <View style={styles.actedRow}>
+              <Ionicons
+                name={approved ? 'checkmark-circle' : 'close-circle'}
+                size={18}
+                color={approved ? MC.green : MC.red}
+              />
+              <Text style={[styles.actedText, { color: approved ? MC.green : MC.red }]}>
+                {approved ? 'Approved' : 'Rejected'} by you
+              </Text>
+            </View>
+          );
+        })()
       )}
     </Card>
   );

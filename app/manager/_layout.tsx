@@ -14,6 +14,7 @@ export default function ManagerLayout() {
   return (
     <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
       <Stack.Screen name="index" />
+      <Stack.Screen name="team" />
       <Stack.Screen name="approvals" />
       <Stack.Screen name="attendance" />
       <Stack.Screen name="tracking" />
