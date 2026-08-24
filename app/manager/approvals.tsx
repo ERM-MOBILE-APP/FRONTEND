@@ -263,7 +263,7 @@ function Approvals() {
               <TouchableOpacity
                 style={[
                   styles.confirmBtn,
-                  { backgroundColor: action?.mode === 'Approved' ? MC.green : MC.red },
+                  { backgroundColor: action?.mode === 'Approved' ? MC.header : MC.red },
                 ]}
                 onPress={submitAction}
                 disabled={submitting}
@@ -419,7 +419,7 @@ const styles = StyleSheet.create({
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 6, paddingVertical: 10, borderRadius: 10,
   },
-  approveBtn: { backgroundColor: MC.green },
+  approveBtn: { backgroundColor: MC.header },
   rejectBtn: { backgroundColor: '#fff', borderWidth: 1.4, borderColor: MC.red },
   actText: { fontSize: 13.5, fontWeight: '800' },
 

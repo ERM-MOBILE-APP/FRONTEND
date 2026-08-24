@@ -1,6 +1,7 @@
 import React from 'react';
 import { Stack } from 'expo-router';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { markNavReady } from '../services/api';
 
@@ -232,28 +233,38 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <RootErrorBoundary>
-      <LastCrashBanner />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(auth)/login" />
-        <Stack.Screen
-          name="(auth)/email-verify"
-          options={{ presentation: 'card', animation: 'slide_from_right' }}
-        />
-        <Stack.Screen
-          name="(auth)/otp"
-          options={{ presentation: 'card', animation: 'slide_from_right' }}
-        />
-        <Stack.Screen
-          name="(auth)/new-password"
-          options={{ presentation: 'card', animation: 'slide_from_right' }}
-        />
-        <Stack.Screen
-          name="payslip-summary"
-          options={{ presentation: 'card', animation: 'slide_from_right' }}
-        />
-      </Stack>
-    </RootErrorBoundary>
+    // #472 — SafeAreaProvider was MISSING at the root. Without it,
+    // useSafeAreaInsets() returns { bottom: 0 } for every screen that isn't
+    // inside the bottom-tab navigator (which supplies its own safe-area
+    // context). That's why the Manager stack screens — a plain native Stack —
+    // rendered content UNDER the Android navigation bar even though they read
+    // insets.bottom. Providing it here makes insets correct app-wide, on every
+    // screen and every navigator. initialWindowMetrics avoids a first-frame
+    // flash by seeding the real insets synchronously at launch.
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <RootErrorBoundary>
+        <LastCrashBanner />
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(auth)/login" />
+          <Stack.Screen
+            name="(auth)/email-verify"
+            options={{ presentation: 'card', animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="(auth)/otp"
+            options={{ presentation: 'card', animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="(auth)/new-password"
+            options={{ presentation: 'card', animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="payslip-summary"
+            options={{ presentation: 'card', animation: 'slide_from_right' }}
+          />
+        </Stack>
+      </RootErrorBoundary>
+    </SafeAreaProvider>
   );
 }
 

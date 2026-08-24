@@ -1622,6 +1622,28 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
     // this also protects against any race that could re-render the
     // button after a stale-refresh briefly restores checkOut = null.
     if (checkedIn && checkedOut) return;
+
+    // #473 — CHECK-OUT CONFIRMATION. Checking out ends the shift for the
+    // day and stops location tracking, and (once out) the button is hidden
+    // so it can't be undone from the app. Ask for explicit confirmation
+    // first. Check-IN needs no confirmation — only the check-OUT branch
+    // (currently checked in, not yet out) prompts. The 1500 ms debounce
+    // above guarantees a single dialog even on a double-tap.
+    if (checkedIn && !checkedOut) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          'Check out?',
+          'Are you sure you want to check out? This ends your shift for today and stops location tracking.',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Check Out', style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        );
+      });
+      if (!confirmed) return;
+    }
+
     // #340 — Capture intent NOW so the loader's copy/color stays stable.
     // With #394 in place we only ever take the fresh check-in branch
     // (checkedIn === false) or the check-out branch (checkedIn === true
