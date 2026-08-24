@@ -26,9 +26,31 @@ import { notificationAPI } from './api';
 const TOKEN_KEY = 'erm-fcm-token';
 let _cachedToken: string | null = null;
 
+// Whether native Firebase is unavailable (Expo Go, or a build made before
+// @react-native-firebase was added). In those runtimes importing the module
+// throws "NativeRNFBTurboApp is not registered" and can surface a crash
+// record, so we skip Firebase entirely and no-op. In a proper dev/production
+// build (executionEnvironment 'standalone'/'bare') this returns false and
+// Firebase works normally.
+let _fbChecked = false;
+let _fbDisabled = false;
+function firebaseUnavailable(): boolean {
+  if (_fbChecked) return _fbDisabled;
+  _fbChecked = true;
+  try {
+    const Constants = require('expo-constants').default;
+    const env = Constants?.executionEnvironment;
+    if (env === 'storeClient' || Constants?.appOwnership === 'expo') {
+      _fbDisabled = true; // running inside Expo Go — no native Firebase
+    }
+  } catch { /* if we can't tell, fall through and let the require guard decide */ }
+  return _fbDisabled;
+}
+
 function getMessaging(): any | null {
+  if (firebaseUnavailable()) return null;
   // @ts-ignore — resolved after `npm install @react-native-firebase/messaging`
-  // and a native build; guarded so Expo Go / missing native module no-ops.
+  // and a native build; guarded so a missing native module no-ops.
   try { return require('@react-native-firebase/messaging').default; } catch { return null; }
 }
 

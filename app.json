@@ -84,7 +84,7 @@
       [
         "react-native-background-geolocation",
         {
-          "license": "YOUR_TRANSISTORSOFT_ANDROID_LICENSE_KEY"
+          "license": "eyJhbGciOiJFZERTQSIsImtpZCI6ImVkMjU1MTktbWFpbi12MSJ9.eyJvcyI6ImFuZHJvaWQiLCJhcHBfaWQiOiJjb20udGVzY29kaWdpdGFsczI2LnRlc2NvZXJtIiwib3JkZXJfbnVtYmVyIjoiIiwicmVuZXdhbF91cmwiOiIiLCJjdXN0b21lcl9pZCI6IiIsInByb2R1Y3QiOiJyZWFjdC1uYXRpdmUtYmFja2dyb3VuZC1nZW9sb2NhdGlvbiIsImtleV92ZXJzaW9uIjoxLCJhbGxvd2VkX3N1ZmZpeGVzIjpbIi5kZXYiLCIuZGV2ZWxvcG1lbnQiLCIuc3RhZ2luZyIsIi5zdGFnZSIsIi5xYSIsIi51YXQiLCIudGVzdCIsIi5kZWJ1ZyJdLCJtYXhfYnVpbGRfc3RhbXAiOjIwMjYwOTIzLCJncmFjZV9idWlsZHMiOjAsImVudGl0bGVtZW50cyI6WyJjb3JlIiwicG9seWdvbi1nZW9mZW5jaW5nIl0sImlhdCI6MTc4NzU2NTkyNiwiZXhwIjoxNzkwMTU3OTI2LCJ0cmlhbCI6dHJ1ZSwidHJpYWxfZGF5cyI6MzB9.DutcWsl8JSUzAfwoPWhbNh-hOiZ_o2VN2het6PzWF06uGLkUYWbP3cS7u0FzTpvjRJedO2ZcDXcmTJUHQLqJCw"
         }
       ],
       "react-native-background-fetch",

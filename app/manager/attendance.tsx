@@ -54,8 +54,16 @@ function TeamAttendance() {
     let y = year;
     if (m < 1) { m = 12; y -= 1; }
     if (m > 12) { m = 1; y += 1; }
+    // #471 — never navigate into a future month (it hasn't happened yet).
+    const n = new Date();
+    const isFuture = (y > n.getFullYear()) || (y === n.getFullYear() && m > n.getMonth() + 1);
+    if (isFuture) return;
     setMonth(m); setYear(y);
   };
+
+  // Whether the currently-viewed month is the present month (→ hide "next").
+  const atCurrentMonth =
+    year === new Date().getFullYear() && month === new Date().getMonth() + 1;
 
   // Team totals.
   const totals = items.reduce(
@@ -79,8 +87,12 @@ function TeamAttendance() {
           <Ionicons name="chevron-back" size={22} color={MC.green} />
         </TouchableOpacity>
         <Text style={styles.monthText}>{MONTHS[month - 1]} {year}</Text>
-        <TouchableOpacity onPress={() => stepMonth(1)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <Ionicons name="chevron-forward" size={22} color={MC.green} />
+        <TouchableOpacity
+          onPress={() => stepMonth(1)}
+          disabled={atCurrentMonth}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="chevron-forward" size={22} color={atCurrentMonth ? '#CBD5E1' : MC.green} />
         </TouchableOpacity>
       </View>
 
