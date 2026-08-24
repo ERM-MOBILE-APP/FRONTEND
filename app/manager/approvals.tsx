@@ -149,7 +149,7 @@ function Approvals() {
   );
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <ManagerHeader title="Approvals" subtitle="Review your team's requests" />
 
       <Segmented options={tabs} value={tab} onChange={(k) => setTab(k as TabKey)} counts={counts} />
@@ -180,7 +180,7 @@ function Approvals() {
         <Loading label="Loading requests…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
+          contentContainerStyle={{ paddingBottom: 24 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {!!err && (
@@ -216,7 +216,7 @@ function Approvals() {
           style={styles.modalWrap}
         >
           <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeAction} />
-          <View style={styles.sheet}>
+          <View style={[styles.sheet, { paddingBottom: insets.bottom + 22 }]}>
             <View style={styles.sheetHandle} />
             <Text style={styles.sheetTitle}>
               {action?.mode === 'Approved' ? 'Approve' : 'Reject'}{' '}

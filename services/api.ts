@@ -597,6 +597,12 @@ export const notificationAPI = {
   markAsRead: (id: string) => api.patch(`/notification/${id}/read`),
   markAllRead: () => api.patch('/notification/read-all'),
   unreadCount: () => api.get('/notification/unread-count'),
+  // FCM device registration (for system notifications when the app is
+  // closed). See services/push.ts.
+  registerDevice:   (token: string, platform: string = 'android', deviceId?: string) =>
+    api.post('/notification/register-device', { token, platform, deviceId }),
+  unregisterDevice: (token: string) =>
+    api.post('/notification/unregister-device', { token }),
 };
 
 // ── Manager surface ───────────────────────────────────────────────────

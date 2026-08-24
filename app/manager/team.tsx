@@ -50,13 +50,13 @@ function TeamList() {
   const onRefresh = () => { setRefreshing(true); load(); };
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <ManagerHeader title="Team Members" subtitle={team.length ? `${team.length} people report to you` : 'Your team'} />
       {loading ? (
         <Loading label="Loading your team…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: insets.bottom + 28 }}
+          contentContainerStyle={{ paddingBottom: 24 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {!!err && (

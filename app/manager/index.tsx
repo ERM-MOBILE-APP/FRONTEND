@@ -114,7 +114,7 @@ function ManagerHome() {
   ];
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <ManagerHeader
         title="Manager"
         subtitle={managerName ? `Signed in as ${managerName}` : 'Team management'}
@@ -124,7 +124,7 @@ function ManagerHome() {
         <Loading label="Loading your team…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
+          contentContainerStyle={{ paddingBottom: 24 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {/* Team summary strip — both halves are tappable. */}

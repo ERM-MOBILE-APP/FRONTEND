@@ -170,7 +170,13 @@ export default function ProfileScreen() {
           //   • erm-today-v1 (cached Home tab snapshot)
           //   • Every erm-bg-* AsyncStorage key
           try { await wipeUserScopedTracking(); } catch {}
-          await AsyncStorage.multiRemove(['token', 'user', 'userId']);
+          // Detach this device from the user so they stop receiving push
+          // notifications after logging out (best-effort, before token wipe).
+          try {
+            const { unregisterPushToken } = require('../../services/push');
+            await unregisterPushToken();
+          } catch {}
+          await AsyncStorage.multiRemove(['token', 'user', 'userId', 'erm-is-manager']);
           router.replace('/(auth)/login' as any);
         },
       },

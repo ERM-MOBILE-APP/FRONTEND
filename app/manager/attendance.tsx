@@ -70,7 +70,7 @@ function TeamAttendance() {
   );
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <ManagerHeader title="Team Attendance" subtitle="Monthly summary" />
 
       {/* Month stepper */}
@@ -88,7 +88,7 @@ function TeamAttendance() {
         <Loading label="Loading attendance…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
+          contentContainerStyle={{ paddingBottom: 24 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {!!err && (

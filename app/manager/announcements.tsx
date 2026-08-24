@@ -103,7 +103,7 @@ function ManagerAnnouncements() {
   };
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <ManagerHeader
         title="Announcements"
         subtitle="Posts your team sees"
@@ -118,7 +118,7 @@ function ManagerAnnouncements() {
         <Loading label="Loading announcements…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
+          contentContainerStyle={{ paddingBottom: 24 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {!!err && (
@@ -161,7 +161,7 @@ function ManagerAnnouncements() {
       <Modal visible={composing} transparent animationType="slide" onRequestClose={closeCompose}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalWrap}>
           <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeCompose} />
-          <View style={styles.sheet}>
+          <View style={[styles.sheet, { paddingBottom: insets.bottom + 22 }]}>
             <View style={styles.sheetHandle} />
             <Text style={styles.sheetTitle}>Post to your team</Text>
 

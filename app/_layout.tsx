@@ -4,6 +4,10 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-nati
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { markNavReady } from '../services/api';
+import { configurePushHandler, syncPushToken } from '../services/push';
+
+// Configure how foreground push notifications render, once at module load.
+configurePushHandler();
 
 // Import-only side-effect: registers the LEGACY expo-location background
 // task with TaskManager. Kept as a warm fallback in case
@@ -230,6 +234,14 @@ export default function RootLayout() {
   // crashing with "cannot update a component while rendering".
   React.useEffect(() => {
     markNavReady();
+    // Re-sync the push token for an already-logged-in user on cold start
+    // (login.tsx handles the fresh-login case). Only if a session exists.
+    (async () => {
+      try {
+        const token = await AsyncStorage.getItem('token');
+        if (token) syncPushToken().catch(() => {});
+      } catch { /* ignore */ }
+    })();
   }, []);
 
   return (

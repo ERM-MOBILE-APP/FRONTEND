@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "705500021531",
+    "project_id": "tescoerm-b49d6",
+    "storage_bucket": "tescoerm-b49d6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:705500021531:android:250b1250ed2c53f87a49be",
+        "android_client_info": {
+          "package_name": "com.tescodigitals26.tescoerm"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC6opqokVpAJ54O74CAnsul511uXay1EU8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

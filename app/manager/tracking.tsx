@@ -130,7 +130,7 @@ function LiveTracking() {
   const activeCount = rows.filter((r) => statusTone(r.status) === 'green').length;
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <ManagerHeader
         title="Live Tracking"
         subtitle={updatedAt ? `${activeCount} active · updated ${agoLabel(updatedAt)}` : 'Team locations'}
@@ -139,7 +139,7 @@ function LiveTracking() {
         <Loading label="Locating your team…" />
       ) : (
         <ScrollView
-          contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
+          contentContainerStyle={{ paddingBottom: 24 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[MC.green]} />}
         >
           {!!err && (
