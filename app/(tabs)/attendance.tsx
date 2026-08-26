@@ -182,6 +182,12 @@ export default function AttendanceScreen() {
         const date   = x?.date;
         const status = String(x?.status || '').toLowerCase();
         if (!date) continue;
+        // ERM display-only 2-day rule (#480): a still-pending request older
+        // than 2 days comes back with x.expired === true from the backend
+        // (the DB row stays 'pending' for HRMS/manager). Skip it here so it
+        // does NOT lock the button — the employee can re-file. HRMS still
+        // shows the original request as pending until a human acts on it.
+        if (x?.expired === true) continue;
         // For each date, keep the most recent NON-rejected status if one
         // exists (pending > approved). A rejected row alone we still
         // record so the button shows "Rejected" until they re-file.
