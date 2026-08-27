@@ -49,9 +49,11 @@ function firebaseUnavailable(): boolean {
 
 function getMessaging(): any | null {
   if (firebaseUnavailable()) return null;
-  // @ts-ignore — resolved after `npm install @react-native-firebase/messaging`
-  // and a native build; guarded so a missing native module no-ops.
-  try { return require('@react-native-firebase/messaging').default; } catch { return null; }
+  // Dynamic require (variable path) so Metro does NOT try to resolve the
+  // package at bundle time — the Firebase packages are currently removed
+  // from the build (FCM temporarily disabled). If/when they're re-added,
+  // this resolves at runtime again. Guarded so a missing module no-ops.
+  try { const mod = '@react-native-firebase/messaging'; return require(mod).default; } catch { return null; }
 }
 
 // ── Background handler — MUST be registered at module scope (RNFirebase rule).

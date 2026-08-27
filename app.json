@@ -27,7 +27,6 @@
     "android": {
       "package": "com.tescodigitals26.tescoerm",
       "versionCode": 4,
-      "googleServicesFile": "./google-services.json",
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
@@ -66,7 +65,16 @@
     },
     "plugins": [
       "expo-router",
-      "@react-native-firebase/app",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "extraMavenRepos": [
+              "../../node_modules/react-native-background-fetch/android/libs"
+            ]
+          }
+        }
+      ],
       [
         "expo-location",
         {
