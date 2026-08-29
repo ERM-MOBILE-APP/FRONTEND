@@ -80,7 +80,9 @@ function TeamList() {
                     </Text>
                     {!!u.department && <Text style={styles.dept}>{u.department}</Text>}
                   </View>
-                  <Pill label={(u.presence || 'offline').toUpperCase()} tone={presenceTone(u.presence)} />
+                  {u.active === false
+                    ? <Pill label="INACTIVE" tone="gray" />
+                    : <Pill label={(u.presence || 'offline').toUpperCase()} tone={presenceTone(u.presence)} />}
                 </View>
                 {(!!u.phone || !!u.email) && (
                   <View style={styles.contactBlock}>
