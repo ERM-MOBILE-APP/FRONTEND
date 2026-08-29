@@ -45,13 +45,17 @@ function ManagerHome() {
       const team = teamRes?.data?.team || [];
       setTeamSize(teamRes?.data?.count ?? team.length);
       setManagerName(teamRes?.data?.manager?.name || '');
-      const leaves = (leaveRes?.data?.items || []).filter((l: any) => !l.managerStatus).length
-        || (leaveRes?.data?.items || []).length;
+      // #490 — Pending actions = requests from the CURRENT team that are still
+      // AWAITING THIS MANAGER (no managerStatus yet). The backend already scopes
+      // every list to the manager's current team (resolveTeamIds on live
+      // assignedTo), so a reassigned employee's requests never appear here.
+      // The old `|| items.length` fallback wrongly inflated the badge to the
+      // full pending list once the manager had acted on everything — removed.
+      const leaves = (leaveRes?.data?.items || []).filter((l: any) => !l.managerStatus).length;
       const allowances =
         (travelRes?.data?.items || []).filter((a: any) => !a.managerStatus).length +
         (petrolRes?.data?.items || []).filter((a: any) => !a.managerStatus).length;
-      const attnReqs = (attnRes?.data?.items || []).filter((r: any) => !r.managerStatus).length
-        || (attnRes?.data?.items || []).length;
+      const attnReqs = (attnRes?.data?.items || []).filter((r: any) => !r.managerStatus).length;
       setCounts({ leaves, allowances, attnReqs });
     } catch (e: any) {
       setErr(e?.response?.data?.message || e?.message || 'Could not load manager data.');
