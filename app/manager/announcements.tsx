@@ -58,7 +58,8 @@ function ManagerAnnouncements() {
   // when this screen was opened already scoped to one manager.
   type AudienceOpt = { key: string; label: string; count: number; managerId?: string; scope?: 'direct' };
   const [audiences, setAudiences] = useState<AudienceOpt[]>([]);
-  const [audienceKey, setAudienceKey] = useState<string>('all');
+  const [audienceKey, setAudienceKey] = useState<string>('direct');
+  const [audienceOpen, setAudienceOpen] = useState(false); // dropdown expanded?
 
   const load = useCallback(async () => {
     setErr('');
@@ -89,8 +90,9 @@ function ManagerAnnouncements() {
       if (subs.length === 0) { setAudiences([]); return; }
       const fullCount   = teamRes?.data?.count ?? 0;
       const directCount = subs.length + direct.length;
+      // Order: the manager's OWN team first, then each sub-manager's team
+      // ("managers reporting to them"), and the whole-hierarchy catch-all last.
       const opts: AudienceOpt[] = [
-        { key: 'all',    label: 'My whole hierarchy', count: fullCount },
         { key: 'direct', label: 'My direct reports',  count: directCount, scope: 'direct' },
         ...subs.map((m) => ({
           key: String(m._id),
@@ -98,11 +100,11 @@ function ManagerAnnouncements() {
           count: m.teamCount ?? 0,
           managerId: String(m._id),
         })),
+        { key: 'all',    label: 'My whole hierarchy', count: fullCount },
       ];
       setAudiences(opts);
-      // Default to the scope this screen was opened with (the "Your own team"
-      // card passes scope='direct'); otherwise the whole hierarchy.
-      setAudienceKey(scope === 'direct' ? 'direct' : 'all');
+      // Default to the manager's own team (the first option).
+      setAudienceKey('direct');
     } catch { setAudiences([]); }
   }, [managerId, scope]);
 
@@ -110,7 +112,9 @@ function ManagerAnnouncements() {
   React.useEffect(() => { loadAudiences(); }, [loadAudiences]);
   const onRefresh = () => { setRefreshing(true); load(); loadAudiences(); };
 
-  const openCompose = () => { setTitle(''); setBody(''); setCategory('general'); setComposing(true); };
+  const selectedAud = audiences.find((a) => a.key === audienceKey);
+
+  const openCompose = () => { setTitle(''); setBody(''); setCategory('general'); setAudienceOpen(false); setComposing(true); };
   const closeCompose = () => { if (!posting) setComposing(false); };
 
   const post = async () => {
@@ -216,7 +220,7 @@ function ManagerAnnouncements() {
       <Modal visible={composing} transparent animationType="slide" onRequestClose={closeCompose}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalWrap}>
           <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeCompose} />
-          <View style={[styles.sheet, { paddingBottom: insets.bottom + 22 }]}>
+          <View style={[styles.sheet, { paddingBottom: insets.bottom + 16, maxHeight: '90%' }]}>
             <View style={styles.sheetHandle} />
             <Text style={styles.sheetTitle}>
               {managerName ? `Post to ${managerName}'s team` : 'New announcement'}
@@ -225,68 +229,92 @@ function ManagerAnnouncements() {
               <Text style={styles.sheetSub}>Choose who receives it</Text>
             )}
 
-            <Text style={styles.fieldLabel}>Category</Text>
-            <View style={styles.catRow}>
-              {CATEGORIES.map((c) => (
-                <TouchableOpacity
-                  key={c}
-                  style={[styles.catChip, category === c && styles.catChipActive]}
-                  onPress={() => setCategory(c)}
-                >
-                  <Text style={[styles.catChipText, category === c && styles.catChipTextActive]}>
-                    {c.charAt(0).toUpperCase() + c.slice(1)}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            {/* Scrollable form body — keeps the sheet from spilling under the
+                status bar when the audience list / keyboard is open. */}
+            <ScrollView
+              style={styles.sheetScroll}
+              contentContainerStyle={{ paddingBottom: 6 }}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.fieldLabel}>Category</Text>
+              <View style={styles.catRow}>
+                {CATEGORIES.map((c) => (
+                  <TouchableOpacity
+                    key={c}
+                    style={[styles.catChip, category === c && styles.catChipActive]}
+                    onPress={() => setCategory(c)}
+                  >
+                    <Text style={[styles.catChipText, category === c && styles.catChipTextActive]}>
+                      {c.charAt(0).toUpperCase() + c.slice(1)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
 
-            <Text style={styles.fieldLabel}>Title</Text>
-            <TextInput
-              style={styles.input}
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Short headline"
-              placeholderTextColor="#B7B7B7"
-              maxLength={120}
-            />
+              <Text style={styles.fieldLabel}>Title</Text>
+              <TextInput
+                style={styles.input}
+                value={title}
+                onChangeText={setTitle}
+                placeholder="Short headline"
+                placeholderTextColor="#B7B7B7"
+                maxLength={120}
+              />
 
-            <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Message</Text>
-            <TextInput
-              style={[styles.input, styles.inputMultiline]}
-              value={body}
-              onChangeText={setBody}
-              placeholder="What do you want your team to know?"
-              placeholderTextColor="#B7B7B7"
-              multiline
-              maxLength={800}
-            />
+              <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Message</Text>
+              <TextInput
+                style={[styles.input, styles.inputMultiline]}
+                value={body}
+                onChangeText={setBody}
+                placeholder="What do you want your team to know?"
+                placeholderTextColor="#B7B7B7"
+                multiline
+                maxLength={800}
+              />
 
-            {audiences.length > 0 && (
-              <>
-                <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Audience</Text>
-                <View style={{ gap: 8 }}>
-                  {audiences.map((a) => {
-                    const active = audienceKey === a.key;
-                    return (
-                      <TouchableOpacity
-                        key={a.key}
-                        style={[styles.audOpt, active && styles.audOptActive]}
-                        activeOpacity={0.8}
-                        onPress={() => setAudienceKey(a.key)}
-                      >
-                        <View style={[styles.radio, active && styles.radioActive]}>
-                          {active && <View style={styles.radioDot} />}
-                        </View>
-                        <Text style={[styles.audLabel, active && styles.audLabelActive]} numberOfLines={1}>
-                          {a.label}
-                        </Text>
-                        <Text style={styles.audCount}>{a.count}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </>
-            )}
+              {audiences.length > 0 && (
+                <>
+                  <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Audience</Text>
+                  {/* Collapsed dropdown: shows the current pick; tap to choose. */}
+                  <TouchableOpacity
+                    style={styles.audDropdown}
+                    activeOpacity={0.8}
+                    onPress={() => setAudienceOpen((o) => !o)}
+                  >
+                    <Ionicons name="people-outline" size={16} color={MC.green} />
+                    <Text style={styles.audDropdownLabel} numberOfLines={1}>
+                      {selectedAud ? selectedAud.label : 'Choose audience'}
+                    </Text>
+                    {!!selectedAud && <Text style={styles.audCount}>{selectedAud.count}</Text>}
+                    <Ionicons name={audienceOpen ? 'chevron-up' : 'chevron-down'} size={18} color={MC.sub} />
+                  </TouchableOpacity>
+                  {audienceOpen && (
+                    <View style={styles.audMenu}>
+                      {audiences.map((a) => {
+                        const active = audienceKey === a.key;
+                        return (
+                          <TouchableOpacity
+                            key={a.key}
+                            style={styles.audItem}
+                            activeOpacity={0.8}
+                            onPress={() => { setAudienceKey(a.key); setAudienceOpen(false); }}
+                          >
+                            <View style={[styles.checkbox, active && styles.checkboxActive]}>
+                              {active && <Ionicons name="checkmark" size={13} color="#fff" />}
+                            </View>
+                            <Text style={[styles.audItemLabel, active && styles.audItemLabelActive]} numberOfLines={1}>
+                              {a.label}
+                            </Text>
+                            <Text style={styles.audCount}>{a.count}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
+                </>
+              )}
+            </ScrollView>
 
             <View style={styles.sheetBtns}>
               <TouchableOpacity style={styles.cancelBtn} onPress={closeCompose} disabled={posting}>
@@ -329,24 +357,33 @@ const styles = StyleSheet.create({
   },
   sheetHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: '#DADCE0', marginBottom: 14 },
   sheetTitle: { fontSize: 17, fontWeight: '800', color: MC.text, marginBottom: 2 },
-  sheetSub: { fontSize: 12.5, color: MC.sub, marginBottom: 14 },
+  sheetSub: { fontSize: 12.5, color: MC.sub, marginBottom: 10 },
+  sheetScroll: { flexShrink: 1 },
   fieldLabel: { fontSize: 12.5, fontWeight: '700', color: MC.text, marginBottom: 6 },
 
-  // Audience radio options
-  audOpt: {
+  // Audience dropdown + checkbox menu
+  audDropdown: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingHorizontal: 12, paddingVertical: 11, borderRadius: 12,
-    borderWidth: 1.4, borderColor: MC.border, backgroundColor: '#fff',
+    paddingHorizontal: 12, paddingVertical: 12, borderRadius: 12,
+    borderWidth: 1.4, borderColor: MC.green, backgroundColor: MC.greenBg,
   },
-  audOptActive: { borderColor: MC.green, backgroundColor: MC.greenBg },
-  radio: {
-    width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#C4C9CF',
+  audDropdownLabel: { flex: 1, fontSize: 13.5, fontWeight: '800', color: MC.text },
+  audMenu: {
+    marginTop: 8, borderRadius: 12, borderWidth: 1, borderColor: MC.border,
+    backgroundColor: '#fff', overflow: 'hidden',
+  },
+  audItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: '#F2F3F5',
+  },
+  checkbox: {
+    width: 20, height: 20, borderRadius: 6, borderWidth: 2, borderColor: '#C4C9CF',
     alignItems: 'center', justifyContent: 'center',
   },
-  radioActive: { borderColor: MC.green },
-  radioDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: MC.green },
-  audLabel: { flex: 1, fontSize: 13.5, fontWeight: '700', color: MC.text },
-  audLabelActive: { color: MC.green },
+  checkboxActive: { backgroundColor: MC.green, borderColor: MC.green },
+  audItemLabel: { flex: 1, fontSize: 13.5, fontWeight: '700', color: MC.text },
+  audItemLabelActive: { color: MC.green },
   audCount: {
     fontSize: 12, fontWeight: '800', color: MC.sub,
     backgroundColor: '#F1F3F5', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 1,

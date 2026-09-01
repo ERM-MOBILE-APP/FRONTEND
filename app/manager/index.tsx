@@ -203,16 +203,17 @@ function ManagerHome() {
   const load = useCallback(async () => {
     setErr('');
     try {
-      const [teamRes, hierRes] = await Promise.all([
-        managerAPI.team(),
-        managerAPI.hierarchy(),
-      ]);
-      const team = teamRes?.data?.team || [];
-      setTeamSize(teamRes?.data?.count ?? team.length);
-      setManagerName(teamRes?.data?.manager?.name || hierRes?.data?.manager?.name || '');
-      const subs = hierRes?.data?.managers || [];
+      // #515 perf — one hierarchy call drives the whole hub (manager name, the
+      // sub-manager nodes, and the direct-team count). We dropped the separate
+      // team() call: its full-downline walk duplicated work and the summary now
+      // shows the DIRECT team count, which hierarchy already returns.
+      const hierRes = await managerAPI.hierarchy();
+      const subs   = hierRes?.data?.managers || [];
+      const direct = hierRes?.data?.directReports || [];
       setSubManagers(subs);
-      setDirectReports(hierRes?.data?.directReports || []);
+      setDirectReports(direct);
+      setManagerName(hierRes?.data?.manager?.name || '');
+      setTeamSize(subs.length + direct.length);
 
       // Pending badges: for a SENIOR manager (has sub-managers), count only
       // their OWN direct reports' pending — the sub-teams are triaged by their
@@ -361,25 +362,9 @@ function ManagerHome() {
             </Card>
           )}
 
-          {/* ── Reporting hierarchy (senior managers only) ─────────────── */}
+          {/* ── Senior manager: YOUR OWN TEAM first ────────────────────── */}
           {isSenior && (
             <>
-              <View style={styles.sectionHeaderRow}>
-                <MaterialCommunityIcons name="account-tie-outline" size={17} color={MC.green} />
-                <Text style={styles.sectionHeader}>Managers reporting to you</Text>
-                <View style={styles.sectionCountPill}>
-                  <Text style={styles.sectionCountText}>{subManagers.length}</Text>
-                </View>
-              </View>
-              <Text style={styles.sectionCaption}>
-                Tap a manager to open their approvals, tracking, announcements,
-                attendance & team.
-              </Text>
-              {subManagers.map((m) => <ManagerNode key={m._id} mgr={m} />)}
-
-              {/* The senior manager's OWN section — their direct reports only.
-                  (Employees under a sub-manager are NOT repeated here; they live
-                  inside that manager's node above.) */}
               <View style={styles.sectionHeaderRow}>
                 <Ionicons name="person-outline" size={15} color={MC.green} />
                 <Text style={styles.sectionHeader}>Your own team</Text>
@@ -388,7 +373,7 @@ function ManagerHome() {
                 </View>
               </View>
               <Text style={styles.sectionCaption}>
-                Your direct reports only — the sub-teams above are managed separately.
+                Your direct reports only — the sub-teams below are managed separately.
               </Text>
             </>
           )}
@@ -415,6 +400,24 @@ function ManagerHome() {
               </Card>
             </TouchableOpacity>
           ))}
+
+          {/* ── Senior manager: MANAGERS REPORTING TO YOU (after own team) ── */}
+          {isSenior && (
+            <>
+              <View style={[styles.sectionHeaderRow, { marginTop: 8 }]}>
+                <MaterialCommunityIcons name="account-tie-outline" size={17} color={MC.green} />
+                <Text style={styles.sectionHeader}>Managers reporting to you</Text>
+                <View style={styles.sectionCountPill}>
+                  <Text style={styles.sectionCountText}>{subManagers.length}</Text>
+                </View>
+              </View>
+              <Text style={styles.sectionCaption}>
+                Tap a manager to open their approvals, tracking, announcements,
+                attendance & team.
+              </Text>
+              {subManagers.map((m) => <ManagerNode key={m._id} mgr={m} />)}
+            </>
+          )}
         </ScrollView>
       )}
     </View>
