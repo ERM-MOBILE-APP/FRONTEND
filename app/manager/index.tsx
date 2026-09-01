@@ -38,18 +38,21 @@ const initialOf = (n: string) => (n || '?').trim()[0]?.toUpperCase() || '?';
 // Feature rows shown under an expanded sub-manager. Each opens the existing
 // feature screen SCOPED to that sub-manager (managerId + managerName params),
 // so the backend re-scopes the data to that manager's own team.
+// Rendered AFTER the Team Members row, so the full node order matches the
+// manager's own cards: Team Members, Approvals, Attendance, Live Tracking,
+// Announcements.
 const NODE_FEATURES: {
   key: string; label: string; route: string;
   render: () => React.ReactNode;
 }[] = [
   { key: 'approvals',     label: 'Approvals',          route: '/manager/approvals',
     render: () => <MaterialCommunityIcons name="clipboard-check-outline" size={18} color={MC.green} /> },
+  { key: 'attendance',    label: 'Attendance Reports', route: '/manager/attendance',
+    render: () => <MaterialCommunityIcons name="calendar-account-outline" size={18} color={MC.green} /> },
   { key: 'tracking',      label: 'Live Tracking',      route: '/manager/tracking',
     render: () => <Ionicons name="location-outline" size={18} color={MC.green} /> },
   { key: 'announcements', label: 'Announcements',      route: '/manager/announcements',
     render: () => <Ionicons name="megaphone-outline" size={18} color={MC.green} /> },
-  { key: 'attendance',    label: 'Attendance Reports', route: '/manager/attendance',
-    render: () => <MaterialCommunityIcons name="calendar-account-outline" size={18} color={MC.green} /> },
 ];
 
 /**
@@ -116,20 +119,7 @@ function ManagerNode({ mgr }: { mgr: Person }) {
 
       {open && (
         <View style={styles.nodeBody}>
-          {NODE_FEATURES.map((f) => (
-            <TouchableOpacity
-              key={f.key}
-              style={styles.featureRow}
-              activeOpacity={0.7}
-              onPress={() => openScoped(f.route)}
-            >
-              <View style={styles.featureIcon}>{f.render()}</View>
-              <Text style={styles.featureLabel}>{f.label}</Text>
-              <Ionicons name="chevron-forward" size={16} color="#C4C9CF" />
-            </TouchableOpacity>
-          ))}
-
-          {/* Team Members — nested, lazy-loaded list. */}
+          {/* Team Members FIRST — nested, lazy-loaded list. */}
           <TouchableOpacity style={styles.featureRow} activeOpacity={0.7} onPress={toggleTeam}>
             <View style={styles.featureIcon}>
               <Ionicons name="people-outline" size={18} color={MC.green} />
@@ -175,6 +165,20 @@ function ManagerNode({ mgr }: { mgr: Person }) {
               )}
             </View>
           )}
+
+          {/* Then the rest, in the same order as the own-team cards. */}
+          {NODE_FEATURES.map((f) => (
+            <TouchableOpacity
+              key={f.key}
+              style={styles.featureRow}
+              activeOpacity={0.7}
+              onPress={() => openScoped(f.route)}
+            >
+              <View style={styles.featureIcon}>{f.render()}</View>
+              <Text style={styles.featureLabel}>{f.label}</Text>
+              <Ionicons name="chevron-forward" size={16} color="#C4C9CF" />
+            </TouchableOpacity>
+          ))}
         </View>
       )}
     </Card>
@@ -404,7 +408,8 @@ function ManagerHome() {
           {/* ── Senior manager: MANAGERS REPORTING TO YOU (after own team) ── */}
           {isSenior && (
             <>
-              <View style={[styles.sectionHeaderRow, { marginTop: 8 }]}>
+              <View style={styles.sectionSpacer} />
+              <View style={[styles.sectionHeaderRow, { marginTop: 4 }]}>
                 <MaterialCommunityIcons name="account-tie-outline" size={17} color={MC.green} />
                 <Text style={styles.sectionHeader}>Managers reporting to you</Text>
                 <View style={styles.sectionCountPill}>
@@ -448,6 +453,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, marginTop: 16, marginBottom: 2,
   },
   sectionHeader: { fontSize: 13.5, fontWeight: '800', color: MC.text, letterSpacing: 0.2 },
+  sectionSpacer: {
+    height: 1, backgroundColor: MC.border,
+    marginTop: 22, marginBottom: 4, marginHorizontal: 16,
+  },
   sectionCaption: { fontSize: 11.5, color: MC.sub, paddingHorizontal: 16, marginBottom: 8 },
   sectionCountPill: {
     minWidth: 20, height: 20, borderRadius: 10, backgroundColor: MC.greenBg,
