@@ -83,6 +83,71 @@ function getMessaging(): any | null {
   } catch { /* non-fatal */ }
 })();
 
+// ── Local display via expo-notifications (already a dependency, used for the
+// tracking channel). RNFirebase auto-shows the `notification` payload when the
+// app is BACKGROUND/QUIT, but (a) Android needs the 'default' channel to exist
+// or it drops the notification, and (b) nothing shows in the FOREGROUND. We use
+// expo-notifications to create that channel AND to render a system notification
+// for foreground messages so real pushes appear in every app state.
+function getExpoNotifications(): any | null {
+  try { const mod = 'expo-notifications'; return require(mod); } catch { return null; }
+}
+
+// Foreground presentation handler — without this, expo-notifications suppresses
+// the banner while the app is open. Registered once at module load.
+(() => {
+  const N = getExpoNotifications();
+  if (!N || !N.setNotificationHandler) return;
+  try {
+    N.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert:  true, // Expo SDK ≤ 53
+        shouldShowBanner: true, // Expo SDK 54+
+        shouldShowList:   true,
+        shouldPlaySound:  true,
+        shouldSetBadge:   false,
+      }),
+    });
+  } catch { /* non-fatal */ }
+})();
+
+/** Create the 'default' Android channel the backend's FCM messages target. */
+async function ensureAndroidChannel() {
+  if (Platform.OS !== 'android') return;
+  const N = getExpoNotifications();
+  if (!N || !N.setNotificationChannelAsync) return;
+  try {
+    await N.setNotificationChannelAsync('default', {
+      name: 'General',
+      importance: N.AndroidImportance ? N.AndroidImportance.MAX : 5,
+      sound: 'default',
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#4CAF50',
+    });
+  } catch { /* non-fatal */ }
+}
+
+/** Render a system notification for a FOREGROUND FCM message. */
+async function presentForeground(rm: any) {
+  const N = getExpoNotifications();
+  if (!N || !N.scheduleNotificationAsync) return;
+  const n = (rm && rm.notification) || {};
+  const title = n.title || 'Tesco ERM';
+  const body  = n.body  || '';
+  try {
+    await N.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        data: (rm && rm.data) || {},
+        sound: 'default',
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
+      trigger: null, // deliver immediately
+    });
+  } catch { /* non-fatal */ }
+}
+
 /** Navigate to a deep link once a session + the router are ready. */
 async function navigateWhenReady(link?: string) {
   if (!link || typeof link !== 'string') return;
@@ -102,13 +167,28 @@ async function navigateWhenReady(link?: string) {
 
 /** Foreground + tap listeners. Call once from the root layout. */
 export function configurePushHandler() {
+  // Make sure the Android 'default' channel exists so background/quit pushes
+  // display and the foreground ones we render have a channel to attach to.
+  ensureAndroidChannel();
+
+  // Tap on a notification we rendered ourselves (foreground) → deep-link.
+  const N = getExpoNotifications();
+  if (N && N.addNotificationResponseReceivedListener) {
+    try {
+      N.addNotificationResponseReceivedListener((resp: any) => {
+        const link = resp?.notification?.request?.content?.data?.link;
+        navigateWhenReady(link);
+      });
+    } catch { /* non-fatal */ }
+  }
+
   const messaging = getMessaging();
   if (!messaging) return;
   try {
-    // Foreground message: the backend already wrote the Notification row, so
-    // the in-app bell reflects it on next focus/poll. We intentionally do NOT
-    // pop a second system notification here (avoids duplicates).
-    messaging().onMessage(async (_rm: any) => { /* bell stays source of truth */ });
+    // Foreground message: Android does NOT auto-display FCM notifications while
+    // the app is open, so we render a system notification ourselves. The
+    // in-app bell still updates from the backend row — no duplicate bell entry.
+    messaging().onMessage(async (rm: any) => { presentForeground(rm); });
 
     // Tapped while the app was backgrounded.
     messaging().onNotificationOpenedApp((rm: any) => {
