@@ -49,9 +49,10 @@ function agoLabel(iso?: string) {
  */
 function LiveTracking() {
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ managerId?: string; managerName?: string }>();
+  const params = useLocalSearchParams<{ managerId?: string; managerName?: string; scope?: string }>();
   const managerId   = typeof params?.managerId   === 'string' ? params.managerId   : undefined;
   const managerName = typeof params?.managerName === 'string' ? params.managerName : '';
+  const scope: 'direct' | undefined = params?.scope === 'direct' ? 'direct' : undefined;
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [rows, setRows] = useState<any[]>([]);
@@ -92,7 +93,7 @@ function LiveTracking() {
   const load = useCallback(async (silent = false) => {
     if (!silent) setErr('');
     try {
-      const res = await managerAPI.liveLocations(managerId);
+      const res = await managerAPI.liveLocations(managerId, scope);
       const list = res?.data?.data || [];
       setRows(list);
       setUpdatedAt(res?.data?.generatedAt || new Date().toISOString());
@@ -103,7 +104,7 @@ function LiveTracking() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [resolvePlaces, managerId]);
+  }, [resolvePlaces, managerId, scope]);
 
   // Load on focus + poll every 30s; stop when unfocused.
   useFocusEffect(

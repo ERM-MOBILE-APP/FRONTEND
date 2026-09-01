@@ -624,19 +624,19 @@ export const managerAPI = {
    */
   hierarchy: (managerId?: string) =>
     api.get('/manager/hierarchy', { params: managerId ? { managerId } : {} }),
-  /** The manager's direct-report list (scoped to `managerId` when given). */
-  team: (managerId?: string) =>
-    api.get('/manager/team', { params: managerId ? { managerId } : {} }),
+  /** The manager's team (scoped to `managerId`; `scope='direct'` = level-1 only). */
+  team: (managerId?: string, scope?: 'direct') =>
+    api.get('/manager/team', { params: { ...(managerId ? { managerId } : {}), ...(scope ? { scope } : {}) } }),
 
   /** Leave + permission requests filed by the team. */
-  leaves: (params?: { status?: string; month?: number; year?: number; managerId?: string }) =>
+  leaves: (params?: { status?: string; month?: number; year?: number; managerId?: string; scope?: 'direct' }) =>
     api.get('/manager/leaves', { params }),
   /** Approve/reject a leave/permission request. */
   actLeave: (id: string, managerStatus: 'Approved' | 'Rejected') =>
     api.patch(`/manager/leaves/${id}`, { managerStatus }),
 
   /** Allowance claims (petrol vs travel via ?type=). */
-  allowances: (params?: { type?: 'travel' | 'petrol'; status?: string; managerId?: string }) =>
+  allowances: (params?: { type?: 'travel' | 'petrol'; status?: string; managerId?: string; scope?: 'direct' }) =>
     api.get('/manager/allowances', { params }),
   /** Approve (optionally partial) / reject an allowance claim. */
   actAllowance: (
@@ -646,24 +646,35 @@ export const managerAPI = {
   ) => api.patch(`/manager/allowances/${id}`, { managerStatus, ...(payload || {}) }),
 
   /** Team attendance for a single date. */
-  attendance: (date?: string, managerId?: string) =>
-    api.get('/manager/attendance', { params: { ...(date ? { date } : {}), ...(managerId ? { managerId } : {}) } }),
+  attendance: (date?: string, managerId?: string, scope?: 'direct') =>
+    api.get('/manager/attendance', { params: { ...(date ? { date } : {}), ...(managerId ? { managerId } : {}), ...(scope ? { scope } : {}) } }),
   /** Per-team-member monthly attendance summary (drives Reports). */
-  attendanceSummary: (params?: { month?: number; year?: number; managerId?: string }) =>
+  attendanceSummary: (params?: { month?: number; year?: number; managerId?: string; scope?: 'direct' }) =>
     api.get('/manager/attendance-summary', { params }),
   /** Latest GPS position per team member (Live Tracking). */
-  liveLocations: (managerId?: string) =>
-    api.get('/manager/live-locations', { params: managerId ? { managerId } : {} }),
+  liveLocations: (managerId?: string, scope?: 'direct') =>
+    api.get('/manager/live-locations', { params: { ...(managerId ? { managerId } : {}), ...(scope ? { scope } : {}) } }),
 
   /** Attendance regularisation queue for the team. */
-  attendanceRequests: (params?: { status?: string; managerId?: string }) =>
+  attendanceRequests: (params?: { status?: string; managerId?: string; scope?: 'direct' }) =>
     api.get('/manager/attendance-requests', { params }),
   actAttendanceRequest: (id: string, status: 'approved' | 'rejected', managerComment?: string) =>
     api.patch(`/manager/attendance-requests/${id}`, { status, managerComment }),
 
-  /** Team-scoped announcements. Posts to `managerId`'s team when supplied. */
-  postAnnouncement: (data: { title: string; body: string; category?: string; managerId?: string }) =>
-    api.post('/manager/announcements', data, { params: data.managerId ? { managerId: data.managerId } : {} }),
+  /**
+   * Team-scoped announcements. Audience is chosen via params:
+   *   • nothing            → the caller's whole downline
+   *   • scope='direct'     → the caller's direct reports only
+   *   • managerId=<id>     → that sub-manager's team
+   */
+  postAnnouncement: (data: {
+    title: string; body: string; category?: string; managerId?: string; scope?: 'direct';
+  }) =>
+    api.post(
+      '/manager/announcements',
+      { title: data.title, body: data.body, category: data.category },
+      { params: { ...(data.managerId ? { managerId: data.managerId } : {}), ...(data.scope ? { scope: data.scope } : {}) } },
+    ),
   myAnnouncements: () => api.get('/manager/announcements'),
   deleteAnnouncement: (id: string) => api.delete(`/manager/announcements/${id}`),
 };

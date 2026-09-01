@@ -203,19 +203,28 @@ function ManagerHome() {
   const load = useCallback(async () => {
     setErr('');
     try {
-      const [teamRes, hierRes, leaveRes, travelRes, petrolRes, attnRes] = await Promise.all([
+      const [teamRes, hierRes] = await Promise.all([
         managerAPI.team(),
         managerAPI.hierarchy(),
-        managerAPI.leaves({ status: 'pending' }),
-        managerAPI.allowances({ type: 'travel', status: 'pending' }),
-        managerAPI.allowances({ type: 'petrol', status: 'pending' }),
-        managerAPI.attendanceRequests({ status: 'pending' }),
       ]);
       const team = teamRes?.data?.team || [];
       setTeamSize(teamRes?.data?.count ?? team.length);
       setManagerName(teamRes?.data?.manager?.name || hierRes?.data?.manager?.name || '');
-      setSubManagers(hierRes?.data?.managers || []);
+      const subs = hierRes?.data?.managers || [];
+      setSubManagers(subs);
       setDirectReports(hierRes?.data?.directReports || []);
+
+      // Pending badges: for a SENIOR manager (has sub-managers), count only
+      // their OWN direct reports' pending — the sub-teams are triaged by their
+      // own managers first and shown under each manager node. A plain manager
+      // counts their whole team (which is just their direct reports anyway).
+      const scopeArg: 'direct' | undefined = subs.length > 0 ? 'direct' : undefined;
+      const [leaveRes, travelRes, petrolRes, attnRes] = await Promise.all([
+        managerAPI.leaves({ status: 'pending', scope: scopeArg }),
+        managerAPI.allowances({ type: 'travel', status: 'pending', scope: scopeArg }),
+        managerAPI.allowances({ type: 'petrol', status: 'pending', scope: scopeArg }),
+        managerAPI.attendanceRequests({ status: 'pending', scope: scopeArg }),
+      ]);
 
       const leaves = (leaveRes?.data?.items || []).filter((l: any) => !l.managerStatus).length;
       const allowances =
@@ -236,14 +245,26 @@ function ManagerHome() {
 
   const isSenior = subManagers.length > 0;
   const pending = counts.leaves + counts.allowances + counts.attnReqs;
+  // A senior manager's OWN team = their direct reports (sub-managers as people +
+  // leaf employees). Their sub-managers' sub-teams are NOT counted here — those
+  // live under each manager node above.
+  const directCount = subManagers.length + directReports.length;
 
-  // The manager's OWN feature cards. For a senior manager these act across the
-  // WHOLE downline (every level); for a plain manager, across their direct team.
+  // Params passed to the manager's OWN feature cards. For a senior manager they
+  // carry scope='direct' so each screen shows only the direct team (never the
+  // sub-managers' employees); for a plain manager, no scope (whole team).
+  const ownParams = isSenior ? { scope: 'direct' } : undefined;
+  const openOwn = (route: string) =>
+    router.push(ownParams ? ({ pathname: route as any, params: ownParams }) : (route as any));
+
+  // The manager's OWN feature cards — scoped to their direct team.
   const sections = [
     {
       key: 'team',
       title: 'Team Members',
-      desc: teamSize ? `${teamSize} people in your organisation` : 'Your assigned team',
+      desc: isSenior
+        ? `${directCount} direct ${directCount === 1 ? 'report' : 'reports'}`
+        : (teamSize ? `${teamSize} people report to you` : 'Your assigned team'),
       icon: <Ionicons name="people-outline" size={24} color="#fff" />,
       color: '#0EA5E9',
       badge: 0,
@@ -356,53 +377,28 @@ function ManagerHome() {
               </Text>
               {subManagers.map((m) => <ManagerNode key={m._id} mgr={m} />)}
 
-              {/* Employees who report DIRECTLY to a senior manager (not via a
-                  sub-manager) — shown as their own small group, not folded into
-                  a manager's team. */}
-              {directReports.length > 0 && (
-                <>
-                  <View style={[styles.sectionHeaderRow, { marginTop: 8 }]}>
-                    <Ionicons name="person-outline" size={15} color={MC.green} />
-                    <Text style={styles.sectionHeader}>Your direct reports</Text>
-                    <View style={styles.sectionCountPill}>
-                      <Text style={styles.sectionCountText}>{directReports.length}</Text>
-                    </View>
-                  </View>
-                  <Card style={{ paddingVertical: 4 }}>
-                    {directReports.map((m) => (
-                      <View key={m._id} style={styles.directRow}>
-                        <View style={styles.nodeAvatarSm}>
-                          <Text style={styles.nodeAvatarTextSm}>{initialOf(m.name)}</Text>
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.directName} numberOfLines={1}>{m.name}</Text>
-                          {!!m.designation && (
-                            <Text style={styles.directSub} numberOfLines={1}>{m.designation}</Text>
-                          )}
-                        </View>
-                        {m.active === false && <Text style={styles.memberInactive}>Inactive</Text>}
-                      </View>
-                    ))}
-                  </Card>
-                </>
-              )}
-
+              {/* The senior manager's OWN section — their direct reports only.
+                  (Employees under a sub-manager are NOT repeated here; they live
+                  inside that manager's node above.) */}
               <View style={styles.sectionHeaderRow}>
-                <Ionicons name="grid-outline" size={15} color={MC.green} />
-                <Text style={styles.sectionHeader}>Across your whole organisation</Text>
+                <Ionicons name="person-outline" size={15} color={MC.green} />
+                <Text style={styles.sectionHeader}>Your own team</Text>
+                <View style={styles.sectionCountPill}>
+                  <Text style={styles.sectionCountText}>{directCount}</Text>
+                </View>
               </View>
               <Text style={styles.sectionCaption}>
-                Act on everyone below you at once — all levels combined.
+                Your direct reports only — the sub-teams above are managed separately.
               </Text>
             </>
           )}
 
-          {/* ── The manager's own feature cards ────────────────────────── */}
+          {/* ── The manager's own feature cards (direct team) ──────────── */}
           {sections.map((s) => (
             <TouchableOpacity
               key={s.key}
               activeOpacity={0.85}
-              onPress={() => router.push(s.route as any)}
+              onPress={() => openOwn(s.route)}
             >
               <Card style={styles.navCard}>
                 <View style={[styles.navIcon, { backgroundColor: s.color }]}>{s.icon}</View>

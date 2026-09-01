@@ -28,13 +28,15 @@ const empName = (u: any) =>
   u?.name || [u?.firstName, u?.lastName].filter(Boolean).join(' ').trim() || 'Employee';
 
 function Approvals() {
-  const params = useLocalSearchParams<{ tab?: string; managerId?: string; managerName?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; managerId?: string; managerName?: string; scope?: string }>();
   const initialTab: TabKey =
     params?.tab === 'attnreq' ? 'attnreq' : params?.tab === 'allowance' ? 'allowance' : 'leave';
   // When a higher-level manager drills into a sub-manager's dashboard, every
-  // request here is scoped to THAT manager's team via `managerId`.
+  // request here is scoped to THAT manager's team via `managerId`. `scope=direct`
+  // narrows a senior manager's own section to their DIRECT reports only.
   const managerId   = typeof params?.managerId   === 'string' ? params.managerId   : undefined;
   const managerName = typeof params?.managerName === 'string' ? params.managerName : '';
+  const scope: 'direct' | undefined = params?.scope === 'direct' ? 'direct' : undefined;
 
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<TabKey>(initialTab);
@@ -61,9 +63,9 @@ function Approvals() {
     setLoading(true);
     try {
       let res;
-      if (tab === 'leave') res = await managerAPI.leaves({ managerId });
-      else if (tab === 'allowance') res = await managerAPI.allowances({ type: allowanceType, managerId });
-      else res = await managerAPI.attendanceRequests({ managerId });
+      if (tab === 'leave') res = await managerAPI.leaves({ managerId, scope });
+      else if (tab === 'allowance') res = await managerAPI.allowances({ type: allowanceType, managerId, scope });
+      else res = await managerAPI.attendanceRequests({ managerId, scope });
       setItems(res?.data?.items || []);
     } catch (e: any) {
       setErr(e?.response?.data?.message || e?.message || 'Could not load requests.');
@@ -72,7 +74,7 @@ function Approvals() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [tab, allowanceType, managerId]);
+  }, [tab, allowanceType, managerId, scope]);
 
   // Pending counts across ALL tabs (so each tab shows its own badge even
   // when it's not the active tab). "Pending" = not yet acted on by the
@@ -80,10 +82,10 @@ function Approvals() {
   const loadCounts = useCallback(async () => {
     try {
       const [lv, tv, pt, ar] = await Promise.all([
-        managerAPI.leaves({ managerId }),
-        managerAPI.allowances({ type: 'travel', managerId }),
-        managerAPI.allowances({ type: 'petrol', managerId }),
-        managerAPI.attendanceRequests({ managerId }),
+        managerAPI.leaves({ managerId, scope }),
+        managerAPI.allowances({ type: 'travel', managerId, scope }),
+        managerAPI.allowances({ type: 'petrol', managerId, scope }),
+        managerAPI.attendanceRequests({ managerId, scope }),
       ]);
       const pend = (arr: any[]) => (arr || []).filter((x) => !x.managerStatus).length;
       setCounts({
@@ -92,7 +94,7 @@ function Approvals() {
         attnreq: pend(ar?.data?.items),
       });
     } catch { /* counts are best-effort */ }
-  }, [managerId]);
+  }, [managerId, scope]);
 
   React.useEffect(() => { load(); }, [load]);
   React.useEffect(() => { loadCounts(); }, [loadCounts]);

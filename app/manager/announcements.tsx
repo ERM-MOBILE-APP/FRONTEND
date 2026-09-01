@@ -37,9 +37,10 @@ function fmtDate(v: any) {
  */
 function ManagerAnnouncements() {
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ managerId?: string; managerName?: string }>();
+  const params = useLocalSearchParams<{ managerId?: string; managerName?: string; scope?: string }>();
   const managerId   = typeof params?.managerId   === 'string' ? params.managerId   : undefined;
   const managerName = typeof params?.managerName === 'string' ? params.managerName : '';
+  const scope: 'direct' | undefined = params?.scope === 'direct' ? 'direct' : undefined;
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [items, setItems] = useState<any[]>([]);
@@ -50,6 +51,14 @@ function ManagerAnnouncements() {
   const [body, setBody] = useState('');
   const [category, setCategory] = useState('general');
   const [posting, setPosting] = useState(false);
+
+  // Audience picker (senior managers only). Each option maps to a backend
+  // scope: whole hierarchy (default), direct reports only (scope='direct'), or
+  // a specific sub-manager's team (managerId). Empty for a plain manager or
+  // when this screen was opened already scoped to one manager.
+  type AudienceOpt = { key: string; label: string; count: number; managerId?: string; scope?: 'direct' };
+  const [audiences, setAudiences] = useState<AudienceOpt[]>([]);
+  const [audienceKey, setAudienceKey] = useState<string>('all');
 
   const load = useCallback(async () => {
     setErr('');
@@ -66,8 +75,40 @@ function ManagerAnnouncements() {
     }
   }, []);
 
+  // Build the audience options for a senior manager (has sub-managers). Skipped
+  // when the screen is already scoped to one manager (opened from a node).
+  const loadAudiences = useCallback(async () => {
+    if (managerId) { setAudiences([]); return; }
+    try {
+      const [teamRes, hierRes] = await Promise.all([
+        managerAPI.team(),
+        managerAPI.hierarchy(),
+      ]);
+      const subs: any[]   = hierRes?.data?.managers || [];
+      const direct: any[] = hierRes?.data?.directReports || [];
+      if (subs.length === 0) { setAudiences([]); return; }
+      const fullCount   = teamRes?.data?.count ?? 0;
+      const directCount = subs.length + direct.length;
+      const opts: AudienceOpt[] = [
+        { key: 'all',    label: 'My whole hierarchy', count: fullCount },
+        { key: 'direct', label: 'My direct reports',  count: directCount, scope: 'direct' },
+        ...subs.map((m) => ({
+          key: String(m._id),
+          label: `${m.name}'s team`,
+          count: m.teamCount ?? 0,
+          managerId: String(m._id),
+        })),
+      ];
+      setAudiences(opts);
+      // Default to the scope this screen was opened with (the "Your own team"
+      // card passes scope='direct'); otherwise the whole hierarchy.
+      setAudienceKey(scope === 'direct' ? 'direct' : 'all');
+    } catch { setAudiences([]); }
+  }, [managerId, scope]);
+
   React.useEffect(() => { load(); }, [load]);
-  const onRefresh = () => { setRefreshing(true); load(); };
+  React.useEffect(() => { loadAudiences(); }, [loadAudiences]);
+  const onRefresh = () => { setRefreshing(true); load(); loadAudiences(); };
 
   const openCompose = () => { setTitle(''); setBody(''); setCategory('general'); setComposing(true); };
   const closeCompose = () => { if (!posting) setComposing(false); };
@@ -79,7 +120,16 @@ function ManagerAnnouncements() {
     }
     setPosting(true);
     try {
-      await managerAPI.postAnnouncement({ title: title.trim(), body: body.trim(), category, managerId });
+      const sel = audiences.find((a) => a.key === audienceKey);
+      await managerAPI.postAnnouncement({
+        title: title.trim(),
+        body: body.trim(),
+        category,
+        // Explicit managerId param (opened from a node) wins; otherwise the
+        // chosen audience decides (a sub-manager's team, or direct-only scope).
+        managerId: managerId ?? sel?.managerId,
+        scope: sel?.scope,
+      });
       setComposing(false);
       load();
     } catch (e: any) {
@@ -168,7 +218,12 @@ function ManagerAnnouncements() {
           <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeCompose} />
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 22 }]}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Post to your team</Text>
+            <Text style={styles.sheetTitle}>
+              {managerName ? `Post to ${managerName}'s team` : 'New announcement'}
+            </Text>
+            {audiences.length > 0 && (
+              <Text style={styles.sheetSub}>Choose who receives it</Text>
+            )}
 
             <Text style={styles.fieldLabel}>Category</Text>
             <View style={styles.catRow}>
@@ -205,6 +260,33 @@ function ManagerAnnouncements() {
               multiline
               maxLength={800}
             />
+
+            {audiences.length > 0 && (
+              <>
+                <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Audience</Text>
+                <View style={{ gap: 8 }}>
+                  {audiences.map((a) => {
+                    const active = audienceKey === a.key;
+                    return (
+                      <TouchableOpacity
+                        key={a.key}
+                        style={[styles.audOpt, active && styles.audOptActive]}
+                        activeOpacity={0.8}
+                        onPress={() => setAudienceKey(a.key)}
+                      >
+                        <View style={[styles.radio, active && styles.radioActive]}>
+                          {active && <View style={styles.radioDot} />}
+                        </View>
+                        <Text style={[styles.audLabel, active && styles.audLabelActive]} numberOfLines={1}>
+                          {a.label}
+                        </Text>
+                        <Text style={styles.audCount}>{a.count}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </>
+            )}
 
             <View style={styles.sheetBtns}>
               <TouchableOpacity style={styles.cancelBtn} onPress={closeCompose} disabled={posting}>
@@ -246,8 +328,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, paddingTop: 10, paddingBottom: 28,
   },
   sheetHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: '#DADCE0', marginBottom: 14 },
-  sheetTitle: { fontSize: 17, fontWeight: '800', color: MC.text, marginBottom: 14 },
+  sheetTitle: { fontSize: 17, fontWeight: '800', color: MC.text, marginBottom: 2 },
+  sheetSub: { fontSize: 12.5, color: MC.sub, marginBottom: 14 },
   fieldLabel: { fontSize: 12.5, fontWeight: '700', color: MC.text, marginBottom: 6 },
+
+  // Audience radio options
+  audOpt: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 11, borderRadius: 12,
+    borderWidth: 1.4, borderColor: MC.border, backgroundColor: '#fff',
+  },
+  audOptActive: { borderColor: MC.green, backgroundColor: MC.greenBg },
+  radio: {
+    width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#C4C9CF',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  radioActive: { borderColor: MC.green },
+  radioDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: MC.green },
+  audLabel: { flex: 1, fontSize: 13.5, fontWeight: '700', color: MC.text },
+  audLabelActive: { color: MC.green },
+  audCount: {
+    fontSize: 12, fontWeight: '800', color: MC.sub,
+    backgroundColor: '#F1F3F5', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 1,
+  },
   catRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 6 },
   catChip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: MC.border, backgroundColor: '#fff' },
   catChipActive: { borderColor: MC.green, backgroundColor: MC.greenBg },

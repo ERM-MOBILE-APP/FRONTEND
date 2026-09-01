@@ -29,9 +29,10 @@ const beforeErmStart = (m: number, y: number) =>
 
 function TeamAttendance() {
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ managerId?: string; managerName?: string }>();
+  const params = useLocalSearchParams<{ managerId?: string; managerName?: string; scope?: string }>();
   const managerId   = typeof params?.managerId   === 'string' ? params.managerId   : undefined;
   const managerName = typeof params?.managerName === 'string' ? params.managerName : '';
+  const scope: 'direct' | undefined = params?.scope === 'direct' ? 'direct' : undefined;
   const now = new Date();
   // Default to the current month, but never earlier than the ERM start.
   const startMonth = beforeErmStart(now.getMonth() + 1, now.getFullYear())
@@ -49,7 +50,7 @@ function TeamAttendance() {
     setErr('');
     setLoading(true);
     try {
-      const res = await managerAPI.attendanceSummary({ month, year, managerId });
+      const res = await managerAPI.attendanceSummary({ month, year, managerId, scope });
       setItems(res?.data?.items || []);
     } catch (e: any) {
       setErr(e?.response?.data?.message || e?.message || 'Could not load attendance.');
@@ -58,7 +59,7 @@ function TeamAttendance() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [month, year, managerId]);
+  }, [month, year, managerId, scope]);
 
   React.useEffect(() => { load(); }, [load]);
   const onRefresh = () => { setRefreshing(true); load(); };
