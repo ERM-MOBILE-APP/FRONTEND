@@ -3,7 +3,7 @@
     "name": "TescoERM",
     "slug": "TescoERM",
     "scheme": "tescoerm",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "platforms": [
       "android"
@@ -16,17 +16,18 @@
     },
     "userInterfaceStyle": "light",
     "androidStatusBar": {
-      "backgroundColor": "#2E8C2C",
+      "backgroundColor": "#4CAF50",
       "barStyle": "light-content",
       "translucent": false
     },
     "androidNavigationBar": {
-      "backgroundColor": "#2E8C2C",
+      "backgroundColor": "#4CAF50",
       "barStyle": "light-content"
     },
     "android": {
       "package": "com.tescodigitals26.tescoerm",
-      "versionCode": 4,
+      "versionCode": 5,
+      "softwareKeyboardLayoutMode": "pan",
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

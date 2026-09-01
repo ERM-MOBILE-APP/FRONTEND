@@ -14,6 +14,7 @@ import {
   StatusBar,
   Dimensions,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { authAPI } from '../../services/api';
@@ -138,11 +139,11 @@ export default function OtpScreen() {
   const handleVerify = async () => {
     const code = digits.join('');
     if (code.length !== OTP_LENGTH) {
-      Alert.alert('Incomplete OTP', `Please enter all ${OTP_LENGTH} digits.`);
+      premiumAlert('Incomplete OTP', `Please enter all ${OTP_LENGTH} digits.`);
       return;
     }
     if (validitySec <= 0) {
-      Alert.alert('OTP expired', 'Please resend the OTP and try again.');
+      premiumAlert('OTP expired', 'Please resend the OTP and try again.');
       return;
     }
 
@@ -156,7 +157,7 @@ export default function OtpScreen() {
         params: { email, resetToken: resetToken || '' },
       });
     } catch (err: any) {
-      Alert.alert(
+      premiumAlert(
         'Verification failed',
         err?.response?.data?.message || 'Invalid OTP. Please try again.'
       );
@@ -174,9 +175,9 @@ export default function OtpScreen() {
       setResendIn(RESEND_COOLDOWN_SEC);
       setDigits(Array(OTP_LENGTH).fill(''));
       inputs.current[0]?.focus();
-      Alert.alert('OTP Resent', `A new OTP has been sent to ${email}`);
+      premiumAlert('OTP Resent', `A new OTP has been sent to ${email}`);
     } catch (err: any) {
-      Alert.alert(
+      premiumAlert(
         'Could not resend',
         err?.response?.data?.message || 'Try again in a moment.'
       );
@@ -318,9 +319,9 @@ export default function OtpScreen() {
 }
 
 // ---------- Theme ----------
-const GREEN_BG = '#2E8C2C';
-const GREEN_BG_DARK = '#1F6A1E';
-const GREEN_PRIMARY = '#3FAE3B';
+const GREEN_BG = '#4CAF50';
+const GREEN_BG_DARK = '#4CAF50';
+const GREEN_PRIMARY = '#4CAF50';
 const GREEN_SOFT = '#E8F5E5';
 const GRID_LINE = 'rgba(255,255,255,0.06)';
 const GRID_DOT = 'rgba(255,255,255,0.18)';

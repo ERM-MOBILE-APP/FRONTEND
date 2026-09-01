@@ -26,6 +26,8 @@ import { wipeUserScopedTracking } from '../../services/pingStore';
 // The rest of the app (other tabs, GPS task, session) stays alive
 // instead of the whole app reloading.
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
+// #502 — premium confirm dialog (replaces the bare OS Alert for logout).
+import ConfirmModal from '../../components/ConfirmModal';
 
 
 type UserProfile = {
@@ -141,46 +143,36 @@ export default function ProfileScreen() {
     }, [loadProfile])
   );
 
-  const handleLogout = async () => {
-    Alert.alert('Log out', 'Are you sure you want to log out?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Log out',
-        style: 'destructive',
-        onPress: async () => {
-          // CRITICAL: stop the OS background location task BEFORE clearing
-          // the token. Otherwise the task keeps running with a now-invalid
-          // token, the foreground service notification stays up, and the
-          // battery keeps draining for nothing. Mark the user offline on
-          // the server too so HR sees the correct presence immediately.
-          try { await attendanceAPI.setPresence('offline'); } catch {}
-          try { await stopBackgroundLocationUpdates('user logout'); } catch {}
-          // #384 — Also stop the react-native-background-actions
-          // tracker. Otherwise the foreground-service notification
-          // hangs around after logout and the task keeps trying to
-          // POST with a token that just got wiped.
-          try { await stopBackgroundTracking('user logout'); } catch {}
-          // #415 — Wipe user-scoped local state BEFORE clearing the
-          // token. If we cleared the token first and this call failed,
-          // the next user would inherit the previous user's checkedIn
-          // flag, cached `today` snapshot, and pending ping queue.
-          // wipeUserScopedTracking removes:
-          //   • SQLite tracking_state row (checkedIn / employeeId / …)
-          //   • Pending pings from the queue
-          //   • erm-today-v1 (cached Home tab snapshot)
-          //   • Every erm-bg-* AsyncStorage key
-          try { await wipeUserScopedTracking(); } catch {}
-          // Detach this device from the user so they stop receiving push
-          // notifications after logging out (best-effort, before token wipe).
-          try {
-            const { unregisterPushToken } = require('../../services/push');
-            await unregisterPushToken();
-          } catch {}
-          await AsyncStorage.multiRemove(['token', 'user', 'userId', 'erm-is-manager']);
-          router.replace('/(auth)/login' as any);
-        },
-      },
-    ]);
+  // #502 — premium logout confirmation (was a native Alert).
+  const [showLogout, setShowLogout] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const handleLogout = () => setShowLogout(true);
+
+  const doLogout = async () => {
+    setLoggingOut(true);
+    // CRITICAL: stop the OS background location task BEFORE clearing
+    // the token. Otherwise the task keeps running with a now-invalid
+    // token, the foreground service notification stays up, and the
+    // battery keeps draining for nothing. Mark the user offline on
+    // the server too so HR sees the correct presence immediately.
+    try { await attendanceAPI.setPresence('offline'); } catch {}
+    try { await stopBackgroundLocationUpdates('user logout'); } catch {}
+    // #384 — Also stop the react-native-background-actions tracker.
+    try { await stopBackgroundTracking('user logout'); } catch {}
+    // #415 — Wipe user-scoped local state BEFORE clearing the token so the
+    // next user can't inherit this user's checkedIn flag / cached today /
+    // pending ping queue.
+    try { await wipeUserScopedTracking(); } catch {}
+    // Detach this device from the user so they stop receiving push
+    // notifications after logging out (best-effort, before token wipe).
+    try {
+      const { unregisterPushToken } = require('../../services/push');
+      await unregisterPushToken();
+    } catch {}
+    await AsyncStorage.multiRemove(['token', 'user', 'userId', 'erm-is-manager']);
+    setShowLogout(false);
+    setLoggingOut(false);
+    router.replace('/(auth)/login' as any);
   };
 
   // Derived from the real name — no hard-coded "V" fallback.
@@ -264,6 +256,19 @@ export default function ProfileScreen() {
           <Text style={styles.logoutCaption}>Log out</Text>
         </View>
       </ScrollView>
+
+      <ConfirmModal
+        visible={showLogout}
+        tone="danger"
+        icon="log-out"
+        title="Log out?"
+        message="Are you sure you want to log out? You'll need to sign in again to mark your attendance."
+        confirmText="Log out"
+        cancelText="Cancel"
+        loading={loggingOut}
+        onConfirm={doLogout}
+        onCancel={() => setShowLogout(false)}
+      />
     </SafeAreaView>
     </ScreenErrorBoundary>
   );;
@@ -313,7 +318,7 @@ const styles = StyleSheet.create({
   avatarImg: { width: '100%', height: '100%' },
   avatarInitial: {
     fontSize: 50,
-    color: '#2E7D32',
+    color: '#4CAF50',
     fontWeight: '800',
   },
 
@@ -327,7 +332,7 @@ const styles = StyleSheet.create({
   designation: {
     textAlign: 'center',
     fontSize: 12,
-    color: '#2E7D32',
+    color: '#4CAF50',
     fontWeight: '700',
     letterSpacing: 1,
     marginTop: 4,

@@ -13,6 +13,7 @@ import {
   Animated,
   Easing,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, Feather } from '@expo/vector-icons';
@@ -30,6 +31,8 @@ import SideDrawer from '../../components/SideDrawer';
 // remaining "app comes out by itself" source. HomeScreen is the most
 // complex tab in the app; it MUST have per-screen protection.
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
+// #502 — premium confirm dialog (replaces the bare OS Alert for check-out).
+import ConfirmModal from '../../components/ConfirmModal';
 // #405 — Primary bg tracker (react-native-background-actions FGS).
 import {
   startBackgroundTracking,
@@ -140,11 +143,11 @@ function PremiumLoader({ variant }: { variant: 'in' | 'out' }) {
 
   const isIn = variant === 'in';
   // Palette
-  const accent    = isIn ? '#16A34A' : '#1D4ED8'; // primary
-  const accent2   = isIn ? '#22C55E' : '#3B82F6'; // mid
+  const accent    = isIn ? '#4CAF50' : '#1D4ED8'; // primary
+  const accent2   = isIn ? '#4CAF50' : '#3B82F6'; // mid
   const tint      = isIn ? '#DCFCE7' : '#DBEAFE'; // pale halo
   const ringSoft  = isIn ? '#86EFAC' : '#93C5FD'; // soft ring color
-  const iconBg    = isIn ? '#16A34A' : '#1D4ED8';
+  const iconBg    = isIn ? '#4CAF50' : '#1D4ED8';
 
   const rotation  = rotateRef.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
   const haloScale = pulseRef.interpolate ({ inputRange: [0, 1], outputRange: [0.85, 1.15] });
@@ -363,8 +366,19 @@ export default function HomeScreen() {
   // Alert.alert pop-ups so success looks branded instead of like a
   // system error dialog. `null` = closed; otherwise { kind, time }.
   const [checkResult, setCheckResult] = useState<
-    null | { kind: 'in' | 'out' | 'done'; time: string }
+    null | { kind: 'in' | 'out' | 'done'; time: string; date?: string }
   >(null);
+
+  // #502 — premium check-out confirmation (replaces the OS Alert). The
+  // handleCheckPress flow awaits a Promise that this modal's buttons resolve.
+  const [confirmCheckout, setConfirmCheckout] = useState(false);
+  const checkoutResolverRef = useRef<((v: boolean) => void) | null>(null);
+  const settleCheckout = (v: boolean) => {
+    setConfirmCheckout(false);
+    const r = checkoutResolverRef.current;
+    checkoutResolverRef.current = null;
+    if (r) r(v);
+  };
 
   const refreshUnread = useCallback(async () => {
     try {
@@ -847,6 +861,14 @@ export default function HomeScreen() {
     );
   };
 
+  // #501 — Long date for the check-in/out success card, e.g.
+  // "May 27, 2026 · Tuesday". Captured at the moment of the action.
+  const formatLongDate = (d: Date) => {
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} · ${DAYS[d.getDay()]}`;
+  };
+
   const formatHourMin = (iso?: string | null) => {
     if (!iso) return '--:--';
     try {
@@ -916,7 +938,7 @@ export default function HomeScreen() {
     try {
       const servicesEnabled = await Location.hasServicesEnabledAsync();
       if (!servicesEnabled) {
-        Alert.alert(
+        premiumAlert(
           'Turn on Location',
           'Location services are OFF on your device. Please enable Location (GPS) in your phone settings and try again — check-in is not allowed without it.',
           [
@@ -932,7 +954,7 @@ export default function HomeScreen() {
         status = req.status;
       }
       if (status !== 'granted') {
-        Alert.alert(
+        premiumAlert(
           'Location permission required',
           'Tesco ERM needs location access to record your check-in.',
           [
@@ -986,7 +1008,7 @@ export default function HomeScreen() {
       // the check-in, which is worse than checking in without GPS).
       return { lat: undefined as any, lng: undefined as any, accuracy: undefined };
     } catch (err: any) {
-      Alert.alert(
+      premiumAlert(
         'Could not read location',
         'Make sure GPS is on and you have a clear view of the sky, then try again.\n\n(' +
           (err?.message || 'unknown') + ')'
@@ -1061,7 +1083,7 @@ export default function HomeScreen() {
     try { await attendanceAPI.setPresence('offline'); } catch {}
     if (gpsOffWarnedRef.current) return;
     gpsOffWarnedRef.current = true;
-    Alert.alert(
+    premiumAlert(
       'Turn on Location',
       'Live tracking is paused — your phone Location is OFF. You are still checked in. ' +
       'Please turn Location ON so HR can see your live status. Tracking will resume automatically.',
@@ -1631,15 +1653,8 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
     // above guarantees a single dialog even on a double-tap.
     if (checkedIn && !checkedOut) {
       const confirmed = await new Promise<boolean>((resolve) => {
-        Alert.alert(
-          'Check out?',
-          'Are you sure you want to check out? This ends your shift for today and stops location tracking.',
-          [
-            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-            { text: 'Check Out', style: 'destructive', onPress: () => resolve(true) },
-          ],
-          { cancelable: true, onDismiss: () => resolve(false) },
-        );
+        checkoutResolverRef.current = resolve;
+        setConfirmCheckout(true);
       });
       if (!confirmed) return;
     }
@@ -1771,7 +1786,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
               JSON.stringify({ ...optimisticToday, __ownerId: ownerId })
             );
           }).catch(() => {});
-          try { setCheckResult({ kind: 'in', time: checkInTime }); }
+          try { setCheckResult({ kind: 'in', time: checkInTime, date: formatLongDate(new Date()) }); }
           catch (e: any) { console.warn('[handleCheckPress] setCheckResult failed:', e?.message || e); }
         }, 260);
 
@@ -1850,7 +1865,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
           try {
             const bgOk = await startBackgroundLocationUpdates();
             if (!bgOk) {
-              Alert.alert(
+              premiumAlert(
                 'Background location — optional',
                 'For the best experience, go to Settings → Permissions → Location → "Allow all the time". ' +
                 'Without it, HR may see you as "Offline" when the app is in the background.',
@@ -1881,7 +1896,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
             const askedBattery = await AsyncStorage.getItem('battery_exempt_asked');
             if (!askedBattery) {
               await AsyncStorage.setItem('battery_exempt_asked', '1');
-              Alert.alert(
+              premiumAlert(
                 'Keep tracking running (Step 1 of 2)',
                 'Android battery savers can kill location updates while you\'re working. ' +
                 'On the next screen, tap "Allow" to let Tesco ERM keep running in the background. ' +
@@ -1909,7 +1924,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
             const askedAutostart = await AsyncStorage.getItem('autostart_asked');
             if (isOemWithAutostart && !askedAutostart) {
               await AsyncStorage.setItem('autostart_asked', '1');
-              Alert.alert(
+              premiumAlert(
                 'Enable Autostart (Step 2 of 2)',
                 `${oemLabel} phones need a separate "Autostart" permission for ` +
                 `live tracking to keep running while the app is in the background.\n\n` +
@@ -2036,7 +2051,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
         // check-out on Android 12/13.
         setTimeout(() => {
           if (!mountedRef.current) return;
-          try { setCheckResult({ kind: 'out', time: checkOutTime }); }
+          try { setCheckResult({ kind: 'out', time: checkOutTime, date: formatLongDate(new Date()) }); }
           catch (e: any) { console.warn('[handleCheckPress] setCheckResult(out) failed:', e?.message || e); }
         }, 260);
         try { await attendanceAPI.setPresence('offline'); } catch {}
@@ -2094,7 +2109,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
         // #424 — Same 60→260 ms fix (see check-in branch).
         setTimeout(() => {
           if (!mountedRef.current) return;
-          try { setCheckResult({ kind: 'done', time: doneTime }); }
+          try { setCheckResult({ kind: 'done', time: doneTime, date: formatLongDate(new Date()) }); }
           catch (e: any) { console.warn('[handleCheckPress] setCheckResult(done) failed:', e?.message || e); }
         }, 260);
       }
@@ -2167,7 +2182,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
         }
         try { await refreshToday(); } catch { /* keep going */ }
       } else {
-        Alert.alert('Error', msg);
+        premiumAlert('Error', msg);
       }
     } finally {
       setActionBusy(false);
@@ -2310,10 +2325,10 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
                   for HRMS reports + attendance history, but not for
                   the live dashboard tile. */}
               <StatItem
-                icon={<Feather name="log-in" size={20} color="#2E7D32" />}
+                icon={<Feather name="log-in" size={20} color="#4CAF50" />}
                 value={formatHourMin(today.checkIn)}
                 label="Check In"
-                color="#2E7D32"
+                color="#4CAF50"
               />
               <View style={styles.vDivider} />
               <StatItem
@@ -2348,7 +2363,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
                 <Ionicons
                   name="megaphone-outline"
                   size={16}
-                  color="#1B5E20"
+                  color="#4CAF50"
                   style={{ marginLeft: 6 }}
                 />
               </View>
@@ -2474,8 +2489,8 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
                       : 'Saving today\'s log and stopping live tracking…'}
                   </Text>
                   <View style={loaderStyles.dotRow}>
-                    <View style={[loaderStyles.dot, { backgroundColor: loaderShowsIn ? '#16A34A' : '#1D4ED8' }]} />
-                    <View style={[loaderStyles.dot, { backgroundColor: loaderShowsIn ? '#22C55E' : '#3B82F6', opacity: 0.6 }]} />
+                    <View style={[loaderStyles.dot, { backgroundColor: loaderShowsIn ? '#4CAF50' : '#1D4ED8' }]} />
+                    <View style={[loaderStyles.dot, { backgroundColor: loaderShowsIn ? '#4CAF50' : '#3B82F6', opacity: 0.6 }]} />
                     <View style={[loaderStyles.dot, { backgroundColor: loaderShowsIn ? '#86EFAC' : '#93C5FD', opacity: 0.35 }]} />
                   </View>
                 </>
@@ -2499,78 +2514,102 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
           style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', alignItems: 'center', justifyContent: 'center', padding: 24 }}
           onPress={() => setCheckResult(null)}
         >
+          {(() => {
+            // #501 — New branded success card: green for check-in, blue for
+            // check-out. Header row (status circle + title/subtitle), a divider,
+            // then a time row (icon box + label/time/date) with a "Got it" button.
+            const isOut = checkResult?.kind === 'out';
+            const t = isOut
+              ? { accent: '#2563EB', circle: '#3B82F6', soft: '#E7F0FE', spark: '#93C5FD' }
+              : { accent: '#4CAF50', circle: '#4CAF50', soft: '#E7F8EE', spark: '#86EFAC' };
+            const title = isOut ? 'Checked Out Successfully!'
+              : checkResult?.kind === 'in' ? 'Checked In Successfully!'
+              : "You're all set for today!";
+            const subtitle = isOut ? 'Great work today! See you tomorrow.'
+              : checkResult?.kind === 'in' ? "Great start! You're all set for today."
+              : 'Both check-in and check-out are recorded.';
+            const timeLabel = isOut ? 'Check-out Time' : 'Check-in Time';
+            const boxIcon: any = isOut ? 'log-out' : 'log-in';
+            return (
           <Pressable
             onPress={() => {}}
             style={{
-              width: '100%', maxWidth: 340,
-              backgroundColor: '#FFFFFF', borderRadius: 18,
-              paddingTop: 28, paddingBottom: 18, paddingHorizontal: 22,
-              alignItems: 'center',
+              width: '100%', maxWidth: 360,
+              backgroundColor: '#FFFFFF', borderRadius: 20,
+              paddingVertical: 20, paddingHorizontal: 20,
               shadowColor: '#000', shadowOpacity: 0.18, shadowOffset: { width: 0, height: 10 }, shadowRadius: 24, elevation: 10,
             }}
           >
-            {/* Status circle */}
-            <View style={{
-              width: 76, height: 76, borderRadius: 38,
-              backgroundColor:
-                checkResult?.kind === 'in'  ? '#E8F5E9' :
-                checkResult?.kind === 'out' ? '#E3F2FD' :
-                '#F1F5F9',
-              alignItems: 'center', justifyContent: 'center',
-              marginBottom: 14,
-            }}>
-              <Feather
-                name={
-                  checkResult?.kind === 'in'  ? 'log-in' :
-                  checkResult?.kind === 'out' ? 'log-out' :
-                  'check-circle'
-                }
-                size={36}
-                color={
-                  checkResult?.kind === 'in'  ? '#2E7D32' :
-                  checkResult?.kind === 'out' ? '#1565C0' :
-                  '#64748B'
-                }
-              />
+            {/* Header: status circle + title/subtitle */}
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <View style={{ width: 60, height: 60, alignItems: 'center', justifyContent: 'center' }}>
+                {/* sparkle accents */}
+                <Text style={{ position: 'absolute', top: 0, right: 2, color: t.spark, fontSize: 12, fontWeight: '900' }}>✦</Text>
+                <Text style={{ position: 'absolute', bottom: 2, left: 0, color: t.spark, fontSize: 9, fontWeight: '900' }}>✦</Text>
+                <Text style={{ position: 'absolute', top: 8, left: 2, color: t.spark, fontSize: 7, fontWeight: '900' }}>✦</Text>
+                <View style={{
+                  width: 48, height: 48, borderRadius: 24,
+                  backgroundColor: t.circle,
+                  alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Feather name="check" size={26} color="#FFFFFF" />
+                </View>
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={{ fontSize: 17, fontWeight: '800', color: '#0F172A' }}>{title}</Text>
+                <Text style={{ fontSize: 12.5, color: '#64748B', marginTop: 3, lineHeight: 17 }}>{subtitle}</Text>
+              </View>
             </View>
 
-            <Text style={{ fontSize: 19, fontWeight: '800', color: '#0F172A', marginBottom: 6, textAlign: 'center' }}>
-              {checkResult?.kind === 'in'  ? 'Checked In Successfully' :
-               checkResult?.kind === 'out' ? 'Checked Out Successfully' :
-               "You're all done for today"}
-            </Text>
+            {/* Divider */}
+            <View style={{ height: 1, backgroundColor: '#EEF2F6', marginVertical: 16 }} />
 
-            <Text style={{ fontSize: 13, color: '#475569', textAlign: 'center', lineHeight: 19, marginBottom: 6 }}>
-              {checkResult?.kind === 'in'  ? 'Have a productive day. We’ll keep your location pinged with HR until you check out.' :
-               checkResult?.kind === 'out' ? 'See you tomorrow! Your hours have been recorded.' :
-               'Both check-in and check-out are recorded for today.'}
-            </Text>
-
-            <Text style={{ fontSize: 12, fontWeight: '700', color: '#0F172A', marginBottom: 18 }}>
-              {checkResult?.kind === 'in'  ? 'Check-in: ' :
-               checkResult?.kind === 'out' ? 'Check-out: ' :
-               ''}
-              {checkResult?.time || ''}
-            </Text>
-
-            <TouchableOpacity
-              onPress={() => setCheckResult(null)}
-              style={{
-                alignSelf: 'stretch',
-                paddingVertical: 12,
-                borderRadius: 999,
-                backgroundColor:
-                  checkResult?.kind === 'in'  ? '#2E7D32' :
-                  checkResult?.kind === 'out' ? '#1565C0' :
-                  '#0F172A',
-                alignItems: 'center',
-              }}
-            >
-              <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }}>OK</Text>
-            </TouchableOpacity>
+            {/* Time row: icon box + label/time/date + Got it */}
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <View style={{
+                width: 44, height: 44, borderRadius: 12,
+                backgroundColor: t.soft,
+                alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Feather name={boxIcon} size={22} color={t.accent} />
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={{ fontSize: 11, color: '#94A3B8', fontWeight: '600' }}>{timeLabel}</Text>
+                <Text style={{ fontSize: 19, fontWeight: '800', color: t.accent, marginTop: 1 }}>{checkResult?.time || ''}</Text>
+                {!!checkResult?.date && (
+                  <Text style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 2 }}>{checkResult.date}</Text>
+                )}
+              </View>
+              <TouchableOpacity
+                onPress={() => setCheckResult(null)}
+                style={{
+                  backgroundColor: t.accent,
+                  borderRadius: 12,
+                  paddingVertical: 11, paddingHorizontal: 20,
+                  alignItems: 'center', justifyContent: 'center',
+                }}
+              >
+                <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }}>Got it</Text>
+              </TouchableOpacity>
+            </View>
           </Pressable>
+            );
+          })()}
         </Pressable>
       </Modal>
+
+      {/* #502 — premium check-out confirmation (replaces the OS Alert). */}
+      <ConfirmModal
+        visible={confirmCheckout}
+        tone="blue"
+        icon="log-out"
+        title="Check out?"
+        message="Are you sure you want to check out? This ends your shift for today and stops location tracking."
+        confirmText="Check Out"
+        cancelText="Cancel"
+        onConfirm={() => settleCheckout(true)}
+        onCancel={() => settleCheckout(false)}
+      />
     </View>
     </ScreenErrorBoundary>
   );
@@ -2696,7 +2735,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   shiftPillText: {
-    color: '#2E7D32',
+    color: '#4CAF50',
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0.6,
@@ -2739,7 +2778,7 @@ const styles = StyleSheet.create({
   },
   annTitleRow: { flexDirection: 'row', alignItems: 'center' },
   annTitle: { fontSize: 16, fontWeight: '800', color: '#111' },
-  viewAll: { color: '#2E7D32', fontSize: 12, fontWeight: '700' },
+  viewAll: { color: '#4CAF50', fontSize: 12, fontWeight: '700' },
   annSub: { color: '#7A7A7A', fontSize: 12, marginTop: 4, marginBottom: 14 },
 
   annCard: {

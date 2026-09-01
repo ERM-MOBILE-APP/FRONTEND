@@ -1,0 +1,375 @@
+import React from 'react';
+import { Stack } from 'expo-router';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { markNavReady } from '../services/api';
+import { configurePushHandler, syncPushToken } from '../services/push';
+// #504 — app-wide premium alert host (replaces bare OS Alert.alert dialogs).
+import PremiumAlertHost from '../components/PremiumAlertHost';
+
+// Configure how foreground push notifications render, once at module load.
+configurePushHandler();
+
+// Import-only side-effect: registers the LEGACY expo-location background
+// task with TaskManager. Kept as a warm fallback in case
+// react-native-background-actions is not linked in a particular build.
+// The primary tracking is now via services/backgroundTracking.ts (#384).
+import '../services/locationTask';
+// #458 — Import bgGeo at startup so Transistorsoft's HEADLESS task is
+// registered at bundle load (required for tracking to continue after the app
+// is terminated / swiped away). Guarded internally — no-ops if the native
+// module isn't linked yet.
+import '../services/bgGeo';
+
+// Persist the last crash detail so when the user reopens the app we
+// can show them what blew up. Otherwise crashes look completely
+// silent — the user sees the app vanish with zero diagnostic value.
+const LAST_CRASH_KEY = 'erm-last-crash-v1';
+async function persistCrash(label: string, err: any) {
+  try {
+    const detail = {
+      ts: new Date().toISOString(),
+      label,
+      msg: err?.message || String(err),
+      stack: typeof err?.stack === 'string' ? err.stack.slice(0, 4000) : null,
+    };
+    await AsyncStorage.setItem(LAST_CRASH_KEY, JSON.stringify(detail));
+  } catch {/* persistence itself failed — nothing else to do */}
+}
+
+// ─── GLOBAL CRASH GUARDS ────────────────────────────────────────────
+// Goal: prevent the "app comes out by itself" force-close that users
+// keep reporting. The React error boundary below catches render-tree
+// errors, but THREE other sources can still tear the app down:
+//
+//   1. Unhandled promise rejections (a fetch that throws and nobody
+//      awaits it). Hermes used to silently swallow these; on newer RN
+//      versions they crash the JS engine.
+//   2. Uncaught synchronous errors in setInterval/setTimeout callbacks.
+//      RN's default handler shows a red-box in dev and reloads in prod,
+//      which to the user looks identical to a crash.
+//   3. Native module errors that bubble through the JS bridge.
+//
+// We install handlers that LOG and swallow these so the JS root stays
+// alive. The error boundary still kicks in for render-tree issues to
+// give the user a recovery screen. Defensive depth.
+if (typeof globalThis !== 'undefined') {
+  // Promise rejections (#1) — Hermes-specific tracker so we catch the
+  // entire async rejection space, not just process.on which often
+  // isn't even bound in RN. Without this, a single missed `.catch()`
+  // anywhere in the codebase tears down the JS engine. This was the
+  // single biggest cause of "app exits by itself".
+  const HermesInt = (globalThis as any).HermesInternal;
+  if (HermesInt && typeof HermesInt.enablePromiseRejectionTracker === 'function') {
+    try {
+      HermesInt.enablePromiseRejectionTracker({
+        allRejections: true,
+        onUnhandled: (id: any, reason: any) => {
+          console.warn('[HermesUnhandledRejection]', id, reason?.message || String(reason));
+          persistCrash('unhandledRejection', reason);
+        },
+      });
+    } catch {/* not all Hermes builds expose this — non-fatal */}
+  }
+  if (typeof (globalThis as any).process?.on === 'function') {
+    (globalThis as any).process.on('unhandledRejection', (reason: any) => {
+      console.warn('[unhandledRejection]', reason?.message || String(reason));
+      persistCrash('unhandledRejection', reason);
+    });
+  }
+  // RN's ErrorUtils (#2 + #3) — preserve the existing handler, just
+  // make sure WE don't propagate to a crash. Native errors still log
+  // to logcat / Xcode console for debugging. We FORCE isFatal=false
+  // when calling the previous handler so RN never reloads the bundle.
+  const ErrUtils = (globalThis as any).ErrorUtils;
+  if (ErrUtils && typeof ErrUtils.setGlobalHandler === 'function') {
+    const prevHandler = typeof ErrUtils.getGlobalHandler === 'function'
+      ? ErrUtils.getGlobalHandler()
+      : null;
+    ErrUtils.setGlobalHandler((err: any, isFatal: boolean) => {
+      console.warn('[ErrorUtils] caught', isFatal ? '(fatal)' : '(non-fatal)', err?.message || err);
+      persistCrash(isFatal ? 'fatal' : 'non-fatal', err);
+      if (typeof prevHandler === 'function') {
+        try { prevHandler(err, false); } catch { /* don't crash the handler */ }
+      }
+    });
+  }
+}
+
+/**
+ * Root-level error boundary.
+ *
+ * Why this exists
+ * ───────────────
+ * Users were reporting "the app comes out by itself" — i.e. an unhandled
+ * exception (network blip, undefined access in a render path, expo-location
+ * permission edge case) was bubbling all the way up and React Native was
+ * tearing the JS root down. The OS then sees an empty bridge and kills the
+ * process; on the phone it looks like the app force-closed.
+ *
+ * Catching errors here lets the user see a friendly "Something went wrong"
+ * panel with a Reload button, instead of having the whole app vanish.
+ *
+ * Componenting-DidCatch covers render + lifecycle errors. Promise
+ * rejections that happen outside React (e.g. background fetch) are
+ * separately swallowed by the catch blocks in each screen's data loader.
+ */
+class RootErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null; resetKey: number; retryCount: number }
+> {
+  // #427 — resetKey forces a full subtree remount on Reload. Without it
+  // `handleReload` only cleared state.error and re-rendered THE SAME
+  // failing tree — if the crash was caused by stale global state (a
+  // dead AppState listener, an already-torn-down animation, a null
+  // reducer state), the same render threw again, Hermes went into a
+  // fast reflow/throw/reflow loop, and Android SIGTERMed the app.
+  //
+  // Bumping resetKey remounts every descendant with a fresh key so
+  // effects run again, refs are re-created, and any stale in-memory
+  // context is cleared. retryCount caps recovery at 3 attempts — after
+  // that the boundary shows a "please close and reopen" screen instead
+  // of trying to heal itself.
+  state = { error: null as Error | null, resetKey: 0, retryCount: 0 };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // Keep the diagnostic locally — surfacing it to Sentry / a remote
+    // logger would be cleaner but for go-live "print to Metro / Logcat"
+    // is enough for the team to triage what crashed.
+    console.warn('[RootErrorBoundary] caught render error:', error?.message, info?.componentStack);
+    persistCrash('render-tree', error);
+  }
+
+  handleReload = () => {
+    // #427 — Bump resetKey to force a full remount + increment retry cap.
+    this.setState((s) => ({
+      error: null,
+      resetKey: s.resetKey + 1,
+      retryCount: s.retryCount + 1,
+    }));
+  };
+
+  render() {
+    if (this.state.error) {
+      const exceededRetries = this.state.retryCount >= 3;
+      return (
+        <View style={errorStyles.container}>
+          <Text style={errorStyles.title}>
+            {exceededRetries ? 'App needs a restart' : 'Something went wrong'}
+          </Text>
+          <Text style={errorStyles.subtitle}>
+            {exceededRetries
+              ? 'We tried to recover automatically but the same error keeps happening. Please close the app fully and reopen it. If it continues, contact IT.'
+              : 'The app hit an unexpected error. Tap below to recover.'}
+          </Text>
+          <ScrollView style={errorStyles.detailBox}>
+            <Text style={errorStyles.detail} selectable>
+              {this.state.error.message || String(this.state.error)}
+            </Text>
+          </ScrollView>
+          {!exceededRetries && (
+            <TouchableOpacity style={errorStyles.btn} onPress={this.handleReload}>
+              <Text style={errorStyles.btnText}>Reload app</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      );
+    }
+    // #427 — Keyed Fragment so the subtree fully remounts on each recovery.
+    return <React.Fragment key={this.state.resetKey}>{this.props.children}</React.Fragment>;
+  }
+}
+
+// #443 — LAST-CRASH SURFACER. The crash guards above persist every crash to
+// `erm-last-crash-v1`, but nothing ever showed it — so a crash-then-reopen
+// looked silent. This banner reads that record on launch and displays the
+// label + message + first stack lines on EVERY screen, so the exact cause of
+// an "app exits by itself" is visible without needing adb/logcat. Dismissible;
+// "Clear" wipes it. Reading/rendering is fully guarded so the banner itself
+// can never crash the app.
+function LastCrashBanner() {
+  const [crash, setCrash] = React.useState<any>(null);
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(LAST_CRASH_KEY);
+        if (raw && alive) setCrash(JSON.parse(raw));
+      } catch { /* ignore */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+  if (!crash) return null;
+  return (
+    <View style={crashBannerStyles.wrap} pointerEvents="box-none">
+      <View style={crashBannerStyles.card}>
+        <Text style={crashBannerStyles.title}>⚠ Last crash captured</Text>
+        <ScrollView style={{ maxHeight: 160 }}>
+          <Text selectable style={crashBannerStyles.body}>
+            {String(crash?.label || 'crash')} — {String(crash?.msg || '')}
+            {crash?.ts ? `\n@ ${crash.ts}` : ''}
+            {crash?.stack ? `\n\n${String(crash.stack).slice(0, 700)}` : ''}
+          </Text>
+        </ScrollView>
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8 }}>
+          <TouchableOpacity
+            onPress={() => { AsyncStorage.removeItem(LAST_CRASH_KEY).catch(() => {}); setCrash(null); }}
+            style={crashBannerStyles.btn}
+          >
+            <Text style={crashBannerStyles.btnText}>Dismiss</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+export default function RootLayout() {
+  // Signal to the API layer that expo-router's navigator is mounted and
+  // router.replace() can now be called safely. Without this, a background
+  // 401 during cold start tried to navigate before the Stack existed,
+  // crashing with "cannot update a component while rendering".
+  React.useEffect(() => {
+    markNavReady();
+    // Re-sync the push token for an already-logged-in user on cold start
+    // (login.tsx handles the fresh-login case). Only if a session exists.
+    (async () => {
+      try {
+        const token = await AsyncStorage.getItem('token');
+        if (token) syncPushToken().catch(() => {});
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  return (
+    // #472 — SafeAreaProvider was MISSING at the root. Without it,
+    // useSafeAreaInsets() returns { bottom: 0 } for every screen that isn't
+    // inside the bottom-tab navigator (which supplies its own safe-area
+    // context). That's why the Manager stack screens — a plain native Stack —
+    // rendered content UNDER the Android navigation bar even though they read
+    // insets.bottom. Providing it here makes insets correct app-wide, on every
+    // screen and every navigator. initialWindowMetrics avoids a first-frame
+    // flash by seeding the real insets synchronously at launch.
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <RootErrorBoundary>
+        <LastCrashBanner />
+        <PremiumAlertHost />
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(auth)/login" />
+          <Stack.Screen
+            name="(auth)/email-verify"
+            options={{ presentation: 'card', animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="(auth)/otp"
+            options={{ presentation: 'card', animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="(auth)/new-password"
+            options={{ presentation: 'card', animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="payslip-summary"
+            options={{ presentation: 'card', animation: 'slide_from_right' }}
+          />
+        </Stack>
+      </RootErrorBoundary>
+    </SafeAreaProvider>
+  );
+}
+
+const errorStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 48,
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#475569',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  detailBox: {
+    maxHeight: 160,
+    width: '100%',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 24,
+  },
+  detail: {
+    fontSize: 12,
+    color: '#334155',
+    fontFamily: 'Courier',
+  },
+  btn: {
+    backgroundColor: '#4CAF50',
+    paddingHorizontal: 32,
+    paddingVertical: 14,
+    borderRadius: 10,
+  },
+  btnText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 15,
+  },
+});
+
+// #443 — Last-crash banner styles. Rendered as a top overlay so it appears
+// above whatever screen the user lands on. box-none wrap lets touches pass
+// through everywhere except the card itself.
+const crashBannerStyles = StyleSheet.create({
+  wrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 9999,
+    elevation: 9999,
+    paddingTop: 40,
+    paddingHorizontal: 10,
+  },
+  card: {
+    backgroundColor: '#7F1D1D',
+    borderRadius: 10,
+    padding: 12,
+  },
+  title: {
+    color: '#FFF',
+    fontWeight: '700',
+    fontSize: 13,
+    marginBottom: 6,
+  },
+  body: {
+    color: '#FEE2E2',
+    fontSize: 11,
+    fontFamily: 'Courier',
+  },
+  btn: {
+    backgroundColor: '#FCA5A5',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  btnText: {
+    color: '#7F1D1D',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+});

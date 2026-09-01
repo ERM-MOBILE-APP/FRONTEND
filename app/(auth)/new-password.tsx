@@ -14,6 +14,7 @@ import {
   StatusBar,
   Dimensions,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { authAPI } from '../../services/api';
@@ -87,7 +88,7 @@ export default function NewPasswordScreen() {
   const handleReset = async () => {
     if (!isValid) return;
     if (!resetToken) {
-      Alert.alert('Session expired', 'Please start over from forgot password.');
+      premiumAlert('Session expired', 'Please start over from forgot password.');
       router.replace('/(auth)/login');
       return;
     }
@@ -100,7 +101,7 @@ export default function NewPasswordScreen() {
         params: { email },
       });
     } catch (err: any) {
-      Alert.alert(
+      premiumAlert(
         'Could not reset password',
         err?.response?.data?.message || 'Try again.'
       );
@@ -249,9 +250,9 @@ function Rule({ ok, text }: { ok: boolean; text: string }) {
 }
 
 // ---------- Theme ----------
-const GREEN_BG = '#2E8C2C';
-const GREEN_BG_DARK = '#1F6A1E';
-const GREEN_PRIMARY = '#3FAE3B';
+const GREEN_BG = '#4CAF50';
+const GREEN_BG_DARK = '#4CAF50';
+const GREEN_PRIMARY = '#4CAF50';
 const GREEN_SOFT = '#E8F5E5';
 const GRID_LINE = 'rgba(255,255,255,0.06)';
 const GRID_DOT = 'rgba(255,255,255,0.18)';

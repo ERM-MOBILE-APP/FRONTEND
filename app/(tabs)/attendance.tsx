@@ -16,7 +16,10 @@ import {
   TextInput,
   Pressable,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { attendanceAPI } from '../../services/api';
@@ -398,7 +401,7 @@ export default function AttendanceScreen() {
     if (isRequestWindowClosed(reqModalDate)) {
       const target = new Date(reqModalDate + 'T00:00:00');
       const daysAgo = Math.floor((Date.now() - target.getTime()) / 86400000);
-      Alert.alert(
+      premiumAlert(
         'Request window closed',
         `Regularization requests can only be filed within 2 days of the attendance date. This date is ${daysAgo} days ago.`
       );
@@ -428,7 +431,7 @@ export default function AttendanceScreen() {
       setReqModalDate(null);
       setReqReason('');
     } catch (err: any) {
-      Alert.alert(
+      premiumAlert(
         'Error',
         err?.response?.data?.message || 'Could not submit request'
       );
@@ -654,7 +657,7 @@ export default function AttendanceScreen() {
                 </View>
               ) : (
                 <View style={[styles.lopBadge, { backgroundColor: '#E8F5E9' }]}>
-                  <Text style={[styles.lopBadgeText, { color: '#1B5E20' }]}>No LOP ✓</Text>
+                  <Text style={[styles.lopBadgeText, { color: '#4CAF50' }]}>No LOP ✓</Text>
                 </View>
               )}
             </View>
@@ -802,7 +805,7 @@ export default function AttendanceScreen() {
                   null;
                 const textTintStyle =
                   isRejected ? { color: '#B91C1C' } :
-                  isApproved ? { color: '#15803D' } :
+                  isApproved ? { color: '#4CAF50' } :
                   null;
                 return (
                   <TouchableOpacity
@@ -813,18 +816,18 @@ export default function AttendanceScreen() {
                     ]}
                     onPress={() => {
                       if (isApproved) {
-                        Alert.alert('Already approved', 'This request has already been approved.');
+                        premiumAlert('Already approved', 'This request has already been approved.');
                         return;
                       }
                       if (isPending) {
-                        Alert.alert(
+                        premiumAlert(
                           'Already requested',
                           `You've already filed a regularisation request for this date. Wait for HR / your manager to act on it.`
                         );
                         return;
                       }
                       if (requestClosed) {
-                        Alert.alert(
+                        premiumAlert(
                           'Request window closed',
                           `You can only file a request within ${REQUEST_WINDOW_DAYS} days of the missed date. ` +
                           `This date is ${daysOld} days old — please contact HR directly.`
@@ -888,7 +891,7 @@ export default function AttendanceScreen() {
                     <Text
                       style={[
                         styles.modalRowText,
-                        i === month - 1 && { color: '#2E7D32', fontWeight: '700' },
+                        i === month - 1 && { color: '#4CAF50', fontWeight: '700' },
                         disabled && { color: '#C0C0C0' },
                       ]}
                     >
@@ -930,7 +933,7 @@ export default function AttendanceScreen() {
                   <Text
                     style={[
                       styles.modalRowText,
-                      y === year && { color: '#2E7D32', fontWeight: '700' },
+                      y === year && { color: '#4CAF50', fontWeight: '700' },
                       isFuture && { color: '#C0C0C0' },
                     ]}
                   >
@@ -945,6 +948,14 @@ export default function AttendanceScreen() {
 
       {/* REQUEST MODAL */}
       <Modal visible={!!reqModalDate} transparent animationType="slide">
+        {/* #500 — KeyboardAvoidingView lifts the bottom sheet above the soft
+            keyboard. A React Native <Modal> is its OWN window, so the app-wide
+            softwareKeyboardLayoutMode does NOT reach it — without this the
+            keyboard covered the Reason field and Submit button. */}
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
         <Pressable style={styles.modalBackdrop} onPress={() => setReqModalDate(null)}>
           <Pressable
             style={[
@@ -969,7 +980,7 @@ export default function AttendanceScreen() {
             <TouchableOpacity
               style={[
                 styles.submitBtn,
-                { backgroundColor: (submitting || !isAttendanceReqValid) ? '#94A3B8' : '#16A34A' },
+                { backgroundColor: (submitting || !isAttendanceReqValid) ? '#C6E5BF' : '#4CAF50' },
                 (submitting || !isAttendanceReqValid) && { opacity: 0.7 },
               ]}
               onPress={submitRequest}
@@ -986,6 +997,7 @@ export default function AttendanceScreen() {
             </TouchableOpacity>
           </Pressable>
         </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       <SuccessModal
@@ -1147,7 +1159,7 @@ const styles = StyleSheet.create({
   },
   dayNum: { fontSize: 13, color: '#1A1A1A', fontWeight: '500' },
   dayNumDim: { color: '#CFCFCF' },
-  dayNumToday: { color: '#1B5E20', fontWeight: '700' },
+  dayNumToday: { color: '#4CAF50', fontWeight: '700' },
   dotRow: {
     // Horizontal so multi-status days (late = green + orange) lay out
     // side by side, not stacked.
@@ -1297,7 +1309,7 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     backgroundColor: '#FFFFFF',
   },
-  pickerText: { fontSize: 12, fontWeight: '700', color: '#1B5E20', marginRight: 4 },
+  pickerText: { fontSize: 12, fontWeight: '700', color: '#4CAF50', marginRight: 4 },
 
   /* HISTORY CARDS */
   histCard: {
@@ -1336,14 +1348,16 @@ const styles = StyleSheet.create({
     // submit button in the app (Leave, Permission, Allowance, Payslip)
     // so the per-row Request pill on the Attendance history looks
     // visually consistent. Previously this was the darker shade
-    // #2E7D32 which stood out from the rest of the design.
+    // #4CAF50 which stood out from the rest of the design.
     backgroundColor: '#4CAF50',
     paddingVertical: 11,
     borderRadius: 10,
     alignItems: 'center',
   },
   requestBtnDisabled: {
-    backgroundColor: '#C7CDD6',
+    // #505 — match the login screen's disabled-button colour (pale green)
+    // for the "Requested" / "Window Closed" states instead of grey.
+    backgroundColor: '#C6E5BF',
   },
   requestBtnText: {
     color: '#FFFFFF',
@@ -1425,13 +1439,13 @@ const styles = StyleSheet.create({
   submitBtn: {
     backgroundColor: '#4CAF50',
     paddingVertical: 14,
-    borderRadius: 12,
+    borderRadius: 26,
     alignItems: 'center',
     justifyContent: 'center',
   },
   submitBtnText: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     letterSpacing: 0.2,
   },

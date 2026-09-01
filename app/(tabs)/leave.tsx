@@ -12,6 +12,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
@@ -31,7 +32,7 @@ import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 // the surrounding try/catch.
 function confirmAsync(title: string, message: string): Promise<boolean> {
   return new Promise((resolve) => {
-    Alert.alert(title, message, [
+    premiumAlert(title, message, [
       { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
       { text: 'Submit', onPress: () => resolve(true) },
     ], { cancelable: true });
@@ -312,7 +313,7 @@ export default function LeaveScreen() {
 
   const submitLeave = async () => {
     if (!startDate || !endDate || !reason.trim()) {
-      Alert.alert('Required', 'Please fill leave type, start, end and reason.');
+      premiumAlert('Required', 'Please fill leave type, start, end and reason.');
       return;
     }
     // Hard guard against end < start (#280). The calendar's minDate
@@ -321,7 +322,7 @@ export default function LeaveScreen() {
     // the last line of defence — the backend would 400 with a less
     // helpful message.
     if (endDate < startDate) {
-      Alert.alert(
+      premiumAlert(
         'Invalid date range',
         'End Date cannot be before Start Date. Please pick an End Date on or after the Start Date.',
       );
@@ -331,7 +332,7 @@ export default function LeaveScreen() {
     // it client-side is faster and the error message is much clearer.
     const dup = findOverlappingRequest(startDate, endDate);
     if (dup) {
-      Alert.alert(
+      premiumAlert(
         'Already requested',
         `You have already submitted a request for ${toDDMMYYYY(dup)}. Wait for HR to act on it, or cancel the existing one before filing a new one.`
       );
@@ -357,7 +358,7 @@ export default function LeaveScreen() {
       setIsHalfDay(false);
       loadHistory();
     } catch (err: any) {
-      Alert.alert('Error', err?.response?.data?.message || 'Could not submit leave');
+      premiumAlert('Error', err?.response?.data?.message || 'Could not submit leave');
     } finally {
       setSubmitting(false);
     }
@@ -365,12 +366,12 @@ export default function LeaveScreen() {
 
   const submitPermission = async () => {
     if (!permDate || !startTime || !endTime || !permReason.trim()) {
-      Alert.alert('Required', 'Please fill all permission fields.');
+      premiumAlert('Required', 'Please fill all permission fields.');
       return;
     }
     const dup = findOverlappingRequest(permDate, permDate);
     if (dup) {
-      Alert.alert(
+      premiumAlert(
         'Already requested',
         `You have already submitted a request for ${toDDMMYYYY(dup)}. Wait for HR to act on it, or cancel the existing one before filing a new one.`
       );
@@ -396,7 +397,7 @@ export default function LeaveScreen() {
       setPermReason('');
       loadHistory();
     } catch (err: any) {
-      Alert.alert('Error', err?.response?.data?.message || 'Could not submit permission');
+      premiumAlert('Error', err?.response?.data?.message || 'Could not submit permission');
     } finally {
       setSubmitting(false);
     }
@@ -583,7 +584,7 @@ export default function LeaveScreen() {
                 value={isHalfDay}
                 onValueChange={setIsHalfDay}
                 trackColor={{ false: '#E0E0E0', true: '#A5D6A7' }}
-                thumbColor={isHalfDay ? '#2E7D32' : '#FFFFFF'}
+                thumbColor={isHalfDay ? '#4CAF50' : '#FFFFFF'}
               />
             </View>
 
@@ -600,7 +601,7 @@ export default function LeaveScreen() {
             <TouchableOpacity
               style={[
                 styles.submitBtn,
-                { backgroundColor: (submitting || !isLeaveFormValid) ? '#94A3B8' : '#16A34A' },
+                { backgroundColor: (submitting || !isLeaveFormValid) ? '#C6E5BF' : '#4CAF50' },
                 (submitting || !isLeaveFormValid) && { opacity: 0.7 },
               ]}
               onPress={submitLeave}
@@ -686,7 +687,7 @@ export default function LeaveScreen() {
             <TouchableOpacity
               style={[
                 styles.submitBtn,
-                { backgroundColor: (submitting || !isPermissionFormValid) ? '#94A3B8' : '#16A34A' },
+                { backgroundColor: (submitting || !isPermissionFormValid) ? '#C6E5BF' : '#4CAF50' },
                 (submitting || !isPermissionFormValid) && { opacity: 0.7 },
               ]}
               onPress={submitPermission}
@@ -764,7 +765,7 @@ export default function LeaveScreen() {
                 <Text
                   style={[
                     styles.modalRowText,
-                    t === leaveType && { color: '#2E7D32', fontWeight: '700' },
+                    t === leaveType && { color: '#4CAF50', fontWeight: '700' },
                   ]}
                 >
                   {t}
@@ -794,7 +795,7 @@ export default function LeaveScreen() {
                 <Text
                   style={[
                     styles.modalRowText,
-                    t === permissionType && { color: '#2E7D32', fontWeight: '700' },
+                    t === permissionType && { color: '#4CAF50', fontWeight: '700' },
                   ]}
                 >
                   {t}
@@ -847,8 +848,8 @@ export default function LeaveScreen() {
                   : {}),
               }}
               theme={{
-                todayTextColor: '#2E7D32',
-                arrowColor: '#2E7D32',
+                todayTextColor: '#4CAF50',
+                arrowColor: '#4CAF50',
                 selectedDayBackgroundColor: '#4CAF50',
                 textDisabledColor: '#CCCCCC',
               }}
@@ -917,7 +918,7 @@ export default function LeaveScreen() {
                   <Text
                     style={[
                       styles.modalRowText,
-                      i === histMonth - 1 && { color: '#2E7D32', fontWeight: '700' },
+                      i === histMonth - 1 && { color: '#4CAF50', fontWeight: '700' },
                     ]}
                   >
                     {m}
@@ -946,7 +947,7 @@ export default function LeaveScreen() {
                 <Text
                   style={[
                     styles.modalRowText,
-                    y === histYear && { color: '#2E7D32', fontWeight: '700' },
+                    y === histYear && { color: '#4CAF50', fontWeight: '700' },
                   ]}
                 >
                   {y}
@@ -1126,7 +1127,7 @@ const styles = StyleSheet.create({
   },
   tabBtn: { flex: 1, paddingVertical: 14, alignItems: 'center' },
   tabText: { fontSize: 14, color: '#888', fontWeight: '600' },
-  tabActiveText: { color: '#2E7D32', fontWeight: '700' },
+  tabActiveText: { color: '#4CAF50', fontWeight: '700' },
   tabUnderline: {
     position: 'absolute',
     bottom: -1,
@@ -1191,6 +1192,8 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: 'center',
     marginTop: 4,
+    // #503 — match the allowance/travel submit button width exactly.
+    marginHorizontal: 30,
     shadowColor: GREEN,
     shadowOpacity: 0.3,
     shadowOffset: { width: 0, height: 6 },

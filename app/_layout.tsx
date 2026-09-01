@@ -1,10 +1,13 @@
 import React from 'react';
 import { Stack } from 'expo-router';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { premiumAlert } from '../services/premiumAlert';
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { markNavReady } from '../services/api';
 import { configurePushHandler, syncPushToken } from '../services/push';
+// #504 — app-wide premium alert host (replaces bare OS Alert.alert dialogs).
+import PremiumAlertHost from '../components/PremiumAlertHost';
 
 // Configure how foreground push notifications render, once at module load.
 configurePushHandler();
@@ -256,6 +259,7 @@ export default function RootLayout() {
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
       <RootErrorBoundary>
         <LastCrashBanner />
+        <PremiumAlertHost />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(auth)/login" />
           <Stack.Screen
@@ -316,7 +320,7 @@ const errorStyles = StyleSheet.create({
     fontFamily: 'Courier',
   },
   btn: {
-    backgroundColor: '#2E7D32',
+    backgroundColor: '#4CAF50',
     paddingHorizontal: 32,
     paddingVertical: 14,
     borderRadius: 10,

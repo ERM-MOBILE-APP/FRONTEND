@@ -11,6 +11,7 @@ import {
   Alert,
   Pressable,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -30,7 +31,7 @@ import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 // the surrounding try/catch.
 function confirmAsync(title: string, message: string): Promise<boolean> {
   return new Promise((resolve) => {
-    Alert.alert(title, message, [
+    premiumAlert(title, message, [
       { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
       { text: 'Submit', onPress: () => resolve(true) },
     ], { cancelable: true });
@@ -38,7 +39,7 @@ function confirmAsync(title: string, message: string): Promise<boolean> {
 }
 
 const GREEN      = '#4CAF50';
-const GREEN_DARK = '#2E7D32';
+const GREEN_DARK = '#4CAF50';
 
 const MONTHS = [
   '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -52,7 +53,7 @@ const ICON_PALETTE = [
   { bg: '#FFE0CC', fg: '#E76A1F' }, // orange
   { bg: '#E5D8FF', fg: '#7C3AED' }, // purple
   { bg: '#CFE6FF', fg: '#1A6FD8' }, // blue
-  { bg: '#CFF2D7', fg: '#1B8A3E' }, // green
+  { bg: '#CFF2D7', fg: '#4CAF50' }, // green
   { bg: '#FFD1D1', fg: '#D43030' }, // red
 ];
 
@@ -264,7 +265,7 @@ export default function PayslipScreen() {
     setRequesting(true);
     try {
       await payslipAPI.request(reqMonth, reqYear);
-      Alert.alert(
+      premiumAlert(
         'Request submitted',
         `HR has been notified to upload your ${MONTHS[reqMonth]} ${reqYear} payslip. ` +
         `You'll get a notification once it's ready to download.`
@@ -283,7 +284,7 @@ export default function PayslipScreen() {
         || err?.message
         || 'Please try again later.';
       const title = status === 409 ? 'Already requested' : 'Could not request';
-      Alert.alert(title, message);
+      premiumAlert(title, message);
       if (status === 409) {
         // Refresh the list so the user sees the existing record.
         setRequestVisible(false);
@@ -413,7 +414,7 @@ export default function PayslipScreen() {
                           <TouchableOpacity
                             onPress={(e) => {
                               e.stopPropagation?.();
-                              Alert.alert(
+                              premiumAlert(
                                 'Download started',
                                 `Downloading payslip for ${MONTHS[p.month] || ''} ${p.year || ''}...`
                               );
@@ -421,7 +422,7 @@ export default function PayslipScreen() {
                             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                             style={{ marginLeft: 10 }}
                           >
-                            <Feather name="download" size={16} color={'#2E7D32'} />
+                            <Feather name="download" size={16} color={'#4CAF50'} />
                           </TouchableOpacity>
                         </View>
                       </View>
@@ -536,7 +537,7 @@ export default function PayslipScreen() {
             <TouchableOpacity
               style={[
                 styles.submitReqBtn,
-                { backgroundColor: submitDisabled ? '#94A3B8' : '#16A34A' },
+                { backgroundColor: submitDisabled ? '#C6E5BF' : '#4CAF50' },
                 submitDisabled && { opacity: 0.7 },
               ]}
               onPress={submitRequest}

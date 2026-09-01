@@ -14,6 +14,7 @@ import {
   StatusBar,
   Dimensions,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { authAPI, wakeBackend } from '../../services/api';
@@ -96,11 +97,11 @@ export default function EmailVerifyScreen() {
 
   const handleSendOtp = async () => {
     if (!email.trim()) {
-      Alert.alert('Missing details', 'Please enter your registered email or User ID.');
+      premiumAlert('Missing details', 'Please enter your registered email or User ID.');
       return;
     }
     if (!validateInput(email)) {
-      Alert.alert(
+      premiumAlert(
         'Invalid input',
         'Please enter a valid email (you@company.com) or your User ID (e.g. TES047).'
       );
@@ -110,7 +111,7 @@ export default function EmailVerifyScreen() {
     try {
       setLoading(true);
       const res = await authAPI.sendOtp(email.trim());
-      Alert.alert(
+      premiumAlert(
         'OTP Sent',
         res?.data?.message ||
           `An OTP has been sent to ${email.trim()}. Please check your inbox.`,
@@ -126,7 +127,7 @@ export default function EmailVerifyScreen() {
         ]
       );
     } catch (err: any) {
-      Alert.alert(
+      premiumAlert(
         'Could not send OTP',
         err?.response?.data?.message ||
           'Something went wrong. Please try again.'
@@ -230,9 +231,9 @@ export default function EmailVerifyScreen() {
 }
 
 // ---------- Theme (must match login screen) ----------
-const GREEN_BG = '#2E8C2C';
-const GREEN_BG_DARK = '#1F6A1E';
-const GREEN_PRIMARY = '#3FAE3B';
+const GREEN_BG = '#4CAF50';
+const GREEN_BG_DARK = '#4CAF50';
+const GREEN_PRIMARY = '#4CAF50';
 const GRID_LINE = 'rgba(255,255,255,0.06)';
 const GRID_DOT = 'rgba(255,255,255,0.18)';
 

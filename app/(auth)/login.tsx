@@ -14,6 +14,7 @@ import {
   StatusBar,
   Dimensions,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -117,11 +118,11 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     if (!email.trim() || !password) {
-      Alert.alert('Missing fields', 'Please enter your email and password.');
+      premiumAlert('Missing fields', 'Please enter your email and password.');
       return;
     }
     if (!validateEmail(email)) {
-      Alert.alert('Invalid input', 'Please enter a valid email or employee ID (e.g. TES080).');
+      premiumAlert('Invalid input', 'Please enter a valid email or employee ID (e.g. TES080).');
       return;
     }
 
@@ -209,7 +210,7 @@ export default function LoginScreen() {
       } else {
         msg = err?.message || 'Something went wrong. Please try again.';
       }
-      Alert.alert(title, msg);
+      premiumAlert(title, msg);
     } finally {
       setLoading(false);
     }
@@ -342,9 +343,9 @@ export default function LoginScreen() {
 }
 
 // ---------- Theme ----------
-const GREEN_BG = '#2E8C2C';        // base green from Figma
-const GREEN_BG_DARK = '#1F6A1E';   // darker tone for gradient/edge feel
-const GREEN_PRIMARY = '#3FAE3B';   // button + accents
+const GREEN_BG = '#4CAF50';        // base green from Figma
+const GREEN_BG_DARK = '#4CAF50';   // darker tone for gradient/edge feel
+const GREEN_PRIMARY = '#4CAF50';   // button + accents
 const GRID_LINE = 'rgba(255,255,255,0.06)';
 const GRID_DOT = 'rgba(255,255,255,0.18)';
 

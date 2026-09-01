@@ -13,6 +13,7 @@ import {
   Platform,
   Alert,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
@@ -69,7 +70,7 @@ function ManagerAnnouncements() {
 
   const post = async () => {
     if (!title.trim() || !body.trim()) {
-      Alert.alert('Missing fields', 'Please add a title and a message.');
+      premiumAlert('Missing fields', 'Please add a title and a message.');
       return;
     }
     setPosting(true);
@@ -78,14 +79,14 @@ function ManagerAnnouncements() {
       setComposing(false);
       load();
     } catch (e: any) {
-      Alert.alert('Could not post', e?.response?.data?.message || e?.message || 'Please try again.');
+      premiumAlert('Could not post', e?.response?.data?.message || e?.message || 'Please try again.');
     } finally {
       setPosting(false);
     }
   };
 
   const confirmDelete = (row: any) => {
-    Alert.alert('Delete announcement', `Remove "${row.title}"? Your team will no longer see it.`, [
+    premiumAlert('Delete announcement', `Remove "${row.title}"? Your team will no longer see it.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -95,7 +96,7 @@ function ManagerAnnouncements() {
             await managerAPI.deleteAnnouncement(row._id);
             setItems((cur) => cur.filter((r) => r._id !== row._id));
           } catch (e: any) {
-            Alert.alert('Could not delete', e?.response?.data?.message || e?.message || 'Please try again.');
+            premiumAlert('Could not delete', e?.response?.data?.message || e?.message || 'Please try again.');
           }
         },
       },
@@ -159,7 +160,7 @@ function ManagerAnnouncements() {
 
       {/* Compose modal */}
       <Modal visible={composing} transparent animationType="slide" onRequestClose={closeCompose}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalWrap}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalWrap}>
           <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeCompose} />
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 22 }]}>
             <View style={styles.sheetHandle} />

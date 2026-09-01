@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
+import { premiumAlert } from '../services/premiumAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -229,7 +230,7 @@ export default function PayslipSummaryScreen() {
                 activeOpacity={isProcessed ? 0.85 : 1}
                 disabled={!isProcessed}
                 onPress={() =>
-                  Alert.alert(
+                  premiumAlert(
                     'Download',
                     isProcessed
                       ? 'PDF download will be available once HR enables it.'

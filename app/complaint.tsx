@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { premiumAlert } from '../services/premiumAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -19,7 +20,7 @@ import { complaintAPI } from '../services/api';
 type Priority = 'low' | 'medium' | 'high' | 'critical';
 
 const PRIORITY_OPTIONS: { value: Priority; label: string; color: string; bg: string }[] = [
-  { value: 'low',      label: 'Low',      color: '#2E7D32', bg: '#E8F5E9' },
+  { value: 'low',      label: 'Low',      color: '#4CAF50', bg: '#E8F5E9' },
   { value: 'medium',   label: 'Medium',   color: '#A47B00', bg: '#FFF7DA' },
   { value: 'high',     label: 'High',     color: '#C25400', bg: '#FFE5D0' },
   { value: 'critical', label: 'Critical', color: '#C62828', bg: '#FFE3E3' },
@@ -46,7 +47,7 @@ export default function ComplaintScreen() {
   const handleSubmit = async () => {
     if (!canSubmit) {
       if (!subjectValid) {
-        Alert.alert('Subject required', 'Please enter a short subject for your complaint.');
+        premiumAlert('Subject required', 'Please enter a short subject for your complaint.');
       }
       return;
     }
@@ -57,13 +58,13 @@ export default function ComplaintScreen() {
         priority,
         description: description.trim(),
       });
-      Alert.alert(
+      premiumAlert(
         'Complaint submitted',
         'Thank you — HR has been notified and will follow up shortly.',
         [{ text: 'OK', onPress: () => router.back() }]
       );
     } catch (err: any) {
-      Alert.alert(
+      premiumAlert(
         'Could not submit',
         err?.response?.data?.message || 'Please try again in a moment.'
       );
@@ -186,8 +187,8 @@ export default function ComplaintScreen() {
   );
 }
 
-const GREEN = '#3FAE3B';
-const GREEN_DARK = '#2E7D32';
+const GREEN = '#4CAF50';
+const GREEN_DARK = '#4CAF50';
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#FFFFFF' },
@@ -291,8 +292,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: GREEN,
-    borderRadius: 28,
-    paddingVertical: 15,
+    borderRadius: 26,
+    paddingVertical: 14,
     marginTop: 26,
     shadowColor: GREEN_DARK,
     shadowOpacity: 0.3,
@@ -307,7 +308,7 @@ const styles = StyleSheet.create({
   },
   submitText: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     letterSpacing: 0.3,
   },

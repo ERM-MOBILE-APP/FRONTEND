@@ -10,7 +10,10 @@ import {
   Pressable,
   Alert,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { premiumAlert } from '../../services/premiumAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
@@ -30,7 +33,7 @@ import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 // the surrounding try/catch.
 function confirmAsync(title: string, message: string): Promise<boolean> {
   return new Promise((resolve) => {
-    Alert.alert(title, message, [
+    premiumAlert(title, message, [
       { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
       { text: 'Submit', onPress: () => resolve(true) },
     ], { cancelable: true });
@@ -270,6 +273,9 @@ export default function AllowanceScreen() {
   // mid-flight (Render cold-start is 30-60 s on first morning launch).
   // Mirrors the protection on attendance.tsx / leave.tsx / index.tsx.
   const mountedRef = useRef(true);
+  // #506 — scroll the form so the (bottom-most) Notes field lifts above the
+  // keyboard when it's focused.
+  const scrollRef = useRef<ScrollView>(null);
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
@@ -339,14 +345,14 @@ export default function AllowanceScreen() {
   // the bird's-eye distance.
   const calculate = async () => {
     if (!fromLoc.trim() || !toLoc.trim()) {
-      Alert.alert('From and To required', 'Enter both addresses before calculating.');
+      premiumAlert('From and To required', 'Enter both addresses before calculating.');
       return;
     }
     try {
       setCalculating(true);
       const [a, b] = await Promise.all([geocode(fromLoc), geocode(toLoc)]);
       if (!a || !b) {
-        Alert.alert(
+        premiumAlert(
           'Could not locate',
           'One of the addresses could not be found. Try adding more detail ' +
           '(city, state, pincode) or enter the distance manually.'
@@ -362,7 +368,7 @@ export default function AllowanceScreen() {
       setDistance(String(km));
       setAmount(String(amt));
     } catch {
-      Alert.alert('Calculation failed', 'Could not look up the route. Enter the distance manually.');
+      premiumAlert('Calculation failed', 'Could not look up the route. Enter the distance manually.');
     } finally {
       if (mountedRef.current) setCalculating(false);
     }
@@ -370,17 +376,17 @@ export default function AllowanceScreen() {
 
   const submit = async () => {
     if (!fromLoc.trim() || !toLoc.trim() || !date || !amount) {
-      Alert.alert('Required', 'Please fill From, To, Date and Amount.');
+      premiumAlert('Required', 'Please fill From, To, Date and Amount.');
       return;
     }
     const amt = parseFloat(amount);
     if (isNaN(amt) || amt <= 0) {
-      Alert.alert('Invalid', 'Please enter a valid amount.');
+      premiumAlert('Invalid', 'Please enter a valid amount.');
       return;
     }
     const dist = parseFloat(distance);
     if (type === 'petrol' && (isNaN(dist) || dist <= 0)) {
-      Alert.alert('Invalid', 'Please enter the distance in km.');
+      premiumAlert('Invalid', 'Please enter the distance in km.');
       return;
     }
     if (!(await confirmAsync('Submit allowance claim?', 'HR will review the claim once you confirm.'))) return;
@@ -409,7 +415,7 @@ export default function AllowanceScreen() {
       setNotes('');
       loadAll();
     } catch (err: any) {
-      Alert.alert(
+      premiumAlert(
         'Error',
         err?.response?.data?.message || 'Could not submit allowance'
       );
@@ -476,8 +482,12 @@ export default function AllowanceScreen() {
     <SafeAreaView edges={['top']} style={styles.safe}>
 
       <ScrollView
-        contentContainerStyle={{ paddingBottom: 120 }}
+        ref={scrollRef}
+        // #506 — extra bottom room so the Notes field can scroll clear above
+        // the on-screen keyboard.
+        contentContainerStyle={{ paddingBottom: 320 }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {/* TYPE SELECTOR */}
         <Text style={styles.sectionLabel}>Select Allowance Type</Text>
@@ -614,12 +624,15 @@ export default function AllowanceScreen() {
             onChangeText={setNotes}
             multiline
             style={styles.textArea}
+            // #506 — when Notes gains focus, scroll it above the keyboard so
+            // the user can see what they're typing.
+            onFocus={() => setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 250)}
           />
 
           <TouchableOpacity
             style={[
               styles.submitBtn,
-              { backgroundColor: (submitting || !isAllowanceFormValid) ? '#94A3B8' : '#16A34A' },
+              { backgroundColor: (submitting || !isAllowanceFormValid) ? '#C6E5BF' : '#4CAF50' },
               (submitting || !isAllowanceFormValid) && { opacity: 0.7 },
             ]}
             onPress={submit}
@@ -770,8 +783,8 @@ export default function AllowanceScreen() {
                 date ? { [date]: { selected: true, selectedColor: '#4CAF50' } } : {}
               }
               theme={{
-                todayTextColor: '#2E7D32',
-                arrowColor: '#2E7D32',
+                todayTextColor: '#4CAF50',
+                arrowColor: '#4CAF50',
                 selectedDayBackgroundColor: '#4CAF50',
               }}
             />
@@ -800,7 +813,7 @@ export default function AllowanceScreen() {
                     <Text
                       style={[
                         styles.modalRowText,
-                        i === histMonth - 1 && { color: '#2E7D32', fontWeight: '700' },
+                        i === histMonth - 1 && { color: '#4CAF50', fontWeight: '700' },
                       ]}
                     >
                       {m}
@@ -829,7 +842,7 @@ export default function AllowanceScreen() {
                 <Text
                   style={[
                     styles.modalRowText,
-                    y === histYear && { color: '#2E7D32', fontWeight: '700' },
+                    y === histYear && { color: '#4CAF50', fontWeight: '700' },
                   ]}
                 >
                   {y}
@@ -847,6 +860,12 @@ export default function AllowanceScreen() {
         animationType="slide"
         onRequestClose={() => setPickerOpen(null)}
       >
+        {/* #500 — lift the location-search sheet above the keyboard (Modal is
+            its own window, so the app-wide keyboard layout mode can't reach it). */}
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
         <Pressable style={styles.modalOverlay} onPress={() => setPickerOpen(null)}>
           <Pressable style={styles.locPickerSheet} onPress={() => {}}>
             <View style={styles.locPickerHeader}>
@@ -904,13 +923,13 @@ export default function AllowanceScreen() {
                       <Ionicons
                         name="location-outline"
                         size={16}
-                        color={active ? '#2E7D32' : '#777'}
+                        color={active ? '#4CAF50' : '#777'}
                         style={{ marginRight: 10 }}
                       />
-                      <Text style={[styles.locRowText, active && { color: '#2E7D32', fontWeight: '700' }]}>
+                      <Text style={[styles.locRowText, active && { color: '#4CAF50', fontWeight: '700' }]}>
                         {place}
                       </Text>
-                      {active && <Ionicons name="checkmark" size={16} color="#2E7D32" />}
+                      {active && <Ionicons name="checkmark" size={16} color="#4CAF50" />}
                     </TouchableOpacity>
                   );
                 })}
@@ -927,6 +946,7 @@ export default function AllowanceScreen() {
             </ScrollView>
           </Pressable>
         </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       <SuccessModal
@@ -1304,7 +1324,7 @@ const styles = StyleSheet.create({
   histDivider: { height: 1, backgroundColor: '#F0F0F0', marginVertical: 12 },
   histInfoRow: { flexDirection: 'row', justifyContent: 'space-between' },
   histCol: { flex: 1 },
-  histColHead: { fontSize: 12, color: '#2E7D32', fontWeight: '700' },
+  histColHead: { fontSize: 12, color: '#4CAF50', fontWeight: '700' },
   histColVal: { fontSize: 13, color: '#1A1A1A', marginTop: 4 },
   histPetrolRow: {
     flexDirection: 'row',
