@@ -327,10 +327,10 @@ function ManagerHome() {
             <TouchableOpacity
               style={styles.summaryItem}
               activeOpacity={0.7}
-              onPress={() => router.push('/manager/team')}
+              onPress={() => openOwn('/manager/team')}
             >
-              <Text style={styles.summaryNum}>{teamSize}</Text>
-              <Text style={styles.summaryLabel}>{isSenior ? 'In your org' : 'Team members'}</Text>
+              <Text style={styles.summaryNum}>{directCount}</Text>
+              <Text style={styles.summaryLabel}>Team members</Text>
               <View style={styles.summaryHintRow}>
                 <Text style={styles.summaryHint}>View list</Text>
                 <Ionicons name="chevron-forward" size={12} color={MC.sub} />
@@ -340,7 +340,7 @@ function ManagerHome() {
             <TouchableOpacity
               style={styles.summaryItem}
               activeOpacity={0.7}
-              onPress={() => router.push('/manager/approvals')}
+              onPress={() => openOwn('/manager/approvals')}
             >
               <Text style={[styles.summaryNum, { color: MC.amber }]}>{pending}</Text>
               <Text style={styles.summaryLabel}>Pending actions</Text>
@@ -365,7 +365,7 @@ function ManagerHome() {
           {isSenior && (
             <>
               <View style={styles.sectionHeaderRow}>
-                <MaterialCommunityIcons name="file-tree-outline" size={16} color={MC.green} />
+                <MaterialCommunityIcons name="account-tie-outline" size={17} color={MC.green} />
                 <Text style={styles.sectionHeader}>Managers reporting to you</Text>
                 <View style={styles.sectionCountPill}>
                   <Text style={styles.sectionCountText}>{subManagers.length}</Text>
