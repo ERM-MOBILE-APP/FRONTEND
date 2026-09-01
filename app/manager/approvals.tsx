@@ -210,6 +210,11 @@ function Approvals() {
                 key={row._id}
                 tab={tab}
                 row={row}
+                // When a higher-level manager is viewing a sub-manager's team,
+                // an action was taken by THAT manager, not the viewer — so the
+                // card must read "by <manager>", not "by you".
+                scoped={!!managerId}
+                scopedManagerName={managerName}
                 onApprove={() => openAction(row, 'Approved')}
                 onReject={() => openAction(row, 'Rejected')}
               />
@@ -298,8 +303,8 @@ function Approvals() {
 
 /** One request card, rendered per tab. */
 function RequestCard({
-  tab, row, onApprove, onReject,
-}: { tab: TabKey; row: any; onApprove: () => void; onReject: () => void }) {
+  tab, row, onApprove, onReject, scoped = false, scopedManagerName = '',
+}: { tab: TabKey; row: any; onApprove: () => void; onReject: () => void; scoped?: boolean; scopedManagerName?: string }) {
   const acted = !!row.managerStatus; // '' means not yet acted
   const mStatus = row.managerStatus || 'Pending';
 
@@ -373,6 +378,11 @@ function RequestCard({
       ) : (
         (() => {
           const approved = String(row.managerStatus || '').toLowerCase().includes('approv');
+          // In a scoped view (a senior manager looking at a sub-manager's team)
+          // the action was taken by that manager — name them. In the viewer's
+          // own team it was the viewer, so keep "by you".
+          const actor = row.managerStatusBy || scopedManagerName || 'the manager';
+          const byLabel = scoped ? `by ${actor}` : 'by you';
           return (
             <View style={styles.actedRow}>
               <Ionicons
@@ -381,7 +391,7 @@ function RequestCard({
                 color={approved ? MC.green : MC.red}
               />
               <Text style={[styles.actedText, { color: approved ? MC.green : MC.red }]}>
-                {approved ? 'Approved' : 'Rejected'} by you
+                {approved ? 'Approved' : 'Rejected'} {byLabel}
               </Text>
             </View>
           );

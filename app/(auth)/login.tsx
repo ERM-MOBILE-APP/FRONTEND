@@ -314,7 +314,13 @@ export default function LoginScreen() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                onPress={() => router.push('/(auth)/email-verify')}
+                onPress={() =>
+                  premiumAlert(
+                    'Forgot your password?',
+                    'For your security, passwords can only be reset by HR. Please contact HR and they will help you regain access to your Tesco ERM account.',
+                    [{ text: 'Got it' }],
+                  )
+                }
                 activeOpacity={0.7}
               >
                 <Text style={styles.forgotText}>Forgot password?</Text>

@@ -279,10 +279,13 @@ function AnnouncementScreenInner() {
 
                 <View style={styles.metaRow}>
                   <Text style={styles.metaText}>
-                    {/* #316 — Hardcoded "HR" regardless of postedBy.
-                        HR's account is named "tescostructures" in the
-                        DB and we don't want that leaking into the UI. */}
-                    Posted by HR
+                    {/* #518 — Manager / senior-manager team posts show the real
+                        poster; company/HR posts keep the "HR" label. */}
+                    {(() => {
+                      const isTeam = ['team', 'manager-team'].includes(String((a as any).audience || ''));
+                      const rp = String((a as any).postedBy || (a as any).createdByName || '').trim();
+                      return `Posted by ${isTeam && rp ? rp : 'HR'}`;
+                    })()}
                   </Text>
                   <View style={styles.metaDot} />
                   <Text style={styles.metaText}>

@@ -2399,9 +2399,12 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
                   const bodyTxt = String(
                     (a as any).body ?? (a as any).description ?? (a as any).content ?? ''
                   ).trim();
-                  const poster = (a as any).postedBy
-                    || (a as any).createdByName
-                    || 'HR';
+                  // #518 — Team announcements (posted by a manager / senior
+                  // manager) show the actual poster's name; company/HR posts
+                  // keep the "HR" label (HR's account name reads as the company).
+                  const _isTeamAnn = ['team', 'manager-team'].includes(String((a as any).audience || ''));
+                  const _rawPoster = String((a as any).postedBy || (a as any).createdByName || '').trim();
+                  const poster = _isTeamAnn && _rawPoster ? _rawPoster : 'HR';
                   return (
                     <TouchableOpacity
                       key={a._id}
@@ -2421,14 +2424,7 @@ await reviveBackgroundLocationUpdates('guardian: !taskAlive');
                         </Text>
                       )}
                       <Text style={styles.annCardMeta}>
-                        {/* #316 — Always show "HR" instead of the raw
-                            postedBy/createdByName value. HR's user
-                            account is named "tescostructures" in the
-                            DB, which read as the company name in the
-                            UI. From the employee's perspective every
-                            announcement is from HR — that's the only
-                            label that matters. */}
-                        Posted by HR  •  {formatRelative(a.createdAt)}
+                        Posted by {poster}  •  {formatRelative(a.createdAt)}
                       </Text>
                     </TouchableOpacity>
                   );

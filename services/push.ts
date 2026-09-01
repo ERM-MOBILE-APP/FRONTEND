@@ -43,16 +43,31 @@ function firebaseUnavailable(): boolean {
     if (env === 'storeClient' || Constants?.appOwnership === 'expo') {
       _fbDisabled = true; // running inside Expo Go — no native Firebase
     }
-  } catch { /* if we can't tell, fall through and let the require guard decide */ }
+  } catch { /* if we can't tell, fall through and let the native check decide */ }
+
+  // CRITICAL — only touch Firebase if its NATIVE module is actually compiled
+  // into THIS binary. When the JS packages are installed but the app hasn't been
+  // rebuilt natively yet (an old dev/prod build, or Expo Go), requiring
+  // @react-native-firebase/* evaluates FirebaseApp.js, which throws/logs
+  // "Native module RNFBAppModule not found". Checking NativeModules.RNFBAppModule
+  // first means we NEVER require the JS in that state — no crash, no red error.
+  if (!_fbDisabled) {
+    try {
+      const { NativeModules } = require('react-native');
+      if (!NativeModules || !NativeModules.RNFBAppModule) _fbDisabled = true;
+    } catch {
+      _fbDisabled = true;
+    }
+  }
   return _fbDisabled;
 }
 
 function getMessaging(): any | null {
+  // firebaseUnavailable() has already confirmed the NATIVE RNFBAppModule exists
+  // before we get here, so requiring the JS won't throw "RNFBAppModule not
+  // found". Dynamic (variable) require keeps Metro from hard-resolving the
+  // package at bundle time; still guarded so anything unexpected just no-ops.
   if (firebaseUnavailable()) return null;
-  // Dynamic require (variable path) so Metro does NOT try to resolve the
-  // package at bundle time — the Firebase packages are currently removed
-  // from the build (FCM temporarily disabled). If/when they're re-added,
-  // this resolves at runtime again. Guarded so a missing module no-ops.
   try { const mod = '@react-native-firebase/messaging'; return require(mod).default; } catch { return null; }
 }
 
