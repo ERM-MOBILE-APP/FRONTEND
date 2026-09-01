@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import { ManagerHeader, Card, Pill, Loading, EmptyState, MC } from '../../components/manager/ManagerUI';
 import { managerAPI } from '../../services/api';
@@ -27,6 +27,9 @@ function presenceTone(p?: string): 'green' | 'amber' | 'gray' {
 /** List of the manager's direct reports (assigned team). */
 function TeamList() {
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ managerId?: string; managerName?: string }>();
+  const managerId   = typeof params?.managerId   === 'string' ? params.managerId   : undefined;
+  const managerName = typeof params?.managerName === 'string' ? params.managerName : '';
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [team, setTeam] = useState<any[]>([]);
@@ -35,7 +38,7 @@ function TeamList() {
   const load = useCallback(async () => {
     setErr('');
     try {
-      const res = await managerAPI.team();
+      const res = await managerAPI.team(managerId);
       setTeam(res?.data?.team || []);
     } catch (e: any) {
       setErr(e?.response?.data?.message || e?.message || 'Could not load your team.');
@@ -44,14 +47,21 @@ function TeamList() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [managerId]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
   const onRefresh = () => { setRefreshing(true); load(); };
 
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
-      <ManagerHeader title="Team Members" subtitle={team.length ? `${team.length} people report to you` : 'Your team'} />
+      <ManagerHeader
+        title="Team Members"
+        subtitle={
+          managerName
+            ? `${managerName}'s team${team.length ? ` · ${team.length}` : ''}`
+            : team.length ? `${team.length} people report to you` : 'Your team'
+        }
+      />
       {loading ? (
         <Loading label="Loading your team…" />
       ) : (

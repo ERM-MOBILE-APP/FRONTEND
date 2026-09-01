@@ -12,7 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import { ManagerHeader, Card, Pill, Loading, EmptyState, MC } from '../../components/manager/ManagerUI';
 import { managerAPI } from '../../services/api';
@@ -49,6 +49,9 @@ function agoLabel(iso?: string) {
  */
 function LiveTracking() {
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ managerId?: string; managerName?: string }>();
+  const managerId   = typeof params?.managerId   === 'string' ? params.managerId   : undefined;
+  const managerName = typeof params?.managerName === 'string' ? params.managerName : '';
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [rows, setRows] = useState<any[]>([]);
@@ -89,7 +92,7 @@ function LiveTracking() {
   const load = useCallback(async (silent = false) => {
     if (!silent) setErr('');
     try {
-      const res = await managerAPI.liveLocations();
+      const res = await managerAPI.liveLocations(managerId);
       const list = res?.data?.data || [];
       setRows(list);
       setUpdatedAt(res?.data?.generatedAt || new Date().toISOString());
@@ -100,7 +103,7 @@ function LiveTracking() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [resolvePlaces]);
+  }, [resolvePlaces, managerId]);
 
   // Load on focus + poll every 30s; stop when unfocused.
   useFocusEffect(
@@ -133,7 +136,11 @@ function LiveTracking() {
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <ManagerHeader
         title="Live Tracking"
-        subtitle={updatedAt ? `${activeCount} active · updated ${agoLabel(updatedAt)}` : 'Team locations'}
+        subtitle={
+          managerName
+            ? `${managerName}'s team${updatedAt ? ` · ${activeCount} active` : ''}`
+            : updatedAt ? `${activeCount} active · updated ${agoLabel(updatedAt)}` : 'Team locations'
+        }
       />
       {loading ? (
         <Loading label="Locating your team…" />

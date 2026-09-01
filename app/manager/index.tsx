@@ -6,6 +6,10 @@ import {
   ScrollView,
   TouchableOpacity,
   RefreshControl,
+  ActivityIndicator,
+  LayoutAnimation,
+  Platform,
+  UIManager,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,11 +18,176 @@ import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import { ManagerHeader, Card, MC, Loading } from '../../components/manager/ManagerUI';
 import { managerAPI } from '../../services/api';
 
+// Smooth expand/collapse on Android too.
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+type Person = {
+  _id: string;
+  employeeId?: string;
+  name: string;
+  designation?: string;
+  department?: string;
+  teamCount?: number;
+  active?: boolean;
+};
+
+const initialOf = (n: string) => (n || '?').trim()[0]?.toUpperCase() || '?';
+
+// Feature rows shown under an expanded sub-manager. Each opens the existing
+// feature screen SCOPED to that sub-manager (managerId + managerName params),
+// so the backend re-scopes the data to that manager's own team.
+const NODE_FEATURES: {
+  key: string; label: string; route: string;
+  render: () => React.ReactNode;
+}[] = [
+  { key: 'approvals',     label: 'Approvals',          route: '/manager/approvals',
+    render: () => <MaterialCommunityIcons name="clipboard-check-outline" size={18} color={MC.green} /> },
+  { key: 'tracking',      label: 'Live Tracking',      route: '/manager/tracking',
+    render: () => <Ionicons name="location-outline" size={18} color={MC.green} /> },
+  { key: 'announcements', label: 'Announcements',      route: '/manager/announcements',
+    render: () => <Ionicons name="megaphone-outline" size={18} color={MC.green} /> },
+  { key: 'attendance',    label: 'Attendance Reports', route: '/manager/attendance',
+    render: () => <MaterialCommunityIcons name="calendar-account-outline" size={18} color={MC.green} /> },
+];
+
 /**
- * Manager hub — the landing screen for the Manager section. Shows the
- * manager's team size + live pending counts (leave/permission, allowance,
- * attendance requests) and cards that drill into each feature. All data is
- * fetched live from /api/manager/* — nothing hardcoded.
+ * One collapsible node in the reporting tree — a sub-manager. Collapsed it
+ * shows just the name + a "Manager" tag + team size. Expanded it reveals that
+ * manager's full dashboard entry points (Approvals, Live Tracking,
+ * Announcements, Attendance Reports) plus a nested, lazy-loaded Team Members
+ * list — each entry point opens the real feature screen scoped to THIS manager.
+ */
+function ManagerNode({ mgr }: { mgr: Person }) {
+  const [open, setOpen] = useState(false);
+  const [teamOpen, setTeamOpen] = useState(false);
+  const [members, setMembers] = useState<Person[] | null>(null);
+  const [loadingTeam, setLoadingTeam] = useState(false);
+
+  const scopedParams = { managerId: String(mgr._id), managerName: mgr.name };
+  const openScoped = (route: string) =>
+    router.push({ pathname: route as any, params: scopedParams });
+
+  const toggle = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setOpen((v) => !v);
+  };
+
+  const toggleTeam = async () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    const next = !teamOpen;
+    setTeamOpen(next);
+    if (next && members === null && !loadingTeam) {
+      setLoadingTeam(true);
+      try {
+        const res = await managerAPI.team(String(mgr._id));
+        setMembers(res?.data?.team || []);
+      } catch {
+        setMembers([]);
+      } finally {
+        setLoadingTeam(false);
+      }
+    }
+  };
+
+  return (
+    <Card style={styles.node}>
+      {/* Node header — tap to expand this manager's access. */}
+      <TouchableOpacity style={styles.nodeHead} activeOpacity={0.75} onPress={toggle}>
+        <View style={styles.nodeAvatar}>
+          <Text style={styles.nodeAvatarText}>{initialOf(mgr.name)}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <View style={styles.nodeNameRow}>
+            <Text style={styles.nodeName} numberOfLines={1}>{mgr.name}</Text>
+            <View style={styles.mgrTag}>
+              <MaterialCommunityIcons name="account-supervisor" size={11} color={MC.green} />
+              <Text style={styles.mgrTagText}>Manager</Text>
+            </View>
+          </View>
+          <Text style={styles.nodeSub} numberOfLines={1}>
+            {mgr.designation ? `${mgr.designation} · ` : ''}
+            {mgr.teamCount ?? 0} {(mgr.teamCount ?? 0) === 1 ? 'member' : 'members'}
+          </Text>
+        </View>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={20} color={MC.sub} />
+      </TouchableOpacity>
+
+      {open && (
+        <View style={styles.nodeBody}>
+          {NODE_FEATURES.map((f) => (
+            <TouchableOpacity
+              key={f.key}
+              style={styles.featureRow}
+              activeOpacity={0.7}
+              onPress={() => openScoped(f.route)}
+            >
+              <View style={styles.featureIcon}>{f.render()}</View>
+              <Text style={styles.featureLabel}>{f.label}</Text>
+              <Ionicons name="chevron-forward" size={16} color="#C4C9CF" />
+            </TouchableOpacity>
+          ))}
+
+          {/* Team Members — nested, lazy-loaded list. */}
+          <TouchableOpacity style={styles.featureRow} activeOpacity={0.7} onPress={toggleTeam}>
+            <View style={styles.featureIcon}>
+              <Ionicons name="people-outline" size={18} color={MC.green} />
+            </View>
+            <Text style={styles.featureLabel}>Team Members</Text>
+            <Text style={styles.featureCount}>{mgr.teamCount ?? 0}</Text>
+            <Ionicons name={teamOpen ? 'chevron-up' : 'chevron-down'} size={16} color="#C4C9CF" />
+          </TouchableOpacity>
+
+          {teamOpen && (
+            <View style={styles.memberWrap}>
+              {loadingTeam ? (
+                <View style={styles.memberLoading}>
+                  <ActivityIndicator size="small" color={MC.green} />
+                </View>
+              ) : (members && members.length > 0) ? (
+                <>
+                  {members.map((m) => (
+                    <View key={m._id} style={styles.memberRow}>
+                      <View style={styles.memberDot} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.memberName} numberOfLines={1}>{m.name}</Text>
+                        {!!m.designation && (
+                          <Text style={styles.memberSub} numberOfLines={1}>{m.designation}</Text>
+                        )}
+                      </View>
+                      {m.active === false && (
+                        <Text style={styles.memberInactive}>Inactive</Text>
+                      )}
+                    </View>
+                  ))}
+                  <TouchableOpacity
+                    style={styles.openTeamBtn}
+                    activeOpacity={0.7}
+                    onPress={() => openScoped('/manager/team')}
+                  >
+                    <Text style={styles.openTeamText}>Open full team screen</Text>
+                    <Ionicons name="arrow-forward" size={14} color={MC.green} />
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <Text style={styles.memberEmpty}>No team members found.</Text>
+              )}
+            </View>
+          )}
+        </View>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Manager hub — the landing screen for the Manager section. For a plain
+ * manager it shows their own feature cards; for a HIGHER-LEVEL (senior) manager
+ * it ALSO shows the reporting tree: each sub-manager is an expandable node that
+ * opens that manager's own dashboard + team (never a flat blob of all people).
+ * The tree is derived live from HRMS `assignedTo`, so it restructures itself
+ * automatically when reporting lines change.
  */
 function ManagerHome() {
   const insets = useSafeAreaInsets();
@@ -26,17 +195,17 @@ function ManagerHome() {
   const [refreshing, setRefreshing] = useState(false);
   const [managerName, setManagerName] = useState('');
   const [teamSize, setTeamSize] = useState(0);
+  const [subManagers, setSubManagers] = useState<Person[]>([]);
+  const [directReports, setDirectReports] = useState<Person[]>([]);
   const [counts, setCounts] = useState({ leaves: 0, allowances: 0, attnReqs: 0 });
   const [err, setErr] = useState('');
 
   const load = useCallback(async () => {
     setErr('');
     try {
-      // Fetch team + pending queues in parallel. Pending = status 'pending'
-      // for leaves/attendance-requests; allowances pending = managerStatus
-      // not yet set (we approximate with status 'pending').
-      const [teamRes, leaveRes, travelRes, petrolRes, attnRes] = await Promise.all([
+      const [teamRes, hierRes, leaveRes, travelRes, petrolRes, attnRes] = await Promise.all([
         managerAPI.team(),
+        managerAPI.hierarchy(),
         managerAPI.leaves({ status: 'pending' }),
         managerAPI.allowances({ type: 'travel', status: 'pending' }),
         managerAPI.allowances({ type: 'petrol', status: 'pending' }),
@@ -44,13 +213,10 @@ function ManagerHome() {
       ]);
       const team = teamRes?.data?.team || [];
       setTeamSize(teamRes?.data?.count ?? team.length);
-      setManagerName(teamRes?.data?.manager?.name || '');
-      // #490 — Pending actions = requests from the CURRENT team that are still
-      // AWAITING THIS MANAGER (no managerStatus yet). The backend already scopes
-      // every list to the manager's current team (resolveTeamIds on live
-      // assignedTo), so a reassigned employee's requests never appear here.
-      // The old `|| items.length` fallback wrongly inflated the badge to the
-      // full pending list once the manager had acted on everything — removed.
+      setManagerName(teamRes?.data?.manager?.name || hierRes?.data?.manager?.name || '');
+      setSubManagers(hierRes?.data?.managers || []);
+      setDirectReports(hierRes?.data?.directReports || []);
+
       const leaves = (leaveRes?.data?.items || []).filter((l: any) => !l.managerStatus).length;
       const allowances =
         (travelRes?.data?.items || []).filter((a: any) => !a.managerStatus).length +
@@ -66,14 +232,18 @@ function ManagerHome() {
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
-
   const onRefresh = () => { setRefreshing(true); load(); };
 
+  const isSenior = subManagers.length > 0;
+  const pending = counts.leaves + counts.allowances + counts.attnReqs;
+
+  // The manager's OWN feature cards. For a senior manager these act across the
+  // WHOLE downline (every level); for a plain manager, across their direct team.
   const sections = [
     {
       key: 'team',
       title: 'Team Members',
-      desc: teamSize ? `${teamSize} people report to you` : 'Your assigned team',
+      desc: teamSize ? `${teamSize} people in your organisation` : 'Your assigned team',
       icon: <Ionicons name="people-outline" size={24} color="#fff" />,
       color: '#0EA5E9',
       badge: 0,
@@ -85,7 +255,7 @@ function ManagerHome() {
       desc: 'Leave, permission, allowance & attendance requests',
       icon: <MaterialCommunityIcons name="clipboard-check-outline" size={24} color="#fff" />,
       color: MC.green,
-      badge: counts.leaves + counts.allowances + counts.attnReqs,
+      badge: pending,
       route: '/manager/approvals',
     },
     {
@@ -139,7 +309,7 @@ function ManagerHome() {
               onPress={() => router.push('/manager/team')}
             >
               <Text style={styles.summaryNum}>{teamSize}</Text>
-              <Text style={styles.summaryLabel}>Team members</Text>
+              <Text style={styles.summaryLabel}>{isSenior ? 'In your org' : 'Team members'}</Text>
               <View style={styles.summaryHintRow}>
                 <Text style={styles.summaryHint}>View list</Text>
                 <Ionicons name="chevron-forward" size={12} color={MC.sub} />
@@ -151,7 +321,7 @@ function ManagerHome() {
               activeOpacity={0.7}
               onPress={() => router.push('/manager/approvals')}
             >
-              <Text style={[styles.summaryNum, { color: MC.amber }]}>{counts.leaves + counts.allowances + counts.attnReqs}</Text>
+              <Text style={[styles.summaryNum, { color: MC.amber }]}>{pending}</Text>
               <Text style={styles.summaryLabel}>Pending actions</Text>
               <View style={styles.summaryHintRow}>
                 <Text style={styles.summaryHint}>Review now</Text>
@@ -170,6 +340,64 @@ function ManagerHome() {
             </Card>
           )}
 
+          {/* ── Reporting hierarchy (senior managers only) ─────────────── */}
+          {isSenior && (
+            <>
+              <View style={styles.sectionHeaderRow}>
+                <MaterialCommunityIcons name="file-tree-outline" size={16} color={MC.green} />
+                <Text style={styles.sectionHeader}>Managers reporting to you</Text>
+                <View style={styles.sectionCountPill}>
+                  <Text style={styles.sectionCountText}>{subManagers.length}</Text>
+                </View>
+              </View>
+              <Text style={styles.sectionCaption}>
+                Tap a manager to open their approvals, tracking, announcements,
+                attendance & team.
+              </Text>
+              {subManagers.map((m) => <ManagerNode key={m._id} mgr={m} />)}
+
+              {/* Employees who report DIRECTLY to a senior manager (not via a
+                  sub-manager) — shown as their own small group, not folded into
+                  a manager's team. */}
+              {directReports.length > 0 && (
+                <>
+                  <View style={[styles.sectionHeaderRow, { marginTop: 8 }]}>
+                    <Ionicons name="person-outline" size={15} color={MC.green} />
+                    <Text style={styles.sectionHeader}>Your direct reports</Text>
+                    <View style={styles.sectionCountPill}>
+                      <Text style={styles.sectionCountText}>{directReports.length}</Text>
+                    </View>
+                  </View>
+                  <Card style={{ paddingVertical: 4 }}>
+                    {directReports.map((m) => (
+                      <View key={m._id} style={styles.directRow}>
+                        <View style={styles.nodeAvatarSm}>
+                          <Text style={styles.nodeAvatarTextSm}>{initialOf(m.name)}</Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.directName} numberOfLines={1}>{m.name}</Text>
+                          {!!m.designation && (
+                            <Text style={styles.directSub} numberOfLines={1}>{m.designation}</Text>
+                          )}
+                        </View>
+                        {m.active === false && <Text style={styles.memberInactive}>Inactive</Text>}
+                      </View>
+                    ))}
+                  </Card>
+                </>
+              )}
+
+              <View style={styles.sectionHeaderRow}>
+                <Ionicons name="grid-outline" size={15} color={MC.green} />
+                <Text style={styles.sectionHeader}>Across your whole organisation</Text>
+              </View>
+              <Text style={styles.sectionCaption}>
+                Act on everyone below you at once — all levels combined.
+              </Text>
+            </>
+          )}
+
+          {/* ── The manager's own feature cards ────────────────────────── */}
           {sections.map((s) => (
             <TouchableOpacity
               key={s.key}
@@ -214,6 +442,81 @@ const styles = StyleSheet.create({
   summaryLabel: { fontSize: 12, color: MC.sub, marginTop: 2 },
   summaryHintRow: { flexDirection: 'row', alignItems: 'center', gap: 2, marginTop: 4 },
   summaryHint: { fontSize: 11, color: MC.sub, fontWeight: '600' },
+
+  // Section headers (hierarchy grouping)
+  sectionHeaderRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 7,
+    paddingHorizontal: 16, marginTop: 16, marginBottom: 2,
+  },
+  sectionHeader: { fontSize: 13.5, fontWeight: '800', color: MC.text, letterSpacing: 0.2 },
+  sectionCaption: { fontSize: 11.5, color: MC.sub, paddingHorizontal: 16, marginBottom: 8 },
+  sectionCountPill: {
+    minWidth: 20, height: 20, borderRadius: 10, backgroundColor: MC.greenBg,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6,
+  },
+  sectionCountText: { fontSize: 11, fontWeight: '800', color: MC.green },
+
+  // Manager node (collapsible)
+  node: { paddingVertical: 4 },
+  nodeHead: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  nodeAvatar: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: MC.greenBg,
+    alignItems: 'center', justifyContent: 'center', marginRight: 12,
+  },
+  nodeAvatarText: { color: MC.green, fontWeight: '800', fontSize: 17 },
+  nodeNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  nodeName: { fontSize: 15, fontWeight: '800', color: MC.text, flexShrink: 1 },
+  mgrTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: MC.greenBg, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2,
+  },
+  mgrTagText: { fontSize: 10.5, fontWeight: '800', color: MC.green },
+  nodeSub: { fontSize: 12, color: MC.sub, marginTop: 2 },
+
+  nodeBody: {
+    marginTop: 6, marginLeft: 8, paddingLeft: 14,
+    borderLeftWidth: 2, borderLeftColor: MC.greenBg,
+  },
+  featureRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: '#F2F3F5',
+  },
+  featureIcon: {
+    width: 30, height: 30, borderRadius: 8, backgroundColor: MC.greenBg,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  featureLabel: { flex: 1, fontSize: 13.5, fontWeight: '700', color: MC.text },
+  featureCount: {
+    fontSize: 12, fontWeight: '800', color: MC.green,
+    backgroundColor: MC.greenBg, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 1, marginRight: 4,
+  },
+
+  memberWrap: { paddingVertical: 4, paddingLeft: 6 },
+  memberLoading: { paddingVertical: 14, alignItems: 'flex-start' },
+  memberRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 },
+  memberDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: MC.green, marginLeft: 2 },
+  memberName: { fontSize: 13, fontWeight: '700', color: MC.text },
+  memberSub: { fontSize: 11, color: MC.sub, marginTop: 1 },
+  memberInactive: { fontSize: 10.5, fontWeight: '800', color: MC.red },
+  memberEmpty: { fontSize: 12, color: MC.sub, paddingVertical: 10 },
+  openTeamBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 10, marginTop: 2,
+  },
+  openTeamText: { fontSize: 12.5, fontWeight: '800', color: MC.green },
+
+  // Direct reports mini-list
+  directRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#F2F3F5',
+  },
+  nodeAvatarSm: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: MC.greenBg,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  nodeAvatarTextSm: { color: MC.green, fontWeight: '800', fontSize: 14 },
+  directName: { fontSize: 13.5, fontWeight: '700', color: MC.text },
+  directSub: { fontSize: 11.5, color: MC.sub, marginTop: 1 },
 
   navCard: { flexDirection: 'row', alignItems: 'center' },
   navIcon: {

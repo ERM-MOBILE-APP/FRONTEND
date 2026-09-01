@@ -610,21 +610,33 @@ export const notificationAPI = {
 // backend resolves the caller's team from the `assignedTo` field and
 // 403-guards any write on a request outside the team. A non-manager (no
 // subordinates) gets empty arrays everywhere and cannot act on anyone.
+// `managerId` (optional, on every scoped read) lets a higher-level manager
+// drill into a sub-manager's dashboard: the backend re-scopes that endpoint to
+// the sub-manager's own team, but ONLY if the sub-manager is inside the
+// caller's reporting hierarchy (else 403). Omit it for your own team.
 export const managerAPI = {
   /** "Am I a manager?" → { isManager, teamSize, signals, directoryName } */
   me:   () => api.get('/manager/me'),
-  /** The manager's direct-report list. */
-  team: () => api.get('/manager/team'),
+  /**
+   * One TIER of the reporting tree — the direct reports of `managerId` (or of
+   * the caller when omitted), split into { managers, directReports }. Drives
+   * the expandable Manager-section hierarchy.
+   */
+  hierarchy: (managerId?: string) =>
+    api.get('/manager/hierarchy', { params: managerId ? { managerId } : {} }),
+  /** The manager's direct-report list (scoped to `managerId` when given). */
+  team: (managerId?: string) =>
+    api.get('/manager/team', { params: managerId ? { managerId } : {} }),
 
   /** Leave + permission requests filed by the team. */
-  leaves: (params?: { status?: string; month?: number; year?: number }) =>
+  leaves: (params?: { status?: string; month?: number; year?: number; managerId?: string }) =>
     api.get('/manager/leaves', { params }),
   /** Approve/reject a leave/permission request. */
   actLeave: (id: string, managerStatus: 'Approved' | 'Rejected') =>
     api.patch(`/manager/leaves/${id}`, { managerStatus }),
 
   /** Allowance claims (petrol vs travel via ?type=). */
-  allowances: (params?: { type?: 'travel' | 'petrol'; status?: string }) =>
+  allowances: (params?: { type?: 'travel' | 'petrol'; status?: string; managerId?: string }) =>
     api.get('/manager/allowances', { params }),
   /** Approve (optionally partial) / reject an allowance claim. */
   actAllowance: (
@@ -634,23 +646,24 @@ export const managerAPI = {
   ) => api.patch(`/manager/allowances/${id}`, { managerStatus, ...(payload || {}) }),
 
   /** Team attendance for a single date. */
-  attendance: (date?: string) =>
-    api.get('/manager/attendance', { params: date ? { date } : {} }),
+  attendance: (date?: string, managerId?: string) =>
+    api.get('/manager/attendance', { params: { ...(date ? { date } : {}), ...(managerId ? { managerId } : {}) } }),
   /** Per-team-member monthly attendance summary (drives Reports). */
-  attendanceSummary: (params?: { month?: number; year?: number }) =>
+  attendanceSummary: (params?: { month?: number; year?: number; managerId?: string }) =>
     api.get('/manager/attendance-summary', { params }),
   /** Latest GPS position per team member (Live Tracking). */
-  liveLocations: () => api.get('/manager/live-locations'),
+  liveLocations: (managerId?: string) =>
+    api.get('/manager/live-locations', { params: managerId ? { managerId } : {} }),
 
   /** Attendance regularisation queue for the team. */
-  attendanceRequests: (params?: { status?: string }) =>
+  attendanceRequests: (params?: { status?: string; managerId?: string }) =>
     api.get('/manager/attendance-requests', { params }),
   actAttendanceRequest: (id: string, status: 'approved' | 'rejected', managerComment?: string) =>
     api.patch(`/manager/attendance-requests/${id}`, { status, managerComment }),
 
-  /** Team-scoped announcements. */
-  postAnnouncement: (data: { title: string; body: string; category?: string }) =>
-    api.post('/manager/announcements', data),
+  /** Team-scoped announcements. Posts to `managerId`'s team when supplied. */
+  postAnnouncement: (data: { title: string; body: string; category?: string; managerId?: string }) =>
+    api.post('/manager/announcements', data, { params: data.managerId ? { managerId: data.managerId } : {} }),
   myAnnouncements: () => api.get('/manager/announcements'),
   deleteAnnouncement: (id: string) => api.delete(`/manager/announcements/${id}`),
 };

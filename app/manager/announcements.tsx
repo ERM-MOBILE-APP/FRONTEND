@@ -16,6 +16,7 @@ import {
 import { premiumAlert } from '../../services/premiumAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useLocalSearchParams } from 'expo-router';
 import ScreenErrorBoundary from '../../components/ScreenErrorBoundary';
 import { ManagerHeader, Card, Loading, EmptyState, MC } from '../../components/manager/ManagerUI';
 import { managerAPI } from '../../services/api';
@@ -36,6 +37,9 @@ function fmtDate(v: any) {
  */
 function ManagerAnnouncements() {
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ managerId?: string; managerName?: string }>();
+  const managerId   = typeof params?.managerId   === 'string' ? params.managerId   : undefined;
+  const managerName = typeof params?.managerName === 'string' ? params.managerName : '';
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [items, setItems] = useState<any[]>([]);
@@ -75,7 +79,7 @@ function ManagerAnnouncements() {
     }
     setPosting(true);
     try {
-      await managerAPI.postAnnouncement({ title: title.trim(), body: body.trim(), category });
+      await managerAPI.postAnnouncement({ title: title.trim(), body: body.trim(), category, managerId });
       setComposing(false);
       load();
     } catch (e: any) {
@@ -107,7 +111,7 @@ function ManagerAnnouncements() {
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <ManagerHeader
         title="Announcements"
-        subtitle="Posts your team sees"
+        subtitle={managerName ? `Posting to ${managerName}'s team` : 'Posts your team sees'}
         right={
           <TouchableOpacity onPress={openCompose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="add-circle" size={26} color="#fff" />
