@@ -84,10 +84,11 @@ function TeamAttendance() {
   // Whether we're at the ERM start month (→ disable "prev").
   const atStartMonth = year === ERM_START.year && month === ERM_START.month;
 
-  // Team totals.
+  // Team totals. #521 — Present INCLUDES Late (a late arrival is still a present
+  // day), matching the ERM app card + HRMS report. Late stays its own total.
   const totals = items.reduce(
     (acc, r) => {
-      acc.present += r.present || 0;
+      acc.present += (r.present || 0) + (r.late || 0);
       acc.late += r.late || 0;
       acc.absent += r.absent || 0;
       acc.permission += r.permission || 0;
@@ -166,7 +167,8 @@ function TeamAttendance() {
                 </View>
 
                 <View style={styles.statGrid}>
-                  <Stat label="Present" value={r.present} color={MC.green} />
+                  {/* #521 — Present = on-time + late (late is still a present day). */}
+                  <Stat label="Present" value={(r.present || 0) + (r.late || 0)} color={MC.green} />
                   <Stat label="Late" value={r.late} color={MC.amber} />
                   <Stat label="Absent" value={r.absent} color={MC.red} />
                   <Stat label="Perm" value={r.permission} color="#7C3AED" />

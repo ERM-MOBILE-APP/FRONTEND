@@ -620,20 +620,21 @@ export default function AttendanceScreen() {
           </View>
         </View>
 
-        {/* Box counts:
-            PRESENT  = pure present + late + halfday   (anyone who showed up)
+        {/* Box counts (#521 — kept identical across the ERM app, the Manager
+            team report, and the HRMS Attendance Report):
+            PRESENT  = on-time present + late   (a late arrival is still present)
             ABSENTS  = backend's absent count (workdays − all others)
-            LATE IN  = pure late count
+            LATE IN  = pure late count (also shown inside PRESENT)
             PERMISSIONS = permission count
-            Late and halfday days are also counted in PRESENT because the
-            employee did actually attend — they just came late or for half. */}
+            Late days are counted in PRESENT because the employee did attend;
+            half-days keep their own status (visible in the calendar + day list). */}
         <View style={styles.statsGrid}>
           {/* Row 1 — Present + Absents side by side */}
           <View style={styles.statsRow}>
             <StatCard
               color="#4CAF50"
               label="PRESENT"
-              value={summary.present + summary.late + summary.halfday}
+              value={summary.present + summary.late}
             />
             <StatCard color="#F44336" label="ABSENTS" value={summary.absent} />
           </View>
